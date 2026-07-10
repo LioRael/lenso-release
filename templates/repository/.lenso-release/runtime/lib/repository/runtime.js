@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
@@ -173,10 +174,19 @@ async function packedArtifact(cwd, item) {
         const name = item.id.slice(4);
         const { stdout } = await execFile("npm", ["pack", "--json", "--ignore-scripts"], { cwd });
         const result = JSON.parse(stdout);
-        if (result.length !== 1 || result[0]?.name !== name || result[0].version !== item.version || !result[0].integrity || !/^[0-9a-f]{40}$/u.test(result[0].shasum))
+        const packed = result[0];
+        if (result.length !== 1 || !packed || packed.name !== name || packed.version !== item.version || basename(packed.filename) !== packed.filename || !/^[a-z0-9][a-z0-9._-]*\.tgz$/u.test(packed.filename) || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(packed.integrity) || !/^[0-9a-f]{40}$/u.test(packed.shasum))
             fail("npm archive identity mismatch");
-        const path = join(cwd, result[0].filename);
-        return { path, bytes: await readFile(path) };
+        const path = join(cwd, packed.filename);
+        const bytes = await readFile(path);
+        const sri = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+        const shasum = createHash("sha1").update(bytes).digest("hex");
+        if (sri !== packed.integrity || shasum !== packed.shasum)
+            fail("npm archive digest mismatch");
+        const manifest = JSON.parse((await execFile("tar", ["-xOf", path, "package/package.json"])).stdout);
+        if (manifest.name !== name || manifest.version !== item.version)
+            fail("npm archive manifest identity mismatch");
+        return { path, bytes };
     }
     const name = item.id.slice(6);
     await execFile("cargo", ["package", "--locked", "-p", name], { cwd });
