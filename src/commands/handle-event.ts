@@ -99,12 +99,12 @@ export async function composeGithubHandlers(
       createCoordinatorHandlers(input: unknown): Promise<EventHandlers>;
     }
   ).createCoordinatorHandlers;
-  const store = new GithubSnapshotStore(config.repository, config.token);
   const tokens = new GithubAppTokenProvider(
     config.appId,
     config.privateKey,
     config.installationId,
   );
+  const store = new GithubSnapshotStore(config.repository, tokens);
   const dispatcher = new GithubWorkflowDispatcher();
   return create({ config, env, store, tokens, dispatcher });
 }

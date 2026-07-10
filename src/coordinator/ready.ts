@@ -233,5 +233,5 @@ export async function acceptReadyEvent(
         plan.planId;
     return snapshot;
   });
-  return { state: result, headSha: committed.headSha };
+  return { state: committed.plans[path]!, headSha: committed.headSha };
 }

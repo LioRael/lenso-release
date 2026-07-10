@@ -42,7 +42,10 @@ export type WorkflowDispatcher = {
   ): Promise<{ runUrl: string }>;
 };
 export type AppTokenProvider = {
-  tokenFor(repository: string): Promise<string>;
+  tokenFor(
+    repository: string,
+    permissions?: Record<string, "read" | "write">,
+  ): Promise<string>;
 };
 
 export function newlyReadyPackages(
@@ -126,6 +129,8 @@ export function outboxEntry(
     packages: event.packages,
     inputs: command.inputs,
     status: "pending",
+    claimOwner: null,
+    leaseExpiresAt: null,
     runUrl: null,
     createdAt: at,
     updatedAt: at,
@@ -139,14 +144,18 @@ export async function runDispatchOutbox(
   dispatcher: WorkflowDispatcher,
   tokens: AppTokenProvider,
   now: () => Date,
+  claimOwner: string = crypto.randomUUID(),
 ): Promise<StoredPlanState> {
   const path = planStatePath(repository, planId);
   let snapshot = await store.readSnapshot();
   let state = snapshot.plans[path];
   if (!state) throw new Error("plan state not found");
-  const entry = state.outbox.find(({ status }) => status !== "dispatched");
+  const entry = state.outbox.find(({ status }) => status === "pending" || status === "in-flight");
   if (!entry) return { state, headSha: snapshot.headSha };
-  const token = await tokens.tokenFor(repository);
+  const token = await tokens.tokenFor(repository, {
+    actions: "write",
+    metadata: "read",
+  });
   const existing = await dispatcher.findByEventId(repository, entry.eventId, token);
   let run = existing;
   if (!run) {
@@ -155,12 +164,24 @@ export async function runDispatchOutbox(
       claimed = false;
       const candidate = current.plans[path];
       if (!candidate) throw new Error("plan state not found");
+      if (
+        candidate.status !== "publishing" ||
+        current.activeRepositories[repository] !== planId ||
+        !candidate.occupancyKeys.includes(`plan:${repository}:${planId}`)
+      )
+        throw new Error("plan is not active for dispatch");
       const target = candidate.outbox.find(
         ({ eventId }) => eventId === entry.eventId,
       );
-      if (!target || target.status !== "pending") return current;
+      const instant = now();
+      const stale =
+        target?.status === "in-flight" &&
+        target.leaseExpiresAt !== null &&
+        target.leaseExpiresAt <= instant.toISOString();
+      if (!target || (target.status !== "pending" && !stale)) return current;
       claimed = true;
-      const at = now().toISOString();
+      const at = instant.toISOString();
+      const leaseExpiresAt = new Date(instant.getTime() + 5 * 60_000).toISOString();
       const next = {
         ...candidate,
         outbox: candidate.outbox.map((item) =>
@@ -168,6 +189,8 @@ export async function runDispatchOutbox(
             ? {
                 ...item,
                 status: "in-flight" as const,
+                claimOwner,
+                leaseExpiresAt,
                 updatedAt: at,
               }
             : item,
@@ -193,17 +216,20 @@ export async function runDispatchOutbox(
     const currentEntry = state.outbox.find(
       ({ eventId }) => eventId === entry.eventId,
     )!;
-    if (claimed)
-      run = await dispatcher.dispatch(
-        {
-          repository,
-          workflow: currentEntry.workflow,
-          ref: currentEntry.ref,
-          inputs: currentEntry.inputs,
-        },
-        entry.eventId,
-        token,
-      );
+    if (claimed) {
+      run = await dispatcher.findByEventId(repository, entry.eventId, token);
+      if (!run)
+        run = await dispatcher.dispatch(
+          {
+            repository,
+            workflow: currentEntry.workflow,
+            ref: currentEntry.ref,
+            inputs: currentEntry.inputs,
+          },
+          entry.eventId,
+          token,
+        );
+    }
   }
   const committed = await transact(store, (current) => {
     const candidate = current.plans[path];
@@ -220,6 +246,8 @@ export async function runDispatchOutbox(
           ? {
               ...item,
               status: "dispatched" as const,
+              claimOwner: null,
+              leaseExpiresAt: null,
               runUrl: run!.runUrl,
               updatedAt: at,
             }

@@ -11,7 +11,7 @@ export type ReceiptObservation = {
   tag: { url: string; annotated: boolean; immutable: boolean; receipt: unknown | null };
 };
 export type ReceiptObserver = { observe(repository: string, packageId: string, version: string): Promise<ReceiptObservation | null>; createAnnotatedTag(repository: string, receipt: ComponentReceiptV1): Promise<void> };
-export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; now(): Date; nonce(): string; appId: number };
+export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; dependenciesVisible?(plan: ReleasePlanV1, packageIds: string[]): Promise<boolean>; now(): Date; nonce(): string; appId: number };
 
 const equal = (a: unknown, b: unknown) => canonicalBytes(a as never).equals(canonicalBytes(b as never));
 function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { eventType: "lenso-publish-receipt" }>, observed: ReceiptObservation, state: PlanStateV1): void {
@@ -28,7 +28,7 @@ async function block(deps: ReceiptDependencies, path: string, eventId: Sha256, r
     const at = deps.now().toISOString(); result = { ...state, status: "blocked", reason, evidence: [...state.evidence, { kind: "contradiction", url: null, digest: null }], attempts: [...state.attempts, { eventId, kind: "receipt", at, outcome: "blocked", detail: reason }], revision: state.revision + 1, updatedAt: at };
     assertLegalTransition(state, result); snapshot.plans[path] = result; return snapshot;
   });
-  return { state: result, headSha: committed.headSha };
+  return { state: committed.plans[path]!, headSha: committed.headSha };
 }
 
 export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependencies): Promise<StoredPlanState> {
@@ -45,6 +45,10 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
   const reread = await deps.readPlan(current.repository, current.releaseCommit); assertReleasePlan(reread.plan); const plan: ReleasePlanV1 = reread.plan;
   if (plan.repository !== current.repository || plan.planId !== current.planId || plan.sourceCommit !== current.sourceCommit || sha256(reread.planBytes) !== current.planSha256)
     return block(deps, path, value.eventId, "stored release plan binding contradiction");
+  const projectedPackages = current.packages.map((item) => item.id === receipt.packageId && item.version === receipt.version ? { ...item, status: "received" as const } : item);
+  const projectedReady = newlyReadyPackages(projectedPackages);
+  if (projectedReady.length > 0 && deps.dependenciesVisible && !await deps.dependenciesVisible(plan, projectedReady.map(({ id }) => id)))
+    return block(deps, path, value.eventId, "newly ready dependency is not registry-visible");
   let result!: PlanStateV1;
   const committed = await transact(deps.store, (stateSnapshot) => {
     const state = stateSnapshot.plans[path]; if (!state) throw new Error("plan state not found"); if (state.receipts.some((item) => equal(item, receipt))) { result = state; return stateSnapshot; }
@@ -61,7 +65,15 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
 
 export async function recoverLostReceipt(repository: string, planId: string, packageId: string, version: string, deps: ReceiptDependencies): Promise<StoredPlanState | null> {
   const snapshot = await deps.store.readSnapshot(); const state = snapshot.plans[planStatePath(repository, planId)]; if (!state) throw new Error("plan state not found"); const observed = await deps.observer.observe(repository, packageId, version); if (!observed) return null;
-  if (observed.tag.receipt === null) return null; const receipt = observed.tag.receipt as ComponentReceiptV1; const requestId = state.packages.find((item) => item.id === packageId && item.version === version)?.requestEventId; if (!requestId) throw new Error("package was not dispatched");
-  if (!observed.tag.annotated) await deps.observer.createAnnotatedTag(repository, receipt);
+  const selected = state.packages.find((item) => item.id === packageId && item.version === version); const requestId = selected?.requestEventId; if (!requestId) throw new Error("package was not dispatched");
+  if (observed.workflow.repository !== repository || observed.workflow.ref !== state.executionRef.name || observed.workflow.sha !== state.releaseCommit || observed.workflow.eventId !== requestId || observed.workflow.correlationId !== requestId || !observed.workflow.packages.some(({ id, version: observedVersion }) => id === packageId && observedVersion === version)) return null;
+  const identity = { schema: "lenso.component-receipt.v1" as const, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
+  let receipt = observed.tag.receipt as ComponentReceiptV1 | null;
+  if (receipt === null) {
+    receipt = { ...identity, receiptId: sha256(identity as never) as Sha256 };
+    await deps.observer.createAnnotatedTag(repository, receipt);
+    const reread = await deps.observer.observe(repository, packageId, version);
+    if (!reread?.tag.annotated || !reread.tag.immutable || !equal(reread.tag.receipt, receipt)) throw new Error("recovery tag did not become authoritative");
+  }
   return acceptReceiptEvent({ schema: "lenso.release-event.v1", eventType: "lenso-publish-receipt", eventId: receipt.receiptId, issuedAt: deps.now().toISOString(), nonce: deps.nonce(), sourceRepository: repository, expectedAppId: deps.appId, planId, planUrl: receipt.tagUrl, planSha256: state.planSha256, releaseCommit: state.releaseCommit, correlationId: requestId, receipt }, deps);
 }

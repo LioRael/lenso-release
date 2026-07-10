@@ -1,4 +1,5 @@
 name: plan-ready
+run-name: lenso-plan-ready:${{ github.event.client_payload.eventId }}
 on:
   repository_dispatch:
     types: [lenso-plan-ready]
@@ -23,7 +24,6 @@ jobs:
       - run: node dist/src/commands/handle-event.js --event-file "$EVENT_PATH" --event-key client_payload
         env:
           EVENT_PATH: ${{ github.event_path }}
-          LENSO_COORDINATOR_TOKEN: ${{ secrets.LENSO_COORDINATOR_TOKEN }}
           LENSO_GITHUB_APP_ID: ${{ secrets.LENSO_GITHUB_APP_ID }}
           LENSO_GITHUB_APP_INSTALLATION_ID: ${{ secrets.LENSO_GITHUB_APP_INSTALLATION_ID }}
           LENSO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.LENSO_GITHUB_APP_PRIVATE_KEY }}

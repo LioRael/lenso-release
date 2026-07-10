@@ -111,7 +111,9 @@ export type PlanDispatchOutbox = {
   workflow: string;
   packages: EventPackage[];
   inputs: Record<"event" | "plan_id" | "plan_sha256" | "release_commit" | "packages" | "source_repository", string>;
-  status: "pending" | "in-flight" | "dispatched";
+  status: "pending" | "in-flight" | "dispatched" | "cancelled";
+  claimOwner: string | null;
+  leaseExpiresAt: string | null;
   runUrl: string | null;
   createdAt: string;
   updatedAt: string;

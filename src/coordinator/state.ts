@@ -265,11 +265,15 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     "outbox",
   );
   for (const entry of outbox) {
+    exactKeys(entry as unknown as Record<string, unknown>, [
+      "eventId", "nonce", "ref", "workflow", "packages", "inputs", "status",
+      "claimOwner", "leaseExpiresAt", "runUrl", "createdAt", "updatedAt",
+    ], "outbox");
     if (
       !SHA256.test(entry.eventId) ||
       !isRfc3339(entry.createdAt) ||
       !isRfc3339(entry.updatedAt) ||
-      !["pending", "in-flight", "dispatched"].includes(entry.status) ||
+      !["pending", "in-flight", "dispatched", "cancelled"].includes(entry.status) ||
       entry.ref !== ref.name ||
       typeof entry.nonce !== "string" ||
       entry.nonce.length === 0 ||
@@ -294,6 +298,13 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
       throw new TypeError("outbox plan binding invalid");
     if ((entry.status === "dispatched") !== (typeof entry.runUrl === "string"))
       throw new TypeError("outbox run binding invalid");
+    if (
+      (entry.status === "in-flight") !==
+        (typeof entry.claimOwner === "string" && entry.claimOwner.length > 0) ||
+      (entry.status === "in-flight") !==
+        (typeof entry.leaseExpiresAt === "string" && isRfc3339(entry.leaseExpiresAt))
+    )
+      throw new TypeError("outbox lease binding invalid");
   }
   const occupancy = state.occupancyKeys as string[];
   sortedUnique(occupancy, "occupancy");
@@ -382,8 +393,9 @@ export function assertLegalTransition(
     if (!after) throw new TypeError("outbox deletion");
     const allowed =
       before.status === after.status ||
-      (before.status === "pending" && after.status === "in-flight") ||
-      (before.status === "in-flight" && after.status === "dispatched");
+      (before.status === "pending" && ["in-flight", "cancelled"].includes(after.status)) ||
+      (before.status === "in-flight" && after.status === "dispatched") ||
+      (before.status === "in-flight" && after.status === "in-flight");
     if (!allowed) throw new TypeError("illegal outbox transition");
     for (const field of ["eventId", "nonce", "ref", "workflow", "createdAt"] as const)
       if (before[field] !== after[field])
@@ -424,6 +436,7 @@ export async function transact(
     try {
       return await store.compareAndSwap(current.headSha, next);
     } catch (error) {
+      if (!(error instanceof StateConflictError)) throw error;
       if (attempt + 1 === retries)
         throw new StateConflictError("release-state head conflict", {
           cause: error,
@@ -453,6 +466,13 @@ export async function cancelPlan(
       status: "blocked",
       reason: "cancelled before dispatch",
       occupancyKeys: [],
+      outbox: state.outbox.map((entry) => ({
+        ...entry,
+        status: "cancelled" as const,
+        claimOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: at,
+      })),
       attempts: [
         ...state.attempts,
         { eventId, kind: "cancel", at, outcome: "accepted", detail: null },
@@ -467,5 +487,5 @@ export async function cancelPlan(
     current.plans[path] = result;
     return current;
   });
-  return { state: result, headSha: snapshot.headSha };
+  return { state: snapshot.plans[planStatePath(repository, planId)]!, headSha: snapshot.headSha };
 }

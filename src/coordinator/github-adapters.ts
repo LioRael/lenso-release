@@ -1,6 +1,5 @@
 import { createSign } from "node:crypto";
 
-import type { PlanStateV1 } from "../contracts/types.js";
 import { canonicalBytes } from "../core/canonical.js";
 import type {
   AppTokenProvider,
@@ -9,6 +8,8 @@ import type {
 } from "./dispatch.js";
 import {
   assertReleaseStateSnapshot,
+  normalizeRepository,
+  StateConflictError,
   type GitStateStore,
   type ReleaseStateSnapshot,
 } from "./state.js";
@@ -36,23 +37,23 @@ export class GithubAppTokenProvider implements AppTokenProvider {
     signer.update(unsigned);
     return `${unsigned}.${signer.sign(this.privateKey, "base64url")}`;
   }
-  async tokenFor(repository: string): Promise<string> {
+  async tokenFor(
+    repository: string,
+    permissions: Record<string, "read" | "write"> = { metadata: "read" },
+  ): Promise<string> {
+    normalizeRepository(repository);
     const response = await this.request(
       `https://api.github.com/app/installations/${this.installationId}/access_tokens`,
       {
         method: "POST",
+        redirect: "error",
         headers: {
           accept: "application/vnd.github+json",
           authorization: `Bearer ${this.jwt()}`,
         },
         body: JSON.stringify({
           repositories: [repository.split("/")[1]],
-          permissions: {
-            actions: "write",
-            administration: "write",
-            contents: "write",
-            metadata: "read",
-          },
+          permissions,
         }),
       },
     );
@@ -66,37 +67,53 @@ export class GithubAppTokenProvider implements AppTokenProvider {
 export class GithubSnapshotStore implements GitStateStore {
   constructor(
     private readonly coordinatorRepository: string,
-    private readonly token: string,
+    private readonly tokens: AppTokenProvider,
     private readonly request: Fetch = fetch,
   ) {}
-  private headers() {
+  private async headers() {
     return {
       accept: "application/vnd.github+json",
-      authorization: `Bearer ${this.token}`,
+      authorization: `Bearer ${await this.tokens.tokenFor(this.coordinatorRepository, { contents: "write", metadata: "read" })}`,
     };
   }
+  private api(path: string): string {
+    return `https://api.github.com/repos/${this.coordinatorRepository}${path}`;
+  }
+  private async readBlob(sha: string, headers: Record<string, string>): Promise<unknown> {
+    const blob = await json(await this.request(this.api(`/git/blobs/${sha}`), { headers, redirect: "error" }));
+    if (blob.encoding !== "base64" || typeof blob.content !== "string")
+      throw new TypeError("GitHub state blob encoding invalid");
+    return JSON.parse(Buffer.from(blob.content.replace(/\n/gu, ""), "base64").toString("utf8"));
+  }
+  private async treeAt(headSha: string, headers: Record<string, string>): Promise<Record<string, string>> {
+    const commit = await json(await this.request(this.api(`/git/commits/${headSha}`), { headers, redirect: "error" }));
+    const treeSha = String((commit.tree as Record<string, unknown>).sha);
+    const tree = await json(await this.request(this.api(`/git/trees/${treeSha}?recursive=1`), { headers, redirect: "error" }));
+    const entries = Array.isArray(tree.tree) ? tree.tree as Record<string, unknown>[] : [];
+    return Object.fromEntries(entries.filter((entry) => entry.type === "blob").map((entry) => [String(entry.path), String(entry.sha)]));
+  }
   async readSnapshot(): Promise<ReleaseStateSnapshot> {
+    const headers = await this.headers();
     const ref = await json(
       await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/git/ref/heads/release-state`,
-        { headers: this.headers() },
+        this.api("/git/ref/heads/release-state"),
+        { headers, redirect: "error" },
       ),
     );
     const object = ref.object as Record<string, unknown>;
     const headSha = String(object.sha);
-    const content = await json(
-      await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/contents/release-state.json?ref=${headSha}`,
-        { headers: this.headers() },
-      ),
-    );
-    const parsed = JSON.parse(
-      Buffer.from(
-        String(content.content).replace(/\n/gu, ""),
-        "base64",
-      ).toString("utf8"),
-    ) as Omit<ReleaseStateSnapshot, "headSha">;
-    const snapshot = { headSha, ...parsed };
+    const tree = await this.treeAt(headSha, headers);
+    const activeSha = tree["indexes/active-repositories.json"];
+    const occupiedSha = tree["indexes/occupied-packages.json"];
+    if (!activeSha || !occupiedSha) throw new TypeError("release-state indexes missing");
+    const planEntries = Object.entries(tree).filter(([path]) => path.startsWith("plans/") && path.endsWith(".json"));
+    const plans = Object.fromEntries(await Promise.all(planEntries.map(async ([path, sha]) => [path, await this.readBlob(sha, headers)])));
+    const snapshot = {
+      headSha,
+      plans,
+      activeRepositories: await this.readBlob(activeSha, headers) as Record<string, string>,
+      occupiedPackages: await this.readBlob(occupiedSha, headers) as Record<string, string>,
+    };
     assertReleaseStateSnapshot(snapshot);
     return snapshot;
   }
@@ -104,56 +121,61 @@ export class GithubSnapshotStore implements GitStateStore {
     expectedHeadSha: string,
     next: ReleaseStateSnapshot,
   ): Promise<ReleaseStateSnapshot> {
-    assertReleaseStateSnapshot({ ...next, headSha: expectedHeadSha });
-    const blob = await json(
-      await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/git/blobs`,
-        {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({
-            content: canonicalBytes({
-              plans: next.plans,
-              activeRepositories: next.activeRepositories,
-              occupiedPackages: next.occupiedPackages,
-            } as never).toString("utf8"),
-            encoding: "utf-8",
-          }),
-        },
-      ),
-    );
+    const headers = await this.headers();
+    const observedRef = await json(await this.request(this.api("/git/ref/heads/release-state"), { headers, redirect: "error" }));
+    if (String((observedRef.object as Record<string, unknown>).sha) !== expectedHeadSha)
+      throw new StateConflictError("release-state head conflict");
+    const oldTree = await this.treeAt(expectedHeadSha, headers);
+    const materialized = structuredClone(next);
+    for (const [path, state] of Object.entries(materialized.plans))
+      state.previousBlobSha = oldTree[path] ?? null;
+    assertReleaseStateSnapshot({ ...materialized, headSha: expectedHeadSha });
+    const createBlob = async (value: unknown) => json(await this.request(this.api("/git/blobs"), {
+      method: "POST", headers, redirect: "error",
+      body: JSON.stringify({ content: canonicalBytes(value as never).toString("utf8"), encoding: "utf-8" }),
+    }));
+    const treeEntries: Record<string, unknown>[] = [];
+    for (const [path, state] of Object.entries(materialized.plans)) {
+      const blob = await createBlob(state);
+      treeEntries.push({ path, mode: "100644", type: "blob", sha: blob.sha });
+    }
+    for (const [path] of Object.entries(oldTree))
+      if (path.startsWith("plans/") && path.endsWith(".json") && !materialized.plans[path])
+        treeEntries.push({ path, mode: "100644", type: "blob", sha: null });
+    for (const [path, value] of [
+      ["indexes/active-repositories.json", materialized.activeRepositories],
+      ["indexes/occupied-packages.json", materialized.occupiedPackages],
+    ] as const) {
+      const blob = await createBlob(value);
+      treeEntries.push({ path, mode: "100644", type: "blob", sha: blob.sha });
+    }
     const base = await json(
       await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/git/commits/${expectedHeadSha}`,
-        { headers: this.headers() },
+        this.api(`/git/commits/${expectedHeadSha}`),
+        { headers, redirect: "error" },
       ),
     );
     const tree = await json(
       await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/git/trees`,
+        this.api("/git/trees"),
         {
           method: "POST",
-          headers: this.headers(),
+          redirect: "error",
+          headers,
           body: JSON.stringify({
             base_tree: (base.tree as Record<string, unknown>).sha,
-            tree: [
-              {
-                path: "release-state.json",
-                mode: "100644",
-                type: "blob",
-                sha: blob.sha,
-              },
-            ],
+            tree: treeEntries,
           }),
         },
       ),
     );
     const commit = await json(
       await this.request(
-        `https://api.github.com/repos/${this.coordinatorRepository}/git/commits`,
+        this.api("/git/commits"),
         {
           method: "POST",
-          headers: this.headers(),
+          redirect: "error",
+          headers,
           body: JSON.stringify({
             message: "chore: update atomic release state",
             tree: tree.sha,
@@ -163,17 +185,18 @@ export class GithubSnapshotStore implements GitStateStore {
       ),
     );
     const update = await this.request(
-      `https://api.github.com/repos/${this.coordinatorRepository}/git/refs/heads/release-state`,
+      this.api("/git/refs/heads/release-state"),
       {
         method: "PATCH",
-        headers: this.headers(),
+        redirect: "error",
+        headers,
         body: JSON.stringify({ sha: commit.sha, force: false }),
       },
     );
     if (update.status === 409 || update.status === 422)
-      throw new Error("release-state head conflict");
+      throw new StateConflictError("release-state head conflict");
     if (!update.ok) throw new Error(`GitHub ref update ${update.status}`);
-    return { ...structuredClone(next), headSha: String(commit.sha) };
+    return { ...materialized, headSha: String(commit.sha) };
   }
 }
 
@@ -188,6 +211,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       await this.request(
         `https://api.github.com/repos/${repository}/actions/runs?event=workflow_dispatch&per_page=100`,
         {
+          redirect: "error",
           headers: {
             accept: "application/vnd.github+json",
             authorization: `Bearer ${appToken}`,
@@ -198,9 +222,8 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     const runs = Array.isArray(body.workflow_runs)
       ? (body.workflow_runs as Record<string, unknown>[])
       : [];
-    const run = runs.find((item) =>
-      String(item.display_title).includes(eventId),
-    );
+    const runName = `lenso-publish-requested:${eventId}`;
+    const run = runs.find((item) => String(item.display_title) === runName);
     return run ? { runUrl: String(run.html_url) } : null;
   }
   async dispatch(
@@ -212,6 +235,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       `https://api.github.com/repos/${command.repository}/actions/workflows/${encodeURIComponent(command.workflow)}/dispatches`,
       {
         method: "POST",
+        redirect: "error",
         headers: {
           accept: "application/vnd.github+json",
           authorization: `Bearer ${appToken}`,
@@ -220,9 +244,11 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       },
     );
     if (!response.ok) throw new Error(`workflow dispatch ${response.status}`);
-    return {
-      runUrl: `https://github.com/${command.repository}/actions?query=${encodeURIComponent(eventId)}`,
-    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const observed = await this.findByEventId(command.repository, eventId, appToken);
+      if (observed) return observed;
+    }
+    throw new Error(`workflow run ${eventId} is not yet visible`);
   }
 }
 
@@ -232,7 +258,6 @@ export function parseCoordinatorEnvironment(env: NodeJS.ProcessEnv): {
   installationId: number;
   privateKey: string;
   actor: string;
-  token: string;
 } {
   const required = (name: string) => {
     const value = env[name];
@@ -251,6 +276,5 @@ export function parseCoordinatorEnvironment(env: NodeJS.ProcessEnv): {
     installationId: integer("LENSO_GITHUB_APP_INSTALLATION_ID"),
     privateKey: required("LENSO_GITHUB_APP_PRIVATE_KEY").replace(/\\n/gu, "\n"),
     actor: required("LENSO_GITHUB_APP_ACTOR"),
-    token: required("LENSO_COORDINATOR_TOKEN"),
   };
 }
