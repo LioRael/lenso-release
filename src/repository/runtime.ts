@@ -175,9 +175,14 @@ async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ pa
     const name = item.id.slice(4);
     const { stdout } = await execFile("npm", ["pack", "--json", "--ignore-scripts"], { cwd });
     const result = JSON.parse(stdout) as Array<{ filename: string; name: string; version: string; integrity: string; shasum: string }>;
-    if (result.length !== 1 || result[0]?.name !== name || result[0].version !== item.version || !result[0].integrity || !/^[0-9a-f]{40}$/u.test(result[0].shasum)) fail("npm archive identity mismatch");
-    const path = join(cwd, result[0].filename);
-    return { path, bytes: await readFile(path) };
+    const packed = result[0];
+    if (result.length !== 1 || !packed || packed.name !== name || packed.version !== item.version || basename(packed.filename) !== packed.filename || !/^[a-z0-9][a-z0-9._-]*\.tgz$/u.test(packed.filename) || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(packed.integrity) || !/^[0-9a-f]{40}$/u.test(packed.shasum)) fail("npm archive identity mismatch");
+    const path = join(cwd, packed.filename); const bytes = await readFile(path);
+    const sri = `sha512-${createHash("sha512").update(bytes).digest("base64")}`; const shasum = createHash("sha1").update(bytes).digest("hex");
+    if (sri !== packed.integrity || shasum !== packed.shasum) fail("npm archive digest mismatch");
+    const manifest = JSON.parse((await execFile("tar", ["-xOf", path, "package/package.json"])).stdout) as { name?: string; version?: string };
+    if (manifest.name !== name || manifest.version !== item.version) fail("npm archive manifest identity mismatch");
+    return { path, bytes };
   }
   const name = item.id.slice(6);
   await execFile("cargo", ["package", "--locked", "-p", name], { cwd });
