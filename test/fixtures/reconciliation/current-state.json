@@ -1,0 +1,34 @@
+{
+  "schema": "lenso.reconciliation-snapshot.v1",
+  "asOf": "2026-07-11T00:00:00.000Z",
+  "known": [
+    "npm:@lenso/auth-console",
+    "npm:@lenso/remote-module-kit",
+    "npm:@lenso/service-kit"
+  ],
+  "source": {
+    "npm:@lenso/auth-console": "0.1.4",
+    "npm:@lenso/remote-module-kit": "0.1.3",
+    "npm:@lenso/service-kit": "0.1.0"
+  },
+  "registry": {
+    "npm:@lenso/auth-console": "0.1.3",
+    "npm:@lenso/remote-module-kit": { "missing": true, "canonicalUrl": "https://www.npmjs.com/package/%40lenso%2Fremote-module-kit/v/0.1.3" },
+    "npm:@lenso/service-kit": { "missing": true, "canonicalUrl": "https://www.npmjs.com/package/%40lenso%2Fservice-kit/v/0.1.0" }
+  },
+  "tag": {
+    "npm:@lenso/auth-console": "0.1.4",
+    "npm:@lenso/remote-module-kit": "0.1.3",
+    "npm:@lenso/service-kit": "0.1.0"
+  },
+  "embeddedCatalog": {
+    "npm:@lenso/auth-console": "0.1.4",
+    "npm:@lenso/remote-module-kit": "0.1.3",
+    "npm:@lenso/service-kit": "0.1.0"
+  },
+  "workerCatalog": {
+    "npm:@lenso/auth-console": "0.1.4",
+    "npm:@lenso/remote-module-kit": "0.1.3",
+    "npm:@lenso/service-kit": "0.1.0"
+  }
+}

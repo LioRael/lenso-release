@@ -1,0 +1,57 @@
+{
+  "$id": "https://lenso.dev/schemas/lenso.reconciliation-report.v1.schema.json",
+  "title": "Lenso reconciliation report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "observedAt", "components", "issues"],
+  "properties": {
+    "schema": { "const": "lenso.reconciliation-report.v1" },
+    "status": { "enum": ["aligned", "drift", "blocked", "observation-failure"] },
+    "observedAt": { "type": "string", "minLength": 1 },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source", "registry", "tag", "embeddedCatalog", "workerCatalog"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "source": { "$ref": "#/$defs/observation" },
+          "registry": { "$ref": "#/$defs/observation" },
+          "tag": { "$ref": "#/$defs/observation" },
+          "embeddedCatalog": { "$ref": "#/$defs/observation" },
+          "workerCatalog": { "$ref": "#/$defs/observation" }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "componentId", "detail"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["drift", "blocked", "observation-failure"] },
+          "componentId": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "version", "digest", "publishedAt", "canonicalUrl", "failure"],
+      "properties": {
+        "state": { "enum": ["present", "missing", "failure"] },
+        "version": { "type": ["string", "null"] },
+        "digest": { "type": ["string", "null"] },
+        "publishedAt": { "type": ["string", "null"] },
+        "canonicalUrl": { "type": ["string", "null"] },
+        "failure": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

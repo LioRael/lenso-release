@@ -12,6 +12,7 @@ import {
   assertSystemCandidate,
   assertSystemChannel,
   assertSystemRelease,
+  assertReconciliationReport,
 } from "../../src/contracts/validate.js";
 import { sha256 as contentSha256, type JsonValue } from "../../src/core/canonical.js";
 
@@ -238,6 +239,13 @@ const contracts = [
   ["lenso.system-release.v1.schema.json", assertSystemRelease, release],
   ["lenso.system-channel.v1.schema.json", assertSystemChannel, channel],
   ["lenso.framework-lock.v1.schema.json", assertFrameworkLock, lock],
+  ["lenso.reconciliation-report.v1.schema.json", assertReconciliationReport, {
+    schema: "lenso.reconciliation-report.v1",
+    status: "aligned",
+    observedAt: "2026-07-11T00:00:00.000Z",
+    components: [],
+    issues: [],
+  }],
 ] as const;
 
 const schemaDocuments = contracts.map(([file]) =>

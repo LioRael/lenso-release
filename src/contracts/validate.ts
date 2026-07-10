@@ -6,8 +6,48 @@ import type {
   SystemCandidateV1,
   SystemChannelV1,
   SystemReleaseV1,
+  ReconciliationReportV1,
 } from "./types.js";
 import { sha256 as canonicalSha256, type JsonValue } from "../core/canonical.js";
+
+export function assertReconciliationReport(value: unknown): asserts value is ReconciliationReportV1 {
+  const root = record(value, "report", ["schema", "status", "observedAt", "components", "issues"]);
+  literal(root.schema, "report.schema", "lenso.reconciliation-report.v1");
+  enumeration(root.status, "report.status", ["aligned", "drift", "blocked", "observation-failure"] as const);
+  const observedAt = string(root.observedAt, "report.observedAt");
+  if (!Number.isFinite(Date.parse(observedAt))) fail("report.observedAt", "must be an RFC 3339 timestamp");
+  const components = array(root.components, "report.components", true);
+  let previousId = "";
+  for (const [index, component] of components.entries()) {
+    const item = record(component, `report.components[${index}]`, ["id", "source", "registry", "tag", "embeddedCatalog", "workerCatalog"]);
+    const id = string(item.id, `report.components[${index}].id`);
+    if (id <= previousId) fail(`report.components[${index}].id`, "must be unique and sorted");
+    previousId = id;
+    for (const surface of ["source", "registry", "tag", "embeddedCatalog", "workerCatalog"] as const) {
+      const observation = record(item[surface], `report.components[${index}].${surface}`, ["state", "version", "digest", "publishedAt", "canonicalUrl", "failure"]);
+      const state = enumeration(observation.state, `report.components[${index}].${surface}.state`, ["present", "missing", "failure"] as const);
+      for (const field of ["version", "digest", "publishedAt", "canonicalUrl", "failure"] as const) {
+        if (observation[field] !== null && typeof observation[field] !== "string") fail(`report.components[${index}].${surface}.${field}`, "must be a string or null");
+      }
+      if (state === "present" && typeof observation.version !== "string") fail(`report.components[${index}].${surface}.version`, "is required when present");
+      if (state === "failure" && typeof observation.failure !== "string") fail(`report.components[${index}].${surface}.failure`, "is required on failure");
+    }
+  }
+  const issues = array(root.issues, "report.issues", true);
+  for (const [index, issue] of issues.entries()) {
+    const item = record(issue, `report.issues[${index}]`, ["code", "severity", "componentId", "detail"]);
+    string(item.code, `report.issues[${index}].code`);
+    enumeration(item.severity, `report.issues[${index}].severity`, ["drift", "blocked", "observation-failure"] as const);
+    string(item.componentId, `report.issues[${index}].componentId`);
+    string(item.detail, `report.issues[${index}].detail`);
+  }
+  const expected = issues.some((issue) => (issue as Record<string, unknown>).severity === "observation-failure")
+    ? "observation-failure"
+    : issues.some((issue) => (issue as Record<string, unknown>).severity === "blocked")
+      ? "blocked"
+      : issues.length > 0 ? "drift" : "aligned";
+  if (root.status !== expected) fail("report.status", `must equal derived status ${expected}`);
+}
 
 type RecordValue = Record<string, unknown>;
 

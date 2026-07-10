@@ -181,3 +181,34 @@ type FrameworkLockBase = {
 export type FrameworkLockV1 =
   | (FrameworkLockBase & { channel: "stable"; manifest: SystemReleaseV1 })
   | (FrameworkLockBase & { channel: "next"; manifest: SystemCandidateV1 });
+
+export type ReconciliationStatus = "aligned" | "drift" | "blocked" | "observation-failure";
+export type ReconciliationIssue = {
+  code: string;
+  severity: Exclude<ReconciliationStatus, "aligned">;
+  componentId: string;
+  detail: string;
+};
+export type ReconciliationObservation = {
+  state: "present" | "missing" | "failure";
+  version: string | null;
+  digest: string | null;
+  publishedAt: string | null;
+  canonicalUrl: string | null;
+  failure: string | null;
+};
+export type ReconciliationComponent = {
+  id: string;
+  source: ReconciliationObservation;
+  registry: ReconciliationObservation;
+  tag: ReconciliationObservation;
+  embeddedCatalog: ReconciliationObservation;
+  workerCatalog: ReconciliationObservation;
+};
+export type ReconciliationReportV1 = {
+  schema: "lenso.reconciliation-report.v1";
+  status: ReconciliationStatus;
+  observedAt: string;
+  components: ReconciliationComponent[];
+  issues: ReconciliationIssue[];
+};
