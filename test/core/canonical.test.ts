@@ -36,4 +36,24 @@ describe("canonical JSON", () => {
       "canonical JSON cannot encode"
     );
   });
+
+  it("rejects accessor-backed array indices", () => {
+    const value: unknown[] = [];
+    Object.defineProperty(value, "0", {
+      enumerable: true,
+      get: () => true,
+    });
+
+    expect(() => canonicalBytes(value as JsonValue)).toThrow("non-JSON array");
+  });
+
+  it.each([
+    ["subclass", new (class extends Array<JsonValue> {})(true)],
+    [
+      "custom prototype",
+      Object.setPrototypeOf([true], Object.create(Array.prototype)),
+    ],
+  ])("rejects arrays with a %s", (_name, value) => {
+    expect(() => canonicalBytes(value as JsonValue)).toThrow("non-JSON array");
+  });
 });

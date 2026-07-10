@@ -17,8 +17,23 @@ function serialize(value: unknown): string {
     throw new TypeError("canonical JSON cannot encode a non-finite number");
   }
   if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new TypeError("canonical JSON cannot encode a non-JSON array");
+    }
+
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    if (
+      !lengthDescriptor ||
+      lengthDescriptor.enumerable ||
+      !("value" in lengthDescriptor) ||
+      !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0
+    ) {
+      throw new TypeError("canonical JSON cannot encode a non-JSON array");
+    }
+    const length = lengthDescriptor.value as number;
     const keys = Reflect.ownKeys(value);
-    const expectedKeyCount = value.length + 1;
+    const expectedKeyCount = length + 1;
     if (
       keys.length !== expectedKeyCount ||
       !keys.every((key) =>
@@ -27,12 +42,22 @@ function serialize(value: unknown): string {
           Number.isSafeInteger(Number(key)) &&
           String(Number(key)) === key &&
           Number(key) >= 0 &&
-          Number(key) < value.length)
+          Number(key) < length)
       )
     ) {
       throw new TypeError("canonical JSON cannot encode a non-JSON array");
     }
-    return `[${value.map((item) => serialize(item)).join(",")}]`;
+
+    let result = "[";
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor?.enumerable || !("value" in descriptor)) {
+        throw new TypeError("canonical JSON cannot encode a non-JSON array");
+      }
+      if (index > 0) result += ",";
+      result += serialize(descriptor.value);
+    }
+    return `${result}]`;
   }
   if (typeof value === "object") {
     const prototype = Object.getPrototypeOf(value);
