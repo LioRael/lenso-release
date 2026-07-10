@@ -19,7 +19,14 @@ const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
 const template = join(root, "templates/repository");
 const temporary: string[] = [];
-afterEach(async () => { await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await Promise.all(temporary.splice(0).map(async (path) => {
+    const resolved = resolve(path); const prefix = `${resolve(tmpdir())}/lenso-template-test-`;
+    if (!resolved.startsWith(prefix) || resolved === resolve(process.cwd()) || resolve(process.cwd()).startsWith(`${resolved}/`)) throw new Error(`refusing unsafe test cleanup: ${resolved}`);
+    await rm(resolved, { recursive: true, force: true });
+  }));
+  await expect(lstat(root)).resolves.toMatchObject({});
+});
 async function temp(): Promise<string> { const path = await mkdtemp(join(tmpdir(), "lenso-template-test-")); temporary.push(path); return path; }
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
 
@@ -127,7 +134,7 @@ describe("publisher preflight execution gate", () => {
     const requests: { method?: string; url?: string; body: string }[] = []; const archive = Buffer.from("reviewed archive"); let base = "";
     const server = createServer((request, response) => { let body = ""; request.on("data", (chunk) => { body += chunk; }); request.on("end", () => { requests.push({ method: request.method, url: request.url, body }); response.setHeader("content-type", "application/json");
       if (request.url === "/artifact.tgz") { response.setHeader("content-type", "application/octet-stream"); response.end(archive); }
-      else if (request.url?.startsWith("/registry/")) response.end(JSON.stringify({ date: "2026-07-11T00:00:00.000Z", dist: { integrity: "sha512-ZmFrZQ==", tarball: `${base}/artifact.tgz` } }));
+      else if (request.url?.startsWith("/registry/")) response.end(JSON.stringify({ date: "2026-07-11T00:00:00.000Z", dist: { integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`, tarball: `${base}/artifact.tgz` } }));
       else if (request.url?.includes("/git/ref/tags/")) { response.statusCode = 404; response.end("{}"); }
       else if (request.url?.endsWith("/git/tags")) response.end(JSON.stringify({ sha: "a".repeat(40) }));
       else if (request.url?.endsWith("/git/refs")) response.end("{}");

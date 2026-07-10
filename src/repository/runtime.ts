@@ -152,7 +152,7 @@ async function npmObservation(name: string, version: string): Promise<RegistryOb
   if (!tarball || !integrity || !publishedAt) fail("npm registry observation incomplete");
   const artifact = await fetch(tarball, { redirect: "error" });
   if (!artifact.ok) fail(`npm tarball fetch ${artifact.status}`);
-  return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity, url: `${base}/${encoded}/${version}`, publishedAt };
+  return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity, url: tarball, publishedAt };
 }
 async function cargoObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_CRATES_API_URL ?? "https://crates.io";
@@ -165,7 +165,7 @@ async function cargoObservation(name: string, version: string): Promise<Registry
   const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
   const artifact = await fetch(download, { redirect: "error" });
   if (!artifact.ok || !checksum || !publishedAt) fail("crates registry observation incomplete");
-  return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: `sha256-${checksum}`, url: `${base}/crates/${encodeURIComponent(name)}/${version}`, publishedAt };
+  return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
 }
 async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ path: string; bytes: Buffer }> {
   if (item.id.startsWith("npm:")) {
@@ -207,14 +207,16 @@ async function createAttestation(artifactPath: string, artifactBytes: Uint8Array
   } finally { if (cleanup) await rm(cleanup, { recursive: true, force: true }); }
 }
 function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment): ComponentReceiptV1 {
+  const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length);
+  const artifactName = `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
   const identity = {
     schema: "lenso.component-receipt.v1" as const,
     planId: plan.planId, packageId: item.id as ComponentReceiptV1["packageId"], version: item.version,
     repository: plan.repository, sourceCommit: environment.releaseCommit,
     packedSha256: hash(observation.bytes), registryIntegrity: observation.integrity, registryUrl: observation.url,
-    provenanceUrl, provenanceSubject: { name: basename(new URL(observation.url).pathname), digest: hash(observation.bytes) },
+    provenanceUrl, provenanceSubject: { name: artifactName, digest: hash(observation.bytes) },
     workflowUrl: environment.runUrl,
-    tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(item.id.slice(item.id.indexOf(":") + 1))}%40${item.version}`,
+    tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(`${componentName}@${item.version}`)}`,
     publishedAt: observation.publishedAt,
   };
   return { ...identity, receiptId: sha256(identity as unknown as JsonValue) as Sha256 };
@@ -264,6 +266,7 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
     }
     const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
     const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment);
+    assertComponentReceipt(receipt);
     await createImmutableTag(receipt, environment);
     await dispatchReceipt(receipt, environment);
     receipts.push(receipt);
@@ -271,7 +274,8 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
   return receipts;
 }
 async function createImmutableTag(receipt: ComponentReceiptV1, environment: RuntimeEnvironment): Promise<void> {
-  const tag = `${receipt.packageId.slice(receipt.packageId.indexOf(":") + 1)}@${receipt.version}`;
+  const name = receipt.packageId.startsWith("npm:@lenso/") ? receipt.packageId.slice("npm:@lenso/".length) : receipt.packageId.slice("cargo:".length);
+  const tag = `${name}@${receipt.version}`;
   const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
   const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
   const existing = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers: auth, redirect: "error" });
@@ -291,7 +295,8 @@ async function createImmutableTag(receipt: ComponentReceiptV1, environment: Runt
   if (!ref.ok) fail(`tag ref creation ${ref.status}`);
 }
 async function readExistingReceipt(item: PublishSelection, environment: RuntimeEnvironment): Promise<ComponentReceiptV1 | null> {
-  const tag = `${item.id.slice(item.id.indexOf(":") + 1)}@${item.version}`; const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length);
+  const tag = `${name}@${item.version}`; const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
   const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
   const ref = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers, redirect: "error" });
   if (ref.status === 404) return null; if (!ref.ok) fail(`tag observation ${ref.status}`);
