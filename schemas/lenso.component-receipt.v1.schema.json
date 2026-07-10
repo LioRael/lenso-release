@@ -1,0 +1,39 @@
+{
+  "$id": "https://lenso.dev/schemas/lenso.component-receipt.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
+  "properties": {
+    "schema": { "const": "lenso.component-receipt.v1" },
+    "receiptId": { "$ref": "#/$defs/sha256" },
+    "planId": { "$ref": "#/$defs/sha256" },
+    "packageId": { "$ref": "#/$defs/nonEmpty" },
+    "version": { "$ref": "#/$defs/semver" },
+    "repository": { "$ref": "#/$defs/nonEmpty" },
+    "sourceCommit": { "$ref": "#/$defs/oid" },
+    "packedSha256": { "$ref": "#/$defs/sha256" },
+    "registryIntegrity": { "$ref": "#/$defs/nonEmpty" },
+    "registryUrl": { "$ref": "#/$defs/httpsUrl" },
+    "provenanceUrl": { "$ref": "#/$defs/httpsUrl" },
+    "provenanceSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmpty" },
+        "digest": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "workflowUrl": { "$ref": "#/$defs/httpsUrl" },
+    "tagUrl": { "$ref": "#/$defs/httpsUrl" },
+    "publishedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "oid": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "httpsUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" }
+  }
+}

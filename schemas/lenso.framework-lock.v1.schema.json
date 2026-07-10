@@ -1,0 +1,37 @@
+{
+  "$id": "https://lenso.dev/schemas/lenso.framework-lock.v1.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "systemVersion", "channel", "manifestSha256", "resolvedAt", "manifest"],
+      "properties": {
+        "schema": { "const": "lenso.framework-lock.v1" },
+        "systemVersion": { "$ref": "#/$defs/stableSemver" },
+        "channel": { "const": "stable" },
+        "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "resolvedAt": { "$ref": "#/$defs/timestamp" },
+        "manifest": { "$ref": "https://lenso.dev/schemas/lenso.system-release.v1.schema.json" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "systemVersion", "channel", "manifestSha256", "resolvedAt", "manifest"],
+      "properties": {
+        "schema": { "const": "lenso.framework-lock.v1" },
+        "systemVersion": { "$ref": "#/$defs/candidateSemver" },
+        "channel": { "const": "next" },
+        "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "resolvedAt": { "$ref": "#/$defs/timestamp" },
+        "manifest": { "$ref": "https://lenso.dev/schemas/lenso.system-candidate.v1.schema.json" }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "stableSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "candidateSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-next\\.c[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" }
+  }
+}

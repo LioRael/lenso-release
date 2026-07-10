@@ -1,0 +1,69 @@
+{
+  "$id": "https://lenso.dev/schemas/lenso.release-plan.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "planId", "repository", "sourceCommit", "tegamiVersion", "publisher", "packages"],
+  "properties": {
+    "schema": { "const": "lenso.release-plan.v1" },
+    "planId": { "$ref": "#/$defs/sha256" },
+    "repository": { "$ref": "#/$defs/nonEmpty" },
+    "sourceCommit": { "$ref": "#/$defs/oid" },
+    "tegamiVersion": { "const": "1.2.5" },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "workflowSha256", "sharedRevision", "sharedBundleSha256", "runner", "node", "rust"],
+      "properties": {
+        "workflow": { "type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9._/-]+\\.ya?ml$" },
+        "workflowSha256": { "$ref": "#/$defs/sha256" },
+        "sharedRevision": { "$ref": "#/$defs/oid" },
+        "sharedBundleSha256": { "$ref": "#/$defs/sha256" },
+        "runner": { "type": "string", "pattern": "^(?!.*(?:^|-)latest$)[A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]*$" },
+        "node": { "$ref": "#/$defs/stableSemver" },
+        "rust": { "$ref": "#/$defs/stableSemver" }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "$comment": "Package IDs must be unique; assertion validation enforces uniqueness by id.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "previousVersion", "nextVersion", "bump", "releaseGroup", "userFacing", "dependencies"],
+        "properties": {
+          "id": { "$ref": "#/$defs/nonEmpty" },
+          "previousVersion": { "$ref": "#/$defs/semver" },
+          "nextVersion": { "$ref": "#/$defs/semver" },
+          "bump": { "enum": ["patch", "minor", "major"] },
+          "releaseGroup": { "$ref": "#/$defs/nonEmpty" },
+          "userFacing": { "type": "boolean" },
+          "dependencies": {
+            "type": "array",
+            "uniqueItems": true,
+            "$comment": "Dependency IDs must be unique within a package; assertion validation enforces uniqueness by id.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "requirement", "resolvedVersion", "source"],
+              "properties": {
+                "id": { "$ref": "#/$defs/nonEmpty" },
+                "requirement": { "$ref": "#/$defs/nonEmpty" },
+                "resolvedVersion": { "$ref": "#/$defs/semver" },
+                "source": { "enum": ["registry", "plan"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "oid": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "stableSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" }
+  }
+}

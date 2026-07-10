@@ -1,0 +1,33 @@
+{
+  "$id": "https://lenso.dev/schemas/lenso.system-release.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "systemVersion", "createdAt", "repositories", "packages", "artifacts", "catalog", "requirements", "receipts", "systemSmokeRunUrls"],
+  "properties": {
+    "schema": { "const": "lenso.system-release.v1" },
+    "systemVersion": { "$ref": "#/$defs/stableSemver" },
+    "createdAt": { "$ref": "#/$defs/timestamp" },
+    "repositories": { "type": "array", "minItems": 1, "uniqueItems": true, "$comment": "Repository names must be unique; assertion validation enforces uniqueness by repository.", "items": { "$ref": "#/$defs/repository" } },
+    "packages": { "type": "array", "minItems": 1, "uniqueItems": true, "$comment": "Package IDs must be unique; assertion validation enforces uniqueness by id.", "items": { "$ref": "#/$defs/package" } },
+    "artifacts": { "type": "array", "uniqueItems": true, "$comment": "Artifact IDs must be unique; assertion validation enforces uniqueness by id.", "items": { "$ref": "#/$defs/artifact" } },
+    "catalog": { "$ref": "#/$defs/catalog" },
+    "requirements": { "$ref": "#/$defs/requirements" },
+    "receipts": { "type": "array", "minItems": 1, "uniqueItems": true, "$comment": "Receipt IDs must be unique; assertion validation enforces uniqueness by receiptId.", "items": { "$ref": "#/$defs/receiptSummary" } },
+    "systemSmokeRunUrls": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/httpsUrl" } }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "oid": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "stableSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "httpsUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" },
+    "repository": { "type": "object", "additionalProperties": false, "required": ["repository", "releaseCommit"], "properties": { "repository": { "$ref": "#/$defs/nonEmpty" }, "releaseCommit": { "$ref": "#/$defs/oid" } } },
+    "package": { "type": "object", "additionalProperties": false, "required": ["id", "version", "tagUrl", "registryUrl", "registryIntegrity"], "properties": { "id": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" }, "tagUrl": { "$ref": "#/$defs/httpsUrl" }, "registryUrl": { "$ref": "#/$defs/httpsUrl" }, "registryIntegrity": { "$ref": "#/$defs/nonEmpty" } } },
+    "artifact": { "type": "object", "additionalProperties": false, "required": ["id", "url", "sha256", "provenanceUrl"], "properties": { "id": { "$ref": "#/$defs/nonEmpty" }, "url": { "$ref": "#/$defs/httpsUrl" }, "sha256": { "$ref": "#/$defs/sha256" }, "provenanceUrl": { "$ref": "#/$defs/httpsUrl" } } },
+    "catalog": { "type": "object", "additionalProperties": false, "required": ["url", "sha256"], "properties": { "url": { "$ref": "#/$defs/httpsUrl" }, "sha256": { "$ref": "#/$defs/sha256" } } },
+    "requirements": { "type": "object", "additionalProperties": false, "required": ["node", "rust"], "properties": { "node": { "$ref": "#/$defs/nonEmpty" }, "rust": { "$ref": "#/$defs/nonEmpty" } } },
+    "receiptSummary": { "type": "object", "additionalProperties": false, "required": ["receiptId", "packageId", "version", "sourceCommit", "packedSha256", "tagUrl"], "properties": { "receiptId": { "$ref": "#/$defs/sha256" }, "packageId": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" }, "sourceCommit": { "$ref": "#/$defs/oid" }, "packedSha256": { "$ref": "#/$defs/sha256" }, "tagUrl": { "$ref": "#/$defs/httpsUrl" } } }
+  }
+}
