@@ -51,6 +51,7 @@ describe("repository template workflow contracts", () => {
     expect(cargo).toContain("official crates.io token action did not provide a token");
     await expect(execute("sh", ["-n", join(template, "scripts/publish-cargo.sh")])).resolves.toBeDefined();
     await expect(execute("sh", [join(template, "scripts/publish-cargo.sh")], { cwd: template, env: { PATH: process.env.PATH } })).rejects.toThrow();
+    await expect(lstat(join(template, ".lenso-release/runtime/node_modules/tegami/package.json"))).resolves.toMatchObject({});
   });
 });
 

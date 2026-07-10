@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -22,6 +23,25 @@ for (const path of modules) {
   await cp(join(root, "dist/src", path), join(output, "lib", path));
 }
 await cp(join(root, "config/components.yaml"), join(output, "components.yaml"));
+const copied = new Set();
+async function vendor(name, from = join(root, "package.json")) {
+  if (copied.has(name)) return; copied.add(name);
+  const require = createRequire(from); const entry = require.resolve(name); let directory = dirname(entry);
+  while (directory !== dirname(directory)) {
+    try {
+      const packageFile = join(directory, "package.json"); const pkg = JSON.parse(await readFile(packageFile, "utf8"));
+      if (pkg.name === name) {
+        const destination = join(output, "node_modules", name); await mkdir(dirname(destination), { recursive: true });
+        await cp(await realpath(directory), destination, { recursive: true, dereference: true });
+        for (const dependency of Object.keys(pkg.dependencies ?? {}).sort()) await vendor(dependency, packageFile);
+        return;
+      }
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    directory = dirname(directory);
+  }
+  throw new Error(`cannot resolve runtime dependency ${name}`);
+}
+await vendor("tegami"); await vendor("yaml");
 const files = [];
 async function walk(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
