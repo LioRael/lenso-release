@@ -49,7 +49,11 @@ async function walk(directory) {
     if (entry.isDirectory()) await walk(path);
     else if (entry.name !== "manifest.json") {
       const rel = relative(join(root, "templates/repository"), path).replaceAll("\\", "/");
-      const bytes = await readFile(path);
+      let bytes = await readFile(path);
+      if (/\.(?:c?m?js|json|md|ts|ya?ml|toml|txt)$/u.test(entry.name)) {
+        const normalized = bytes.toString("utf8").replace(/[ \t]+$/gmu, "").replace(/\n*$/u, "\n");
+        bytes = Buffer.from(normalized); await writeFile(path, bytes);
+      }
       files.push({ path: rel, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` });
     }
   }
