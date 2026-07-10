@@ -4,6 +4,8 @@ import { canonicalBytes } from "../core/canonical.js";
 import type {
   AppTokenProvider,
   DispatchCommand,
+  DispatchRunContext,
+  ObservedWorkflowRun,
   WorkflowDispatcher,
 } from "./dispatch.js";
 import {
@@ -203,13 +205,14 @@ export class GithubSnapshotStore implements GitStateStore {
 export class GithubWorkflowDispatcher implements WorkflowDispatcher {
   constructor(private readonly request: Fetch = fetch) {}
   async findByEventId(
-    repository: string,
+    context: DispatchRunContext,
     eventId: string,
     appToken: string,
-  ): Promise<{ runUrl: string } | null> {
+  ): Promise<ObservedWorkflowRun | null> {
+    normalizeRepository(context.repository);
     const body = await json(
       await this.request(
-        `https://api.github.com/repos/${repository}/actions/runs?event=workflow_dispatch&per_page=100`,
+        `https://api.github.com/repos/${context.repository}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.ref)}&per_page=100`,
         {
           redirect: "error",
           headers: {
@@ -223,14 +226,21 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       ? (body.workflow_runs as Record<string, unknown>[])
       : [];
     const runName = `lenso-publish-requested:${eventId}`;
-    const run = runs.find((item) => String(item.display_title) === runName);
-    return run ? { runUrl: String(run.html_url) } : null;
+    const run = runs.find((item) =>
+      String(item.display_title) === runName &&
+      item.event === "workflow_dispatch" &&
+      item.head_branch === context.ref &&
+      item.head_sha === context.sha &&
+      (item.repository as Record<string, unknown> | undefined)?.full_name === context.repository &&
+      String(item.html_url) === `https://github.com/${context.repository}/actions/runs/${String(item.id)}`,
+    );
+    return run ? { ...context, event: "workflow_dispatch", runName, runUrl: String(run.html_url) } : null;
   }
   async dispatch(
     command: DispatchCommand,
     eventId: string,
     appToken: string,
-  ): Promise<{ runUrl: string }> {
+  ): Promise<ObservedWorkflowRun> {
     const response = await this.request(
       `https://api.github.com/repos/${command.repository}/actions/workflows/${encodeURIComponent(command.workflow)}/dispatches`,
       {
@@ -245,7 +255,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     );
     if (!response.ok) throw new Error(`workflow dispatch ${response.status}`);
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const observed = await this.findByEventId(command.repository, eventId, appToken);
+      const observed = await this.findByEventId({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, appToken);
       if (observed) return observed;
     }
     throw new Error(`workflow run ${eventId} is not yet visible`);

@@ -29,17 +29,28 @@ export type DispatchCommand = {
   ref: string;
   inputs: Record<(typeof PUBLISH_INPUT_FIELDS)[number], string>;
 };
+export type DispatchRunContext = {
+  repository: string;
+  workflow: string;
+  ref: string;
+  sha: string;
+};
+export type ObservedWorkflowRun = DispatchRunContext & {
+  event: "workflow_dispatch";
+  runName: string;
+  runUrl: string;
+};
 export type WorkflowDispatcher = {
   findByEventId(
-    repository: string,
+    context: DispatchRunContext,
     eventId: string,
     appToken: string,
-  ): Promise<{ runUrl: string } | null>;
+  ): Promise<ObservedWorkflowRun | null>;
   dispatch(
     command: DispatchCommand,
     eventId: string,
     appToken: string,
-  ): Promise<{ runUrl: string }>;
+  ): Promise<ObservedWorkflowRun>;
 };
 export type AppTokenProvider = {
   tokenFor(
@@ -156,8 +167,9 @@ export async function runDispatchOutbox(
     actions: "write",
     metadata: "read",
   });
-  const existing = await dispatcher.findByEventId(repository, entry.eventId, token);
-  const canonicalRun = (run: { runUrl: string }): { runUrl: string } => {
+  const context: DispatchRunContext = { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit };
+  const existing = await dispatcher.findByEventId(context, entry.eventId, token);
+  const canonicalRun = (run: ObservedWorkflowRun): ObservedWorkflowRun => {
     const parsed = new URL(run.runUrl);
     if (
       parsed.protocol !== "https:" ||
@@ -169,6 +181,14 @@ export async function runDispatchOutbox(
       parsed.hash !== ""
     )
       throw new TypeError("workflow run URL is not canonical");
+    if (
+      run.repository !== context.repository ||
+      run.workflow !== context.workflow ||
+      run.ref !== context.ref ||
+      run.sha !== context.sha ||
+      run.event !== "workflow_dispatch" ||
+      run.runName !== `lenso-publish-requested:${entry.eventId}`
+    ) throw new TypeError("workflow run context mismatch");
     return run;
   };
   let run = existing ? canonicalRun(existing) : null;
@@ -238,7 +258,7 @@ export async function runDispatchOutbox(
     state = snapshot.plans[path]!;
     if (!claimed) {
       const observed = await dispatcher.findByEventId(
-        repository,
+        context,
         entry.eventId,
         token,
       );
@@ -250,7 +270,7 @@ export async function runDispatchOutbox(
       ({ eventId }) => eventId === entry.eventId,
     )!;
     if (claimed) {
-      const discovered = await dispatcher.findByEventId(repository, entry.eventId, token);
+      const discovered = await dispatcher.findByEventId(context, entry.eventId, token);
       run = discovered ? canonicalRun(discovered) : null;
       if (!run)
         run = canonicalRun(await dispatcher.dispatch(

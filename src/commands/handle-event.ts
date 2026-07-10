@@ -17,7 +17,7 @@ export const HANDLE_EVENT_EXIT = {
 export type EventHandlers = {
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
-  recoverActive?(): Promise<StoredPlanState[]>;
+  recoverActive?(): Promise<unknown>;
 };
 export type HandlerFactory = (env: NodeJS.ProcessEnv) => Promise<EventHandlers>;
 

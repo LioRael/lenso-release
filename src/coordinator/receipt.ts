@@ -10,6 +10,7 @@ export type ReceiptObservation = {
   workflow: { url: string; repository: string; ref: string; sha: string; runName: string; workflowPath: string };
   tag: { url: string; annotated: boolean; immutable: boolean; targetSha: string | null; receipt: unknown | null };
 };
+export class IncompleteEvidenceError extends Error {}
 export type ReceiptObservationContext = { repository: string; releaseCommit: string; eventId: Sha256; executionRef: string; workflow: string; packages: { id: string; version: string }[] };
 export type ReceiptObserver = { observe(context: ReceiptObservationContext, packageId: string, version: string): Promise<ReceiptObservation | null>; createAnnotatedTag(repository: string, receipt: ComponentReceiptV1): Promise<void> };
 export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; dependenciesVisible?(plan: ReleasePlanV1, packageIds: string[]): Promise<boolean>; recovery?: boolean; now(): Date; nonce(): string; appId: number };
@@ -45,8 +46,8 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
   const selected = current.packages.find(({ id, version }) => id === receipt.packageId && version === receipt.version); if (!selected || selected.requestEventId !== value.correlationId) return block(deps, path, value.eventId, "receipt package correlation contradiction");
   const boundOutbox = current.outbox.find(({ eventId }) => eventId === value.correlationId); if (!boundOutbox) return block(deps, path, value.eventId, "receipt outbox contradiction");
   const context: ReceiptObservationContext = { repository: current.repository, releaseCommit: current.releaseCommit, eventId: value.correlationId, executionRef: current.executionRef.name, workflow: boundOutbox.workflow, packages: boundOutbox.packages };
-  const observation = await deps.observer.observe(context, receipt.packageId, receipt.version); if (!observation) throw new Error("receipt evidence incomplete");
-  if (!observation.tag.annotated && observation.tag.receipt === null) throw new Error("receipt tag evidence incomplete");
+  const observation = await deps.observer.observe(context, receipt.packageId, receipt.version); if (!observation) throw new IncompleteEvidenceError("receipt evidence incomplete");
+  if (!observation.tag.annotated && observation.tag.receipt === null) throw new IncompleteEvidenceError("receipt tag evidence incomplete");
   try { verify(receipt, value, observation, current); } catch (error) { return block(deps, path, value.eventId, error instanceof Error ? error.message : "receipt contradiction"); }
   const reread = await deps.readPlan(current.repository, current.releaseCommit); assertReleasePlan(reread.plan); const plan: ReleasePlanV1 = reread.plan;
   if (plan.repository !== current.repository || plan.planId !== current.planId || plan.sourceCommit !== current.sourceCommit || sha256(reread.planBytes) !== current.planSha256)

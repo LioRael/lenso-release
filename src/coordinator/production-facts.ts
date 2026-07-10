@@ -1,5 +1,7 @@
 import type {
   ComponentReceiptV1,
+  PlanStatePackage,
+  PlanStateV1,
   ReleaseEventV1,
   ReleasePlanV1,
 } from "../contracts/types.js";
@@ -7,13 +9,14 @@ import { loadComponents } from "../config/components.js";
 import { sha256 } from "../core/canonical.js";
 import { canonicalBytes } from "../core/canonical.js";
 import { acceptReadyEvent } from "./ready.js";
-import { acceptReceiptEvent, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
+import { acceptReceiptEvent, IncompleteEvidenceError, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
 import {
   runDispatchOutbox,
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
 import type { GitStateStore, StoredPlanState } from "./state.js";
+import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -22,6 +25,7 @@ type Input = {
   tokens: AppTokenProvider;
   dispatcher: WorkflowDispatcher;
   request?: typeof fetch;
+  provenanceVerifier?: ProvenanceVerifier;
 };
 const headers = (token: string) => ({
   accept: "application/vnd.github+json",
@@ -45,7 +49,10 @@ export async function checkedExternal(request: typeof fetch, url: string): Promi
       current = new URL(location, current);
       continue;
     }
-    if (!response.ok) throw new Error(`external observation ${response.status} for ${current.origin}`);
+    if (!response.ok) {
+      if (response.status === 404) throw new IncompleteEvidenceError(`external observation not yet visible for ${current.origin}`);
+      throw new Error(`external observation ${response.status} for ${current.origin}`);
+    }
     if (response.url) {
       const final = new URL(response.url);
       if (final.protocol !== "https:" || !EXTERNAL_HOSTS.has(final.hostname))
@@ -59,52 +66,62 @@ function nonce() {
   return crypto.randomUUID();
 }
 
+export async function scanActiveRecovery(
+  plans: Record<string, PlanStateV1>,
+  recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
+): Promise<{ recovered: string[]; incomplete: string[] }> {
+  const recovered: string[] = [];
+  const incomplete: string[] = [];
+  for (const state of Object.values(plans).sort((a, b) => `${a.repository}:${a.planId}`.localeCompare(`${b.repository}:${b.planId}`))) {
+    if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
+    for (const pkg of [...state.packages].sort((a, b) => `${a.id}:${a.version}`.localeCompare(`${b.id}:${b.version}`))) {
+      if (pkg.status !== "dispatched") continue;
+      const key = `${state.repository}:${state.planId}:${pkg.id}:${pkg.version}`;
+      try { await recover(state, pkg); recovered.push(key); }
+      catch (error) {
+        if (error instanceof IncompleteEvidenceError) incomplete.push(key);
+        else throw error;
+      }
+    }
+  }
+  return { recovered, incomplete };
+}
+
 export function tagRefIsImmutable(value: unknown, tagRef: string): boolean {
   if (!Array.isArray(value)) return false;
+  const match = (pattern: string): boolean | null => {
+    if (pattern === "~ALL") return true;
+    if (pattern === tagRef) return true;
+    if (/^refs\/tags\/[A-Za-z0-9@._/-]*\*$/u.test(pattern) && pattern.indexOf("*") === pattern.length - 1)
+      return tagRef.startsWith(pattern.slice(0, -1));
+    if (!pattern.includes("*")) return false;
+    return null;
+  };
   return value.some((raw) => {
     const ruleset = raw as Record<string, unknown>;
     if (ruleset.enforcement !== "active" || ruleset.target !== "tag") return false;
     const conditions = ruleset.conditions as Record<string, unknown> | undefined;
     const names = conditions?.ref_name as Record<string, unknown> | undefined;
     const includes = Array.isArray(names?.include) ? names.include.map(String) : [];
-    const matches = includes.some((pattern) =>
-      pattern === "~ALL" || pattern === "refs/tags/*" || pattern === tagRef,
-    );
+    const excludes = Array.isArray(names?.exclude) ? names.exclude.map(String) : [];
+    if (excludes.some((pattern) => match(pattern) !== false)) return false;
+    const matches = includes.some((pattern) => match(pattern) === true);
     const types = new Set((Array.isArray(ruleset.rules) ? ruleset.rules : []).map((rule) => String((rule as Record<string, unknown>).type)));
     return matches && types.has("deletion") && types.has("non_fast_forward");
   });
 }
 
-export function selectVerifiedProvenance(
-  value: unknown,
-  packedDigest: string,
-  context: ReceiptObservationContext,
-  runId: string,
-): { name: string; digest: string } | null {
-  const attestations = (value as Record<string, unknown>)?.attestations;
-  if (!Array.isArray(attestations)) return null;
-  for (const raw of attestations) {
-    const attestation = raw as Record<string, unknown>;
-    const verification = attestation.verificationResult as Record<string, unknown> | undefined;
-    if (
-      verification?.verified !== true ||
-      verification.repository !== context.repository ||
-      verification.workflow !== context.workflow ||
-      verification.ref !== context.executionRef ||
-      verification.sha !== context.releaseCommit ||
-      String(verification.runId) !== runId
-    ) continue;
-    const bundle = attestation.bundle as Record<string, unknown> | undefined;
-    const envelope = bundle?.dsseEnvelope as Record<string, unknown> | undefined;
-    if (typeof envelope?.payload !== "string") continue;
-    let statement: Record<string, unknown>;
-    try { statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8")) as Record<string, unknown>; } catch { continue; }
-    if (!new Set(["https://slsa.dev/provenance/v1", "https://slsa.dev/provenance/v0.2", "https://github.com/Attestations/GitHubHostedActions@v1"]).has(String(statement.predicateType))) continue;
-    const subjects = Array.isArray(statement.subject) ? statement.subject as Record<string, unknown>[] : [];
-    const match = subjects.find((subject) => `sha256:${String((subject.digest as Record<string, unknown> | undefined)?.sha256)}` === packedDigest);
-    if (match) return { name: String(match.name), digest: packedDigest };
-  }
-  return null;
+export async function activeRulesetDetails(
+  list: unknown,
+  getDetail: (id: number) => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>[]> {
+  if (!Array.isArray(list)) throw new TypeError("GitHub ruleset list invalid");
+  const ids = list
+    .filter((item) => (item as Record<string, unknown>).enforcement === "active")
+    .map((item) => Number((item as Record<string, unknown>).id));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0))
+    throw new TypeError("GitHub active ruleset ID invalid");
+  return Promise.all(ids.map(getDetail));
 }
 
 export async function createCoordinatorHandlers(
@@ -112,7 +129,7 @@ export async function createCoordinatorHandlers(
 ): Promise<{
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
-  recoverActive(): Promise<StoredPlanState[]>;
+  recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
 }> {
   const registry = await loadComponents(
     new URL("../../config/components.yaml", import.meta.url).pathname,
@@ -125,6 +142,7 @@ export async function createCoordinatorHandlers(
   if (!observedActor) throw new TypeError("LENSO_EVENT_ACTOR is required");
   const now = () => new Date();
   const request = input.request ?? fetch;
+  const provenanceVerifier = input.provenanceVerifier ?? new GhAttestationVerifier();
   const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
     assertGithubApi(url);
     const response = await request(url, { redirect: "error", headers: headers(token) });
@@ -141,7 +159,7 @@ export async function createCoordinatorHandlers(
   const handlers: {
     ready(value: unknown): Promise<StoredPlanState>;
     receipt(value: unknown): Promise<StoredPlanState>;
-    recoverActive(): Promise<StoredPlanState[]>;
+    recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -321,19 +339,19 @@ export async function createCoordinatorHandlers(
             registryUrl = tarball;
           }
           const packedDigest = sha256(packedBytes);
-          const provenanceApi = `${githubApi}/attestations/${encodeURIComponent(packedDigest)}`;
-          const provenance = await githubJson(provenanceApi, token);
           const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
-          const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit);
+          const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
           if (!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") return null;
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
           if (runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          const subject = selectVerifiedProvenance(provenance, packedDigest, context, runId);
+          const subjectName = packageId.startsWith("cargo:") ? `${packageName}-${packageVersion}.crate` : `${packageName}-${packageVersion}.tgz`;
+          const subject = await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
           if (!subject) return null;
-          const rulesets = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token);
-          const immutable = tagRefIsImmutable(rulesets, `refs/tags/${tagName}`);
+          const rulesetList = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown;
+          const rulesetDetails = await activeRulesetDetails(rulesetList, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
+          const immutable = tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
           tagWrite = { githubApi, token, tagName, immutable };
           const refResponse = await request(`${githubApi}/git/ref/tags/${encodeURIComponent(tagName)}`, { redirect: "error", headers: headers(token) });
           let tagReceipt: unknown | null = null;
@@ -451,7 +469,7 @@ export async function createCoordinatorHandlers(
         try {
           result = await acceptReceiptEvent(value, receiptDependencies);
         } catch (error) {
-          if (!(error instanceof Error) || error.message !== "receipt tag evidence incomplete") throw error;
+          if (!(error instanceof IncompleteEvidenceError) || error.message !== "receipt tag evidence incomplete") throw error;
         }
       }
       result ??= await recoverLostReceipt(
@@ -461,7 +479,7 @@ export async function createCoordinatorHandlers(
         expected.version,
         receiptDependencies,
       );
-      if (!result) throw new Error("authoritative receipt evidence incomplete");
+      if (!result) throw new IncompleteEvidenceError("authoritative receipt evidence incomplete");
       return runDispatchOutbox(
         input.store,
         result.state.repository,
@@ -473,13 +491,9 @@ export async function createCoordinatorHandlers(
     },
     async recoverActive() {
       const snapshot = await input.store.readSnapshot();
-      const recovered: StoredPlanState[] = [];
-      for (const state of Object.values(snapshot.plans)) {
-        if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
-        for (const pkg of state.packages) {
-          if (pkg.status !== "dispatched") continue;
+      return scanActiveRecovery(snapshot.plans, async (state, pkg) => {
           const zero = `sha256:${"0".repeat(64)}` as const;
-          const result = await handlers.receipt({
+          await handlers.receipt({
             schema: "lenso.release-event.v1",
             eventType: "lenso-publish-receipt",
             eventId: zero,
@@ -510,10 +524,7 @@ export async function createCoordinatorHandlers(
               publishedAt: now().toISOString(),
             },
           });
-          recovered.push(result);
-        }
-      }
-      return recovered;
+      });
     },
   };
   return handlers;

@@ -7,7 +7,8 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { checkedExternal, selectVerifiedProvenance, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
   transact,
@@ -23,23 +24,46 @@ describe("production coordinator adapters", () => {
       rules: [{ type: "deletion" }, { type: "non_fast_forward" }],
     }];
     expect(tagRefIsImmutable(protectedRules, "refs/tags/core@1.0.0")).toBe(true);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["~ALL"], exclude: ["refs/tags/core@1.0.0"] } } }], "refs/tags/core@1.0.0")).toBe(false);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/core@1.0.0"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(true);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/other*"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(false);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/**/ambiguous"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(false);
     expect(tagRefIsImmutable([{ ...protectedRules[0], enforcement: "disabled" }], "refs/tags/core@1.0.0")).toBe(false);
     expect(tagRefIsImmutable([{ ...protectedRules[0], rules: [{ type: "deletion" }] }], "refs/tags/core@1.0.0")).toBe(false);
   });
 
-  it("selects only exact verified provenance instead of the first attestation or subject", () => {
+  it("loads every active ruleset detail and fails closed on list/detail errors", async () => {
+    const detail = vi.fn(async (id: number) => ({ id, target: "tag", enforcement: "active" }));
+    await expect(activeRulesetDetails([{ id: 2, enforcement: "active" }, { id: 3, enforcement: "disabled" }, { id: 1, enforcement: "active" }], detail)).resolves.toEqual([
+      { id: 2, target: "tag", enforcement: "active" },
+      { id: 1, target: "tag", enforcement: "active" },
+    ]);
+    expect(detail).toHaveBeenCalledTimes(2);
+    await expect(activeRulesetDetails({}, detail)).rejects.toThrow("list invalid");
+    await expect(activeRulesetDetails([{ id: 4, enforcement: "active" }], async () => { throw new Error("ruleset detail 403"); })).rejects.toThrow("403");
+  });
+
+  it("invokes official attestation verification without a shell and requires exact identity", async () => {
     const digest = `sha256:${"a".repeat(64)}`;
-    const context = { repository: "LioRael/lenso", releaseCommit: "2".repeat(40), eventId: `sha256:${"b".repeat(64)}` as const, executionRef: `release-execution/${"b".repeat(64)}`, workflow: ".github/workflows/publish.yml", packages: [{ id: "cargo:core", version: "1.0.0" }] };
-    const statement = (predicateType: string, subjects: unknown[]) => Buffer.from(JSON.stringify({ predicateType, subject: subjects })).toString("base64");
-    const exactVerification = { verified: true, repository: context.repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId: "42" };
-    const value = { attestations: [
-      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "wrong", digest: { sha256: "c".repeat(64) } }]) } } },
-      { verificationResult: { ...exactVerification, repository: "attacker/repo" }, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
-      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://example.com/untrusted", [{ name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
-      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "other", digest: { sha256: "d".repeat(64) } }, { name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
-    ] };
-    expect(selectVerifiedProvenance(value, digest, context, "42")).toEqual({ name: "artifact", digest });
-    expect(selectVerifiedProvenance(value, digest, context, "99")).toBeNull();
+    const expected = { artifactBytes: Buffer.from("artifact"), subjectName: "core-1.0.0.crate", digest, repository: "LioRael/lenso", workflow: ".github/workflows/publish.yml", ref: `release-execution/${"b".repeat(64)}`, sha: "2".repeat(40), runId: "42", githubToken: "top-secret" };
+    let invocation: { file: string; args: readonly string[] } | undefined;
+    const exact = { statement: { predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: expected.subjectName, digest: { sha256: digest.slice(7) } }] }, signature: { certificate: { sourceRepository: expected.repository, workflow: expected.workflow, sourceDigest: expected.sha, runInvocationUri: `https://github.com/${expected.repository}/actions/runs/${expected.runId}` } }, verifiedTimestamps: [{ type: "tlog" }] };
+    const verifier = new GhAttestationVerifier(async (file, args, options) => {
+      invocation = { file, args };
+      expect(options.env.GH_TOKEN).toBe("top-secret");
+      return { stdout: JSON.stringify([{ verificationResult: exact }]) };
+    });
+    await expect(verifier.verify(expected)).resolves.toEqual({ name: expected.subjectName, digest });
+    expect(invocation?.file).toBe("gh");
+    expect(invocation?.args.slice(0, 2)).toEqual(["attestation", "verify"]);
+    expect(invocation?.args).toContain("--signer-workflow");
+    expect(invocation?.args).toContain("--source-ref");
+    expect(invocation?.args).toContain("--source-digest");
+    expect(JSON.stringify(invocation)).not.toMatch(/token|secret|shell/iu);
+    const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { repository: "attacker/repo" } } } }]) }));
+    await expect(wrong.verify(expected)).resolves.toBeNull();
+    const failed = new GhAttestationVerifier(async () => { throw new Error("verifier unavailable"); });
+    await expect(failed.verify(expected)).rejects.toThrow("verifier unavailable");
   });
   it("rejects unapproved observation hosts and redirect escapes", async () => {
     const request = vi.fn(async () => new Response(null, {
@@ -55,15 +79,20 @@ describe("production coordinator adapters", () => {
 
   it("matches only the exact stable workflow run-name and returns its real URL", async () => {
     const eventId = `sha256:${"a".repeat(64)}`;
+    const context = { repository: "LioRael/lenso", workflow: ".github/workflows/publish.yml", ref: `release-execution/${"a".repeat(64)}`, sha: "2".repeat(40) };
     const request = vi.fn(async () => new Response(JSON.stringify({
       workflow_runs: [
-        { display_title: `prefix-${eventId}`, html_url: "https://github.com/run/wrong" },
-        { display_title: `lenso-publish-requested:${eventId}`, html_url: "https://github.com/run/42" },
+        { id: 41, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: "wrong", head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/41" },
+        { id: 40, event: "push", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/40" },
+        { id: 39, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: "3".repeat(40), repository: { full_name: "attacker/repo" }, html_url: "https://github.com/attacker/repo/actions/runs/39" },
+        { id: 42, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/42" },
       ],
     }), { status: 200, headers: { "content-type": "application/json" } }));
     const run = await new GithubWorkflowDispatcher(request as typeof fetch)
-      .findByEventId("LioRael/lenso", eventId, "token");
-    expect(run).toEqual({ runUrl: "https://github.com/run/42" });
+      .findByEventId(context, eventId, "token");
+    expect(run).toMatchObject({ ...context, runUrl: "https://github.com/LioRael/lenso/actions/runs/42" });
+    const [requestedUrl] = request.mock.calls[0] as unknown as [string];
+    expect(String(requestedUrl)).toContain("actions/workflows/.github%2Fworkflows%2Fpublish.yml/runs");
   });
 
   it("polls through API visibility delay without fabricating or redispatching a run", async () => {
@@ -77,7 +106,12 @@ describe("production coordinator adapters", () => {
       }
       reads++;
       return new Response(JSON.stringify({ workflow_runs: reads < 3 ? [] : [{
+        id: 99,
+        event: "workflow_dispatch",
         display_title: `lenso-publish-requested:${eventId}`,
+        head_branch: `release-execution/${"b".repeat(64)}`,
+        head_sha: "2".repeat(40),
+        repository: { full_name: "LioRael/lenso" },
         html_url: "https://github.com/LioRael/lenso/actions/runs/99",
       }] }), { status: 200, headers: { "content-type": "application/json" } });
     });

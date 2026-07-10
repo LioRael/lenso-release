@@ -9,6 +9,7 @@ import { sha256, type JsonValue } from "../../src/core/canonical.js";
 import {
   newlyReadyPackages,
   runDispatchOutbox,
+  type DispatchRunContext,
 } from "../../src/coordinator/dispatch.js";
 import {
   assertLegalTransition,
@@ -22,9 +23,17 @@ import {
 } from "../../src/coordinator/state.js";
 import { acceptReadyEvent } from "../../src/coordinator/ready.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
+import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
+import { scanActiveRecovery } from "../../src/coordinator/production-facts.js";
 import { HANDLE_EVENT_EXIT, handleEvent, runHandleEventCli } from "../../src/commands/handle-event.js";
 
 const digest = (value: string) => `sha256:${value.repeat(64)}` as const;
+const observedRun = (context: DispatchRunContext, eventId: string, id = 1) => ({
+  ...context,
+  event: "workflow_dispatch" as const,
+  runName: `lenso-publish-requested:${eventId}`,
+  runUrl: `https://github.com/${context.repository}/actions/runs/${id}`,
+});
 function state(): PlanStateV1 {
   const planId = digest("a");
   return {
@@ -184,7 +193,7 @@ describe("atomic coordinator state", () => {
         plan.planId,
         {
           async findByEventId() { return null; },
-          async dispatch() { return { runUrl: "https://github.com/LioRael/lenso/actions/runs/10" }; },
+          async dispatch(command, eventId) { return observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 10); },
         },
         { async tokenFor() { return "secret"; } },
         () => new Date("2026-07-11T00:00:30Z"),
@@ -281,14 +290,14 @@ describe("atomic coordinator state", () => {
     let calls = 0;
     let visible = false;
     const dispatcher = {
-      async findByEventId() {
-        return visible ? { runUrl: "https://github.com/LioRael/lenso/actions/runs/1" } : null;
+      async findByEventId(context: DispatchRunContext, eventId: string) {
+        return visible ? observedRun(context, eventId, 1) : null;
       },
-      async dispatch() {
+      async dispatch(command: { repository: string; workflow: string; ref: string; inputs: { release_commit: string } }, eventId: string) {
         calls++;
         visible = true;
         store.conflicts = 3;
-        return { runUrl: "https://github.com/LioRael/lenso/actions/runs/1" };
+        return observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 1);
       },
     };
     await expect(
@@ -335,10 +344,10 @@ describe("atomic coordinator state", () => {
       async findByEventId() {
         return null;
       },
-      async dispatch() {
+      async dispatch(command: { repository: string; workflow: string; ref: string; inputs: { release_commit: string } }, eventId: string) {
         calls++;
         await gate;
-        return { runUrl: "https://github.com/LioRael/lenso/actions/runs/2" };
+        return observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 2);
       },
     };
     const execute = () =>
@@ -366,7 +375,7 @@ describe("atomic coordinator state", () => {
       leaseExpiresAt: "2026-07-11T00:01:00Z",
     };
     const store = new MemoryStore(snapshot(stale));
-    const dispatch = vi.fn(async () => ({ runUrl: "https://github.com/LioRael/lenso/actions/runs/3" }));
+    const dispatch = vi.fn(async (command, eventId) => observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 3));
     const result = await runDispatchOutbox(
       store, stale.repository, stale.planId,
       { async findByEventId() { return null; }, dispatch },
@@ -387,8 +396,8 @@ describe("atomic coordinator state", () => {
     const result = await runDispatchOutbox(
       store, stale.repository, stale.planId,
       {
-        async findByEventId() { observations++; return { runUrl: "https://github.com/LioRael/lenso/actions/runs/4" }; },
-        async dispatch() { dispatch(); return { runUrl: "https://github.com/LioRael/lenso/actions/runs/5" }; },
+        async findByEventId(context, eventId) { observations++; return observedRun(context, eventId, 4); },
+        async dispatch(command, eventId) { dispatch(); return observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 5); },
       },
       { async tokenFor() { return "secret"; } },
       () => new Date("2026-07-11T00:10:00Z"),
@@ -448,6 +457,22 @@ describe("atomic coordinator state", () => {
     expect(recovered?.state.status).toBe("verified");
     expect(recovered?.state.receipts).toEqual([tagReceipt]);
   });
+  it("continues active recovery after incomplete evidence but aborts security errors", async () => {
+    const first = state();
+    const second = structuredClone(first);
+    second.repository = "LioRael/lenso-cli";
+    const calls: string[] = [];
+    const summary = await scanActiveRecovery({ b: second, a: first }, async (plan) => {
+      calls.push(plan.repository);
+      if (plan.repository === "LioRael/lenso-cli") throw new IncompleteEvidenceError("not yet visible");
+    });
+    expect(calls).toEqual(["LioRael/lenso-cli", "LioRael/lenso"]);
+    expect(summary.incomplete).toHaveLength(1);
+    expect(summary.recovered).toHaveLength(1);
+    await expect(scanActiveRecovery({ a: first, b: second }, async (plan) => {
+      if (plan.repository === "LioRael/lenso-cli") throw new TypeError("security contradiction");
+    })).rejects.toThrow("security contradiction");
+  });
   it("rejects identity rewrites and premature later phases", () => {
     const previous = state();
     expect(() =>
@@ -491,7 +516,7 @@ describe("atomic coordinator state", () => {
     const dispatch = vi.fn();
     await runDispatchOutbox(store, "LioRael/lenso", digest("a"), {
       async findByEventId() { return null; },
-      async dispatch() { dispatch(); return { runUrl: "https://github.com/LioRael/lenso/actions/runs/8" }; },
+      async dispatch(command, eventId) { dispatch(); return observedRun({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, 8); },
     }, { async tokenFor() { return "secret"; } }, () => new Date());
     expect(dispatch).not.toHaveBeenCalled();
     const running = state(); running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
