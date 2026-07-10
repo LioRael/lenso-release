@@ -32,7 +32,7 @@ async function vendor(name, from = join(root, "package.json")) {
       const packageFile = join(directory, "package.json"); const pkg = JSON.parse(await readFile(packageFile, "utf8"));
       if (pkg.name === name) {
         const destination = join(output, "node_modules", name); await mkdir(dirname(destination), { recursive: true });
-        await cp(await realpath(directory), destination, { recursive: true, dereference: true });
+        await cp(await realpath(directory), destination, { recursive: true, dereference: true, filter: (source) => !/^(?:CHANGELOG|README|LICENSE|SECURITY)(?:\.|$)/iu.test(source.split("/").at(-1) ?? "") });
         for (const dependency of Object.keys(pkg.dependencies ?? {}).sort()) await vendor(dependency, packageFile);
         return;
       }
