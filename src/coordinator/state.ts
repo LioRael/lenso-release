@@ -370,6 +370,12 @@ export function assertLegalTransition(
     throw new TypeError("verified is terminal");
   if (previous.status === "verified" && JSON.stringify(previous) !== JSON.stringify(next))
     throw new TypeError("verified state is immutable");
+  if (
+    previous.status === "blocked" &&
+    previous.reason?.startsWith("cancelled before dispatch") &&
+    JSON.stringify(previous) !== JSON.stringify(next)
+  )
+    throw new TypeError("cancelled state is immutable");
   const statusRank = { pending: 0, dispatched: 1, received: 2 } as const;
   for (let index = 0; index < previous.packages.length; index += 1) {
     const before = previous.packages[index]!;

@@ -7,7 +7,7 @@ import { loadComponents } from "../config/components.js";
 import { sha256 } from "../core/canonical.js";
 import { canonicalBytes } from "../core/canonical.js";
 import { acceptReadyEvent } from "./ready.js";
-import { acceptReceiptEvent, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation } from "./receipt.js";
+import { acceptReceiptEvent, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
 import {
   runDispatchOutbox,
   type AppTokenProvider,
@@ -59,11 +59,60 @@ function nonce() {
   return crypto.randomUUID();
 }
 
+export function tagRefIsImmutable(value: unknown, tagRef: string): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((raw) => {
+    const ruleset = raw as Record<string, unknown>;
+    if (ruleset.enforcement !== "active" || ruleset.target !== "tag") return false;
+    const conditions = ruleset.conditions as Record<string, unknown> | undefined;
+    const names = conditions?.ref_name as Record<string, unknown> | undefined;
+    const includes = Array.isArray(names?.include) ? names.include.map(String) : [];
+    const matches = includes.some((pattern) =>
+      pattern === "~ALL" || pattern === "refs/tags/*" || pattern === tagRef,
+    );
+    const types = new Set((Array.isArray(ruleset.rules) ? ruleset.rules : []).map((rule) => String((rule as Record<string, unknown>).type)));
+    return matches && types.has("deletion") && types.has("non_fast_forward");
+  });
+}
+
+export function selectVerifiedProvenance(
+  value: unknown,
+  packedDigest: string,
+  context: ReceiptObservationContext,
+  runId: string,
+): { name: string; digest: string } | null {
+  const attestations = (value as Record<string, unknown>)?.attestations;
+  if (!Array.isArray(attestations)) return null;
+  for (const raw of attestations) {
+    const attestation = raw as Record<string, unknown>;
+    const verification = attestation.verificationResult as Record<string, unknown> | undefined;
+    if (
+      verification?.verified !== true ||
+      verification.repository !== context.repository ||
+      verification.workflow !== context.workflow ||
+      verification.ref !== context.executionRef ||
+      verification.sha !== context.releaseCommit ||
+      String(verification.runId) !== runId
+    ) continue;
+    const bundle = attestation.bundle as Record<string, unknown> | undefined;
+    const envelope = bundle?.dsseEnvelope as Record<string, unknown> | undefined;
+    if (typeof envelope?.payload !== "string") continue;
+    let statement: Record<string, unknown>;
+    try { statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8")) as Record<string, unknown>; } catch { continue; }
+    if (!new Set(["https://slsa.dev/provenance/v1", "https://slsa.dev/provenance/v0.2", "https://github.com/Attestations/GitHubHostedActions@v1"]).has(String(statement.predicateType))) continue;
+    const subjects = Array.isArray(statement.subject) ? statement.subject as Record<string, unknown>[] : [];
+    const match = subjects.find((subject) => `sha256:${String((subject.digest as Record<string, unknown> | undefined)?.sha256)}` === packedDigest);
+    if (match) return { name: String(match.name), digest: packedDigest };
+  }
+  return null;
+}
+
 export async function createCoordinatorHandlers(
   input: Input,
 ): Promise<{
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
+  recoverActive(): Promise<StoredPlanState[]>;
 }> {
   const registry = await loadComponents(
     new URL("../../config/components.yaml", import.meta.url).pathname,
@@ -89,7 +138,11 @@ export async function createCoordinatorHandlers(
     if (body.encoding !== "base64" || typeof body.content !== "string") throw new TypeError("GitHub content encoding invalid");
     return Buffer.from(body.content.replace(/\n/gu, ""), "base64");
   };
-  return {
+  const handlers: {
+    ready(value: unknown): Promise<StoredPlanState>;
+    receipt(value: unknown): Promise<StoredPlanState>;
+    recoverActive(): Promise<StoredPlanState[]>;
+  } = {
     async ready(value) {
       const event = value as Extract<
         ReleaseEventV1,
@@ -229,69 +282,70 @@ export async function createCoordinatorHandlers(
         { eventType: "lenso-publish-receipt" }
       >;
       const expected = event.receipt;
-      const repository = expected.repository;
-      const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
-      const githubApi = `https://api.github.com/repos/${repository}`;
-      const workflowMatch = new RegExp(`^https://github\\.com/${repository.replace("/", "\\/")}/actions/runs/([1-9][0-9]*)$`, "u").exec(expected.workflowUrl);
-      if (!workflowMatch) throw new TypeError("workflow URL identity mismatch");
-      const packageName = expected.packageId.startsWith("cargo:")
-        ? expected.packageId.slice(6)
-        : expected.packageId.slice("npm:@lenso/".length);
-      const tagName = `${packageName}@${expected.version}`;
-      const expectedTagUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tagName)}`;
-      if (expected.tagUrl !== expectedTagUrl) throw new TypeError("tag URL identity mismatch");
+      let tagWrite: { githubApi: string; token: string; tagName: string; immutable: boolean } | null = null;
       const observer = {
-        async observe(): Promise<ReceiptObservation | null> {
+        async observe(context: ReceiptObservationContext, packageId: string, packageVersion: string): Promise<ReceiptObservation | null> {
+          if (!context.packages.some(({ id, version }) => id === packageId && version === packageVersion)) throw new Error("package is not selected by stored outbox");
+          const repository = context.repository;
+          const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
+          const githubApi = `https://api.github.com/repos/${repository}`;
+          const packageName = packageId.startsWith("cargo:") ? packageId.slice(6) : packageId.slice("npm:@lenso/".length);
+          const tagName = `${packageName}@${packageVersion}`;
+          const expectedTagUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tagName)}`;
           let packedBytes: Uint8Array;
           let nativeIntegrity: string;
           let registryUrl: string;
           let publishedAt: string;
-          if (expected.packageId.startsWith("cargo:")) {
-            const metadataUrl = `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(expected.version)}`;
+          if (packageId.startsWith("cargo:")) {
+            const metadataUrl = `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}`;
             const metadata = await (await checkedExternal(request, metadataUrl)).json() as Record<string, unknown>;
             const version = metadata.version as Record<string, unknown>;
-            const artifact = await checkedExternal(request, `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(expected.version)}/download`);
+            const artifact = await checkedExternal(request, `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}/download`);
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
-            registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${expected.version}.crate`;
+            registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
           } else {
             const name = `@lenso/${packageName}`;
             const packumentUrl = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
             const packument = await (await checkedExternal(request, packumentUrl)).json() as Record<string, unknown>;
             const versions = packument.versions as Record<string, Record<string, unknown>>;
-            const metadata = versions[expected.version];
+            const metadata = versions[packageVersion];
             if (!metadata) return null;
             const dist = metadata.dist as Record<string, unknown>;
             const tarball = String(dist.tarball);
             const artifact = await checkedExternal(request, tarball);
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(dist.integrity);
-            publishedAt = String((packument.time as Record<string, unknown>)[expected.version]);
+            publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
           }
           const packedDigest = sha256(packedBytes);
           const provenanceApi = `${githubApi}/attestations/${encodeURIComponent(packedDigest)}`;
           const provenance = await githubJson(provenanceApi, token);
-          const attestations = provenance.attestations as Record<string, unknown>[];
-          const attestation = attestations?.[0];
-          if (!attestation) return null;
-          const bundle = attestation.bundle as Record<string, unknown>;
-          const envelope = bundle.dsseEnvelope as Record<string, unknown>;
-          const statement = JSON.parse(Buffer.from(String(envelope.payload), "base64").toString("utf8")) as Record<string, unknown>;
-          const subject = (statement.subject as Record<string, unknown>[])?.[0];
+          const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
+          const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
+          const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit);
+          if (!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          const runId = String(workflow.id);
+          const runUrl = String(workflow.html_url);
+          if (runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
+          const subject = selectVerifiedProvenance(provenance, packedDigest, context, runId);
           if (!subject) return null;
-          const workflow = await githubJson(`${githubApi}/actions/runs/${workflowMatch[1]}`, token);
-          if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          const rulesets = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token);
+          const immutable = tagRefIsImmutable(rulesets, `refs/tags/${tagName}`);
+          tagWrite = { githubApi, token, tagName, immutable };
           const refResponse = await request(`${githubApi}/git/ref/tags/${encodeURIComponent(tagName)}`, { redirect: "error", headers: headers(token) });
           let tagReceipt: unknown | null = null;
           let annotated = false;
+          let targetSha: string | null = null;
           if (refResponse.ok) {
             const ref = await refResponse.json() as Record<string, unknown>;
             const object = ref.object as Record<string, unknown>;
             if (object.type !== "tag") throw new Error("component tag is not annotated");
             const tag = await githubJson(`${githubApi}/git/tags/${String(object.sha)}`, token);
             annotated = true;
+            targetSha = String((tag.object as Record<string, unknown>).sha);
             tagReceipt = JSON.parse(String(tag.message));
           } else if (refResponse.status !== 404) {
             throw new Error(`tag observation ${refResponse.status}`);
@@ -305,29 +359,28 @@ export async function createCoordinatorHandlers(
             },
             provenance: {
               url: `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`,
-              subject: {
-                name: String(subject.name),
-                digest: `sha256:${String((subject.digest as Record<string, unknown>).sha256)}`,
-              },
+              subject,
             },
             workflow: {
-              url: String(workflow.html_url),
+              url: runUrl,
               repository: String((workflow.repository as Record<string, unknown>).full_name),
               ref: String(workflow.head_branch),
               sha: String(workflow.head_sha),
-              eventId: event.correlationId,
-              correlationId: String(workflow.display_title).replace("lenso-publish-requested:", ""),
-              packages: [{ id: expected.packageId, version: expected.version }],
+              runName: String(workflow.display_title),
+              workflowPath: context.workflow,
             },
             tag: {
               url: expectedTagUrl,
               annotated,
-              immutable: annotated,
+              immutable,
+              targetSha,
               receipt: tagReceipt,
             },
           };
         },
         async createAnnotatedTag(_repository: string, receipt: ComponentReceiptV1) {
+          if (!tagWrite || !tagWrite.immutable) throw new Error("package tag protection is not active");
+          const { githubApi, token, tagName } = tagWrite;
           const tagResponse = await request(`${githubApi}/git/tags`, {
             method: "POST",
             redirect: "error",
@@ -392,13 +445,23 @@ export async function createCoordinatorHandlers(
         nonce,
         appId: input.config.appId,
       };
-      const result = await recoverLostReceipt(
+      const recoveryOnly = event.eventId === `sha256:${"0".repeat(64)}`;
+      let result: StoredPlanState | null = null;
+      if (!recoveryOnly) {
+        try {
+          result = await acceptReceiptEvent(value, receiptDependencies);
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "receipt tag evidence incomplete") throw error;
+        }
+      }
+      result ??= await recoverLostReceipt(
         expected.repository,
         expected.planId,
         expected.packageId,
         expected.version,
         receiptDependencies,
-      ) ?? await acceptReceiptEvent(value, receiptDependencies);
+      );
+      if (!result) throw new Error("authoritative receipt evidence incomplete");
       return runDispatchOutbox(
         input.store,
         result.state.repository,
@@ -408,5 +471,50 @@ export async function createCoordinatorHandlers(
         now,
       );
     },
+    async recoverActive() {
+      const snapshot = await input.store.readSnapshot();
+      const recovered: StoredPlanState[] = [];
+      for (const state of Object.values(snapshot.plans)) {
+        if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
+        for (const pkg of state.packages) {
+          if (pkg.status !== "dispatched") continue;
+          const zero = `sha256:${"0".repeat(64)}` as const;
+          const result = await handlers.receipt({
+            schema: "lenso.release-event.v1",
+            eventType: "lenso-publish-receipt",
+            eventId: zero,
+            issuedAt: now().toISOString(),
+            nonce: nonce(),
+            sourceRepository: state.repository,
+            expectedAppId: input.config.appId,
+            planId: state.planId,
+            planUrl: `https://github.com/${state.repository}`,
+            planSha256: state.planSha256,
+            releaseCommit: state.releaseCommit,
+            correlationId: pkg.requestEventId,
+            receipt: {
+              schema: "lenso.component-receipt.v1",
+              receiptId: zero,
+              planId: state.planId,
+              packageId: pkg.id,
+              version: pkg.version,
+              repository: state.repository,
+              sourceCommit: state.releaseCommit,
+              packedSha256: zero,
+              registryIntegrity: pkg.id.startsWith("cargo:") ? "0".repeat(64) : `sha512-${Buffer.alloc(64).toString("base64")}`,
+              registryUrl: "https://registry.invalid/recovery",
+              provenanceUrl: "https://github.com/recovery",
+              provenanceSubject: { name: "recovery", digest: zero },
+              workflowUrl: `https://github.com/${state.repository}/actions/runs/1`,
+              tagUrl: `https://github.com/${state.repository}/releases/tag/recovery`,
+              publishedAt: now().toISOString(),
+            },
+          });
+          recovered.push(result);
+        }
+      }
+      return recovered;
+    },
   };
+  return handlers;
 }

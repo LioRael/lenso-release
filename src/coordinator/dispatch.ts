@@ -157,7 +157,44 @@ export async function runDispatchOutbox(
     metadata: "read",
   });
   const existing = await dispatcher.findByEventId(repository, entry.eventId, token);
-  let run = existing;
+  const canonicalRun = (run: { runUrl: string }): { runUrl: string } => {
+    const parsed = new URL(run.runUrl);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== "github.com" ||
+      parsed.pathname.split("/").filter(Boolean).slice(0, 4).join("/") !==
+        `${repository}/actions/runs` ||
+      !/^[1-9][0-9]*$/u.test(parsed.pathname.split("/").filter(Boolean)[4] ?? "") ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    )
+      throw new TypeError("workflow run URL is not canonical");
+    return run;
+  };
+  let run = existing ? canonicalRun(existing) : null;
+  if (!run && entry.status === "in-flight") {
+    if (entry.leaseExpiresAt !== null && entry.leaseExpiresAt > now().toISOString())
+      throw new Error(`dispatch ${entry.eventId} is already in flight`);
+    const blocked = await transact(store, (current) => {
+      const candidate = current.plans[path];
+      if (!candidate) throw new Error("plan state not found");
+      const target = candidate.outbox.find(({ eventId }) => eventId === entry.eventId);
+      if (!target || target.status !== "in-flight") return current;
+      const at = now().toISOString();
+      const next = {
+        ...candidate,
+        status: "blocked" as const,
+        reason: "dispatch outcome unknown",
+        attempts: [...candidate.attempts, { eventId: entry.eventId, kind: "dispatch" as const, at, outcome: "blocked" as const, detail: "dispatch outcome unknown" }],
+        revision: candidate.revision + 1,
+        updatedAt: at,
+      };
+      assertLegalTransition(candidate, next);
+      current.plans[path] = next;
+      return current;
+    });
+    return { state: blocked.plans[path]!, headSha: blocked.headSha };
+  }
   if (!run) {
     let claimed = false;
     snapshot = await transact(store, (current) => {
@@ -174,11 +211,7 @@ export async function runDispatchOutbox(
         ({ eventId }) => eventId === entry.eventId,
       );
       const instant = now();
-      const stale =
-        target?.status === "in-flight" &&
-        target.leaseExpiresAt !== null &&
-        target.leaseExpiresAt <= instant.toISOString();
-      if (!target || (target.status !== "pending" && !stale)) return current;
+      if (!target || target.status !== "pending") return current;
       claimed = true;
       const at = instant.toISOString();
       const leaseExpiresAt = new Date(instant.getTime() + 5 * 60_000).toISOString();
@@ -217,9 +250,10 @@ export async function runDispatchOutbox(
       ({ eventId }) => eventId === entry.eventId,
     )!;
     if (claimed) {
-      run = await dispatcher.findByEventId(repository, entry.eventId, token);
+      const discovered = await dispatcher.findByEventId(repository, entry.eventId, token);
+      run = discovered ? canonicalRun(discovered) : null;
       if (!run)
-        run = await dispatcher.dispatch(
+        run = canonicalRun(await dispatcher.dispatch(
           {
             repository,
             workflow: currentEntry.workflow,
@@ -228,7 +262,7 @@ export async function runDispatchOutbox(
           },
           entry.eventId,
           token,
-        );
+        ));
     }
   }
   const committed = await transact(store, (current) => {

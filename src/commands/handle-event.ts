@@ -17,6 +17,7 @@ export const HANDLE_EVENT_EXIT = {
 export type EventHandlers = {
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
+  recoverActive?(): Promise<StoredPlanState[]>;
 };
 export type HandlerFactory = (env: NodeJS.ProcessEnv) => Promise<EventHandlers>;
 
@@ -115,8 +116,13 @@ export async function runHandleEventCli(
   factory: HandlerFactory = composeGithubHandlers,
 ): Promise<number> {
   try {
-    const value = await readEventArgument(argv);
     const handlers = await factory(env);
+    if (argv.length === 1 && argv[0] === "--recover-active") {
+      if (!handlers.recoverActive) throw new TypeError("active recovery is not configured");
+      await handlers.recoverActive();
+      return HANDLE_EVENT_EXIT.ok;
+    }
+    const value = await readEventArgument(argv);
     await handleEvent(value, handlers);
     return HANDLE_EVENT_EXIT.ok;
   } catch (error) {

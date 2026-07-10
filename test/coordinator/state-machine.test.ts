@@ -184,7 +184,7 @@ describe("atomic coordinator state", () => {
         plan.planId,
         {
           async findByEventId() { return null; },
-          async dispatch(_command, eventId) { return { runUrl: `https://github.com/run/${eventId}` }; },
+          async dispatch() { return { runUrl: "https://github.com/LioRael/lenso/actions/runs/10" }; },
         },
         { async tokenFor() { return "secret"; } },
         () => new Date("2026-07-11T00:00:30Z"),
@@ -195,7 +195,7 @@ describe("atomic coordinator state", () => {
         store, appId: 42, expectedActor: "lenso-app[bot]", now: () => new Date("2026-07-11T00:02:00Z"), nonce: () => `dispatch-nonce-${++nonce}`,
         authenticate: async () => ({ actor: "lenso-app[bot]", appId: 42 }), readPlan: async () => ({ plan, planBytes }),
         dependenciesVisible: async (_plan, ids) => { visibilityChecks.push(ids); return true; },
-        observer: { async observe() { return { registry: { packedBytes: fixture.bytes, nativeIntegrity: fixture.receipt.registryIntegrity, url: fixture.receipt.registryUrl, publishedAt: fixture.receipt.publishedAt }, provenance: { url: fixture.receipt.provenanceUrl, subject: fixture.receipt.provenanceSubject }, workflow: { url: fixture.receipt.workflowUrl, repository: plan.repository, ref: current.executionRef.name, sha: releaseCommit, eventId: selected.requestEventId!, correlationId: selected.requestEventId!, packages: [{ id: packageId, version: "1.0.0" }] }, tag: { url: fixture.receipt.tagUrl, annotated: true, immutable: true, receipt: fixture.receipt } }; }, async createAnnotatedTag() {} },
+        observer: { async observe(context) { return { registry: { packedBytes: fixture.bytes, nativeIntegrity: fixture.receipt.registryIntegrity, url: fixture.receipt.registryUrl, publishedAt: fixture.receipt.publishedAt }, provenance: { url: fixture.receipt.provenanceUrl, subject: fixture.receipt.provenanceSubject }, workflow: { url: fixture.receipt.workflowUrl, repository: plan.repository, ref: current.executionRef.name, sha: releaseCommit, runName: `lenso-publish-requested:${context.eventId}`, workflowPath: context.workflow }, tag: { url: fixture.receipt.tagUrl, annotated: true, immutable: true, targetSha: releaseCommit, receipt: fixture.receipt } }; }, async createAnnotatedTag() {} },
       })).state;
     }
     expect(current.status).toBe("verified");
@@ -282,13 +282,13 @@ describe("atomic coordinator state", () => {
     let visible = false;
     const dispatcher = {
       async findByEventId() {
-        return visible ? { runUrl: "https://github.com/run/1" } : null;
+        return visible ? { runUrl: "https://github.com/LioRael/lenso/actions/runs/1" } : null;
       },
       async dispatch() {
         calls++;
         visible = true;
         store.conflicts = 3;
-        return { runUrl: "https://github.com/run/1" };
+        return { runUrl: "https://github.com/LioRael/lenso/actions/runs/1" };
       },
     };
     await expect(
@@ -338,7 +338,7 @@ describe("atomic coordinator state", () => {
       async dispatch() {
         calls++;
         await gate;
-        return { runUrl: "https://github.com/run/atomic" };
+        return { runUrl: "https://github.com/LioRael/lenso/actions/runs/2" };
       },
     };
     const execute = () =>
@@ -357,7 +357,7 @@ describe("atomic coordinator state", () => {
     await first;
     expect(calls).toBe(1);
   });
-  it("reclaims a stale pre-send lease and dispatches once", async () => {
+  it("blocks an ambiguous stale claim without automatically redispatching", async () => {
     const stale = state();
     stale.outbox[0] = {
       ...stale.outbox[0]!,
@@ -366,7 +366,7 @@ describe("atomic coordinator state", () => {
       leaseExpiresAt: "2026-07-11T00:01:00Z",
     };
     const store = new MemoryStore(snapshot(stale));
-    const dispatch = vi.fn(async () => ({ runUrl: "https://github.com/run/recovered" }));
+    const dispatch = vi.fn(async () => ({ runUrl: "https://github.com/LioRael/lenso/actions/runs/3" }));
     const result = await runDispatchOutbox(
       store, stale.repository, stale.planId,
       { async findByEventId() { return null; }, dispatch },
@@ -374,8 +374,9 @@ describe("atomic coordinator state", () => {
       () => new Date("2026-07-11T00:10:00Z"),
       "recovery-worker",
     );
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(result.state.outbox[0]).toMatchObject({ status: "dispatched", claimOwner: null, leaseExpiresAt: null });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(result.state).toMatchObject({ status: "blocked", reason: "dispatch outcome unknown" });
+    expect(result.state.occupancyKeys).not.toEqual([]);
   });
   it("acknowledges a delayed post-send run after lease expiry without redispatch", async () => {
     const stale = state();
@@ -386,15 +387,28 @@ describe("atomic coordinator state", () => {
     const result = await runDispatchOutbox(
       store, stale.repository, stale.planId,
       {
-        async findByEventId() { observations++; return observations >= 2 ? { runUrl: "https://github.com/run/delayed" } : null; },
-        async dispatch() { dispatch(); return { runUrl: "https://github.com/run/duplicate" }; },
+        async findByEventId() { observations++; return { runUrl: "https://github.com/LioRael/lenso/actions/runs/4" }; },
+        async dispatch() { dispatch(); return { runUrl: "https://github.com/LioRael/lenso/actions/runs/5" }; },
       },
       { async tokenFor() { return "secret"; } },
       () => new Date("2026-07-11T00:10:00Z"),
       "recovery-worker",
     );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(result.state.outbox[0]).toMatchObject({ status: "dispatched", runUrl: "https://github.com/run/delayed" });
+    expect(result.state.outbox[0]).toMatchObject({ status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/4" });
+  });
+  it("blocks a post-send pre-visibility ambiguity with one POST maximum", async () => {
+    const store = new MemoryStore(snapshot());
+    let posts = 0;
+    const dispatcher = {
+      async findByEventId() { return null; },
+      async dispatch() { posts++; throw new Error("workflow run is not yet visible"); },
+    };
+    await expect(runDispatchOutbox(store, "LioRael/lenso", digest("a"), dispatcher, { async tokenFor() { return "secret"; } }, () => new Date("2026-07-11T00:01:00Z"))).rejects.toThrow("not yet visible");
+    const retry = await runDispatchOutbox(store, "LioRael/lenso", digest("a"), dispatcher, { async tokenFor() { return "secret"; } }, () => new Date("2026-07-11T00:10:00Z"));
+    expect(posts).toBe(1);
+    expect(retry.state).toMatchObject({ status: "blocked", reason: "dispatch outcome unknown" });
+    expect(retry.state.occupancyKeys.length).toBeGreaterThan(0);
   });
   it("reconstructs a lost receipt and creates a missing annotated tag without publishing", async () => {
     const identity = {
@@ -412,7 +426,7 @@ describe("atomic coordinator state", () => {
     value.planId = plan.planId;
     value.planSha256 = sha256(planBytes) as Sha256;
     value.executionRef.name = `release-execution/${plan.planId.slice(7)}`;
-    value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/run/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
+    value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
     value.occupancyKeys = ["package:cargo:lenso-contracts:1.0.0", `plan:${value.repository}:${value.planId}`].sort();
     const store = new MemoryStore(snapshot(value));
     const bytes = Buffer.from("published crate");
@@ -422,8 +436,8 @@ describe("atomic coordinator state", () => {
     const observation = () => ({
       registry: { packedBytes: bytes, nativeIntegrity: packed.slice(7), url: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", publishedAt: "2026-07-11T00:02:00Z" },
       provenance: { url: "https://github.com/LioRael/lenso/attestations/1", subject: { name: "lenso-contracts-1.0.0.crate", digest: packed } },
-      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/7", repository: value.repository, ref: value.executionRef.name, sha: value.releaseCommit, eventId: value.packages[0]!.requestEventId!, correlationId: value.packages[0]!.requestEventId!, packages: [{ id: value.packages[0]!.id, version: value.packages[0]!.version }] },
-      tag: { url: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", annotated: tagReceipt !== null, immutable: tagReceipt !== null, receipt: tagReceipt },
+      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/7", repository: value.repository, ref: value.executionRef.name, sha: value.releaseCommit, runName: `lenso-publish-requested:${value.packages[0]!.requestEventId!}`, workflowPath: value.outbox[0]!.workflow },
+      tag: { url: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", annotated: tagReceipt !== null, immutable: tagReceipt !== null, targetSha: value.releaseCommit, receipt: tagReceipt },
     });
     const recovered = await recoverLostReceipt(value.repository, value.planId, value.packages[0]!.id, value.packages[0]!.version, {
       store, appId: 42, expectedActor: "lenso-app[bot]", now: () => new Date("2026-07-11T00:03:00Z"), nonce: () => "recovery-nonce-123",
@@ -467,10 +481,17 @@ describe("atomic coordinator state", () => {
     const cancelled = await cancelPlan(store, "LioRael/lenso", digest("a"), digest("e"), new Date("2026-07-11T00:03:00Z"));
     expect(cancelled.state.occupancyKeys).toEqual([]);
     expect(cancelled.state.outbox[0]!.status).toBe("cancelled");
+    expect(() => assertLegalTransition(cancelled.state, {
+      ...cancelled.state,
+      status: "publishing",
+      reason: null,
+      occupancyKeys: state().occupancyKeys,
+      evidence: [...cancelled.state.evidence, { kind: "recovery", url: null, digest: null }],
+    })).toThrow("cancelled state is immutable");
     const dispatch = vi.fn();
     await runDispatchOutbox(store, "LioRael/lenso", digest("a"), {
       async findByEventId() { return null; },
-      async dispatch() { dispatch(); return { runUrl: "https://github.com/run/forbidden" }; },
+      async dispatch() { dispatch(); return { runUrl: "https://github.com/LioRael/lenso/actions/runs/8" }; },
     }, { async tokenFor() { return "secret"; } }, () => new Date());
     expect(dispatch).not.toHaveBeenCalled();
     const running = state(); running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
@@ -486,6 +507,9 @@ describe("atomic coordinator state", () => {
     await writeFile(path, JSON.stringify({ client_payload: { eventType: "lenso-plan-ready" } }));
     expect(await runHandleEventCli(["--event-file", path, "--event-key", "client_payload"], {}, async () => ({ ready, receipt }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(await runHandleEventCli(["--event-file", "relative", "--event-key", "client_payload"], {}, async () => ({ ready, receipt }))).toBe(HANDLE_EVENT_EXIT.validation);
+    const recoverActive = vi.fn(async () => []);
+    expect(await runHandleEventCli(["--recover-active"], {}, async () => ({ ready, receipt, recoverActive }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(recoverActive).toHaveBeenCalledOnce();
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {

@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { checkedExternal } from "../../src/coordinator/production-facts.js";
+import { checkedExternal, selectVerifiedProvenance, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import {
   StateConflictError,
   transact,
@@ -16,6 +16,31 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("requires active update-and-delete protection for the exact tag ref", () => {
+    const protectedRules = [{
+      target: "tag", enforcement: "active",
+      conditions: { ref_name: { include: ["refs/tags/*"], exclude: [] } },
+      rules: [{ type: "deletion" }, { type: "non_fast_forward" }],
+    }];
+    expect(tagRefIsImmutable(protectedRules, "refs/tags/core@1.0.0")).toBe(true);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], enforcement: "disabled" }], "refs/tags/core@1.0.0")).toBe(false);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], rules: [{ type: "deletion" }] }], "refs/tags/core@1.0.0")).toBe(false);
+  });
+
+  it("selects only exact verified provenance instead of the first attestation or subject", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const context = { repository: "LioRael/lenso", releaseCommit: "2".repeat(40), eventId: `sha256:${"b".repeat(64)}` as const, executionRef: `release-execution/${"b".repeat(64)}`, workflow: ".github/workflows/publish.yml", packages: [{ id: "cargo:core", version: "1.0.0" }] };
+    const statement = (predicateType: string, subjects: unknown[]) => Buffer.from(JSON.stringify({ predicateType, subject: subjects })).toString("base64");
+    const exactVerification = { verified: true, repository: context.repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId: "42" };
+    const value = { attestations: [
+      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "wrong", digest: { sha256: "c".repeat(64) } }]) } } },
+      { verificationResult: { ...exactVerification, repository: "attacker/repo" }, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
+      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://example.com/untrusted", [{ name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
+      { verificationResult: exactVerification, bundle: { dsseEnvelope: { payload: statement("https://slsa.dev/provenance/v1", [{ name: "other", digest: { sha256: "d".repeat(64) } }, { name: "artifact", digest: { sha256: "a".repeat(64) } }]) } } },
+    ] };
+    expect(selectVerifiedProvenance(value, digest, context, "42")).toEqual({ name: "artifact", digest });
+    expect(selectVerifiedProvenance(value, digest, context, "99")).toBeNull();
+  });
   it("rejects unapproved observation hosts and redirect escapes", async () => {
     const request = vi.fn(async () => new Response(null, {
       status: 302,
