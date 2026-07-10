@@ -88,6 +88,42 @@ export type ComponentReceiptV1 = {
   publishedAt: string;
 };
 
+export type PlanStateStatus = "ready" | "publishing" | "blocked" | "verified";
+export type PlanStateAttempt = {
+  eventId: Sha256;
+  kind: "ready" | "dispatch" | "receipt" | "recovery" | "cancel";
+  at: string;
+  outcome: "accepted" | "duplicate" | "conflict" | "blocked";
+  detail: string | null;
+};
+export type PlanStatePackage = {
+  id: RegistryPackageId;
+  version: string;
+  phase: number;
+  status: "pending" | "dispatched" | "received";
+  requestEventId: Sha256 | null;
+};
+export type PlanStateEvidence = { kind: string; url: string | null; digest: string | null };
+export type PlanStateV1 = {
+  schema: "lenso.plan-state.v1";
+  repository: string;
+  planId: Sha256;
+  planSha256: Sha256;
+  sourceCommit: GitOid;
+  releaseCommit: GitOid;
+  status: PlanStateStatus;
+  reason: string | null;
+  evidence: PlanStateEvidence[];
+  packages: PlanStatePackage[];
+  receipts: ComponentReceiptV1[];
+  attempts: PlanStateAttempt[];
+  occupancyKeys: string[];
+  revision: number;
+  previousBlobSha: GitOid | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RepositoryRevision = {
   repository: string;
   releaseCommit: GitOid;

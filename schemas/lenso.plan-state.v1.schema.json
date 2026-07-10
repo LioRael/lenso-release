@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lenso.dev/schemas/lenso.plan-state.v1.schema.json",
+  "title": "Lenso immutable release plan state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repository", "planId", "planSha256", "sourceCommit", "releaseCommit", "status", "reason", "evidence", "packages", "receipts", "attempts", "occupancyKeys", "revision", "previousBlobSha", "createdAt", "updatedAt"],
+  "properties": {
+    "schema": { "const": "lenso.plan-state.v1" },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "planId": { "$ref": "#/$defs/sha256" },
+    "planSha256": { "$ref": "#/$defs/sha256" },
+    "sourceCommit": { "$ref": "#/$defs/oid" },
+    "releaseCommit": { "$ref": "#/$defs/oid" },
+    "status": { "enum": ["ready", "publishing", "blocked", "verified"] },
+    "reason": { "type": ["string", "null"] },
+    "evidence": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["kind", "url", "digest"], "properties": { "kind": { "type": "string" }, "url": { "type": ["string", "null"] }, "digest": { "type": ["string", "null"] } } } },
+    "packages": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "version", "phase", "status", "requestEventId"], "properties": { "id": { "type": "string", "pattern": "^(cargo|npm):" }, "version": { "type": "string" }, "phase": { "type": "integer", "minimum": 0 }, "status": { "enum": ["pending", "dispatched", "received"] }, "requestEventId": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] } } } },
+    "receipts": { "type": "array", "items": { "$ref": "lenso.component-receipt.v1.schema.json" } },
+    "attempts": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["eventId", "kind", "at", "outcome", "detail"], "properties": { "eventId": { "$ref": "#/$defs/sha256" }, "kind": { "enum": ["ready", "dispatch", "receipt", "recovery", "cancel"] }, "at": { "type": "string", "format": "date-time" }, "outcome": { "enum": ["accepted", "duplicate", "conflict", "blocked"] }, "detail": { "type": ["string", "null"] } } } },
+    "occupancyKeys": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "revision": { "type": "integer", "minimum": 0 },
+    "previousBlobSha": { "oneOf": [{ "$ref": "#/$defs/oid" }, { "type": "null" }] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "oid": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

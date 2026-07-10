@@ -1,0 +1,26 @@
+name: plan-ready
+on:
+  repository_dispatch:
+    types: [lenso-plan-ready]
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: plan-ready-${{ github.event.client_payload.planId }}
+  cancel-in-progress: false
+jobs:
+  handle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: corepack pnpm install --frozen-lockfile && corepack pnpm build
+      - run: node dist/src/commands/handle-event.js --event-file "$EVENT_PATH" --event-key client_payload
+        env:
+          EVENT_PATH: ${{ github.event_path }}
