@@ -1,5 +1,6 @@
 {
   "$id": "https://lenso.dev/schemas/lenso.system-candidate.v1.schema.json",
+  "$comment": "Runtime assertion recomputes candidateId from canonical candidate bytes with candidateId and systemVersion omitted, binds systemVersion to proposedSystemVersion and candidateId, and enforces uniqueness by repository, package, artifact, and receipt ID.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "candidateId", "systemVersion", "proposedSystemVersion", "bumpReason", "validation", "createdAt", "repositories", "packages", "artifacts", "catalog", "requirements", "receipts", "systemSmokeRunUrls"],
@@ -27,12 +28,14 @@
     "stableSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
     "candidateSemver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-next\\.c[0-9a-f]{64}$" },
     "httpsUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
-    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" },
+    "timestamp": { "$ref": "#/$defs/rfc3339" },
+    "rfc3339": { "type": "string", "pattern": "^[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$", "$comment": "Runtime assertion additionally validates leap-year calendar semantics." },
     "repository": { "type": "object", "additionalProperties": false, "required": ["repository", "releaseCommit"], "properties": { "repository": { "$ref": "#/$defs/nonEmpty" }, "releaseCommit": { "$ref": "#/$defs/oid" } } },
-    "package": { "type": "object", "additionalProperties": false, "required": ["id", "version", "tagUrl", "registryUrl", "registryIntegrity"], "properties": { "id": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" }, "tagUrl": { "$ref": "#/$defs/httpsUrl" }, "registryUrl": { "$ref": "#/$defs/httpsUrl" }, "registryIntegrity": { "$ref": "#/$defs/nonEmpty" } } },
+    "package": { "type": "object", "additionalProperties": false, "required": ["id", "version", "tagUrl", "registryUrl", "registryIntegrity"], "properties": { "id": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" }, "tagUrl": { "$ref": "#/$defs/httpsUrl" }, "registryUrl": { "$ref": "#/$defs/httpsUrl" }, "registryIntegrity": { "$ref": "#/$defs/registryIntegrity" } } },
     "artifact": { "type": "object", "additionalProperties": false, "required": ["id", "url", "sha256", "provenanceUrl"], "properties": { "id": { "$ref": "#/$defs/nonEmpty" }, "url": { "$ref": "#/$defs/httpsUrl" }, "sha256": { "$ref": "#/$defs/sha256" }, "provenanceUrl": { "$ref": "#/$defs/httpsUrl" } } },
     "catalog": { "type": "object", "additionalProperties": false, "required": ["url", "sha256"], "properties": { "url": { "$ref": "#/$defs/httpsUrl" }, "sha256": { "$ref": "#/$defs/sha256" } } },
-    "requirements": { "type": "object", "additionalProperties": false, "required": ["node", "rust"], "properties": { "node": { "$ref": "#/$defs/nonEmpty" }, "rust": { "$ref": "#/$defs/nonEmpty" } } },
+    "requirements": { "type": "object", "additionalProperties": false, "required": ["minimumNode", "minimumRust"], "properties": { "minimumNode": { "$ref": "#/$defs/stableSemver" }, "minimumRust": { "$ref": "#/$defs/stableSemver" } } },
+    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$" }] },
     "receiptSummary": { "type": "object", "additionalProperties": false, "required": ["receiptId", "packageId", "version", "sourceCommit", "packedSha256", "tagUrl"], "properties": { "receiptId": { "$ref": "#/$defs/sha256" }, "packageId": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" }, "sourceCommit": { "$ref": "#/$defs/oid" }, "packedSha256": { "$ref": "#/$defs/sha256" }, "tagUrl": { "$ref": "#/$defs/httpsUrl" } } }
   }
 }

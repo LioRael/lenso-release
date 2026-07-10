@@ -106,7 +106,10 @@ export type SystemArtifact = {
 };
 
 export type CatalogReference = { url: string; sha256: Sha256 };
-export type ToolchainRequirements = { node: string; rust: string };
+export type ToolchainRequirements = {
+  minimumNode: string;
+  minimumRust: string;
+};
 
 export type ComponentReceiptSummary = {
   receiptId: Sha256;

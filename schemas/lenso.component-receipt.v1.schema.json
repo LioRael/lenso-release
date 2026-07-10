@@ -1,5 +1,6 @@
 {
   "$id": "https://lenso.dev/schemas/lenso.component-receipt.v1.schema.json",
+  "$comment": "Runtime assertion binds provenanceSubject.digest to packedSha256.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
@@ -12,7 +13,7 @@
     "repository": { "$ref": "#/$defs/nonEmpty" },
     "sourceCommit": { "$ref": "#/$defs/oid" },
     "packedSha256": { "$ref": "#/$defs/sha256" },
-    "registryIntegrity": { "$ref": "#/$defs/nonEmpty" },
+    "registryIntegrity": { "$ref": "#/$defs/registryIntegrity" },
     "registryUrl": { "$ref": "#/$defs/httpsUrl" },
     "provenanceUrl": { "$ref": "#/$defs/httpsUrl" },
     "provenanceSubject": {
@@ -21,7 +22,7 @@
       "required": ["name", "digest"],
       "properties": {
         "name": { "$ref": "#/$defs/nonEmpty" },
-        "digest": { "$ref": "#/$defs/nonEmpty" }
+        "digest": { "$ref": "#/$defs/sha256" }
       }
     },
     "workflowUrl": { "$ref": "#/$defs/httpsUrl" },
@@ -34,6 +35,8 @@
     "oid": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
     "httpsUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
-    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" }
+    "timestamp": { "$ref": "#/$defs/rfc3339" },
+    "rfc3339": { "type": "string", "pattern": "^[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$", "$comment": "Runtime assertion additionally validates leap-year calendar semantics." },
+    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$" }] }
   }
 }

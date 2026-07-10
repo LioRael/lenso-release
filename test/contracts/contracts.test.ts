@@ -13,13 +13,13 @@ import {
   assertSystemChannel,
   assertSystemRelease,
 } from "../../src/contracts/validate.js";
+import { sha256 as contentSha256, type JsonValue } from "../../src/core/canonical.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 const oid = (character: string) => character.repeat(40);
 
-const plan = {
+const planIdentity = {
   schema: "lenso.release-plan.v1",
-  planId: sha("a"),
   repository: "LioRael/lenso",
   sourceCommit: oid("1"),
   tegamiVersion: "1.2.5",
@@ -45,16 +45,21 @@ const plan = {
   ],
 };
 
+const plan = {
+  ...planIdentity,
+  planId: contentSha256(planIdentity as JsonValue),
+};
+
 const receipt = {
   schema: "lenso.component-receipt.v1",
   receiptId: sha("d"),
-  planId: sha("a"),
+  planId: plan.planId,
   packageId: "cargo:lenso-contracts",
   version: "0.3.5",
   repository: "LioRael/lenso",
   sourceCommit: oid("3"),
   packedSha256: sha("e"),
-  registryIntegrity: "sha256-native-registry-value",
+  registryIntegrity: "e".repeat(64),
   registryUrl: "https://crates.io/crates/lenso-contracts/0.3.5",
   provenanceUrl: "https://github.com/LioRael/lenso/attestations/1",
   provenanceSubject: {
@@ -92,7 +97,7 @@ const release = {
     url: "https://github.com/LioRael/lenso-release/releases/download/v0.1.0/modules.json",
     sha256: sha("0"),
   },
-  requirements: { node: "24.0.0", rust: "1.94.0" },
+  requirements: { minimumNode: "24.0.0", minimumRust: "1.94.0" },
   receipts: [
     {
       receiptId: receipt.receiptId,
@@ -106,18 +111,28 @@ const release = {
   systemSmokeRunUrls: ["https://github.com/LioRael/lenso-release/actions/runs/2"],
 };
 
-const candidateId = sha("9");
-const candidate = {
-  ...release,
+const candidateIdentity = {
   schema: "lenso.system-candidate.v1",
-  candidateId,
-  systemVersion: `0.2.0-next.c${"9".repeat(64)}`,
   proposedSystemVersion: "0.2.0",
   bumpReason: "highest user-facing component bump is minor",
   validation: {
     status: "passed",
     systemSmokeRunUrls: ["https://github.com/LioRael/lenso-release/actions/runs/3"],
   },
+  createdAt: release.createdAt,
+  repositories: release.repositories,
+  packages: release.packages,
+  artifacts: release.artifacts,
+  catalog: release.catalog,
+  requirements: release.requirements,
+  receipts: release.receipts,
+  systemSmokeRunUrls: release.systemSmokeRunUrls,
+};
+const candidateId = contentSha256(candidateIdentity as JsonValue);
+const candidate = {
+  ...candidateIdentity,
+  candidateId,
+  systemVersion: `0.2.0-next.c${candidateId.slice("sha256:".length)}`,
 };
 
 const event = {
@@ -135,12 +150,28 @@ const event = {
   packages: [{ id: "cargo:lenso-contracts", version: "0.3.5" }],
 };
 
+const receiptEvent = {
+  schema: "lenso.release-event.v1",
+  eventId: sha("7"),
+  eventType: "lenso-publish-receipt",
+  issuedAt: "2026-07-11T10:25:00Z",
+  nonce: "nonce-0987654321",
+  sourceRepository: receipt.repository,
+  expectedAppId: 123456,
+  planId: receipt.planId,
+  planUrl: "https://raw.githubusercontent.com/LioRael/lenso/main/.lenso-release/plan.json",
+  planSha256: sha("5"),
+  releaseCommit: receipt.sourceCommit,
+  correlationId: event.eventId,
+  receipt,
+};
+
 const channel = {
   schema: "lenso.system-channel.v1",
   channel: "stable",
   systemVersion: release.systemVersion,
   manifestUrl: "https://github.com/LioRael/lenso-release/releases/download/v0.1.0/manifest.json",
-  manifestSha256: sha("6"),
+  manifestSha256: contentSha256(release as JsonValue),
   updatedAt: "2026-07-11T10:30:00Z",
 };
 
@@ -148,9 +179,26 @@ const lock = {
   schema: "lenso.framework-lock.v1",
   systemVersion: release.systemVersion,
   channel: "stable",
-  manifestSha256: sha("6"),
+  manifestSha256: contentSha256(release as JsonValue),
   resolvedAt: "2026-07-11T10:30:00Z",
   manifest: release,
+};
+
+const floatingRequirementIdentity = {
+  ...planIdentity,
+  packages: [{
+    ...planIdentity.packages[0],
+    dependencies: [{
+      id: "cargo:lenso-auth",
+      requirement: "git:main",
+      resolvedVersion: "0.4.0",
+      source: "registry",
+    }],
+  }],
+};
+const floatingRequirementPlan = {
+  ...floatingRequirementIdentity,
+  planId: contentSha256(floatingRequirementIdentity as JsonValue),
 };
 
 const contracts = [
@@ -193,6 +241,20 @@ describe("public release contracts", () => {
     ["lenso.system-release.v1.schema.json", assertSystemRelease, { ...release, floatingRef: "main" }],
     ["lenso.system-channel.v1.schema.json", assertSystemChannel, { ...channel, channel: "latest" }],
     ["lenso.framework-lock.v1.schema.json", assertFrameworkLock, { ...lock, channel: "next" }],
+    ["lenso.system-channel.v1.schema.json", assertSystemChannel, {
+      ...channel,
+      channel: "next",
+      candidateId,
+      systemVersion: `0.2.0-alpha-next.c${candidateId.slice("sha256:".length)}`,
+    }],
+    ["lenso.framework-lock.v1.schema.json", assertFrameworkLock, { ...lock, resolvedAt: "2026-02-30T10:00:00Z" }],
+    ["lenso.release-event.v1.schema.json", assertReleaseEvent, { ...event, issuedAt: "2026-07-11T24:00:00Z" }],
+    ["lenso.release-plan.v1.schema.json", assertReleasePlan, floatingRequirementPlan],
+    ["lenso.component-receipt.v1.schema.json", assertComponentReceipt, { ...receipt, registryIntegrity: "latest" }],
+    ["lenso.system-release.v1.schema.json", assertSystemRelease, {
+      ...release,
+      requirements: { ...release.requirements, minimumNode: "latest" },
+    }],
   ] as const)("rejects the same structural invalid fixture through %s and runtime validation", (file, assertContract, fixture) => {
     expect(() => assertContract(fixture)).toThrow();
     expect(ajv.validate(schemaNamed(file), fixture)).toBe(false);
@@ -200,6 +262,24 @@ describe("public release contracts", () => {
 
   it("accepts an exact dependency snapshot", () => {
     expect(() => assertReleasePlan(plan)).not.toThrow();
+  });
+
+  it("rejects a well-formed plan ID when canonical plan bytes change", () => {
+    expect(() => assertReleasePlan({ ...plan, repository: "LioRael/other" })).toThrow();
+  });
+
+  it("rejects a string-coupled candidate ID when canonical candidate bytes change", () => {
+    expect(() => assertSystemCandidate({
+      ...candidate,
+      bumpReason: "changed without deriving a new candidate identity",
+    })).toThrow();
+  });
+
+  it("rejects a framework lock whose manifest digest does not match its embedded manifest", () => {
+    expect(() => assertFrameworkLock({
+      ...lock,
+      manifest: { ...release, createdAt: "2026-07-11T10:11:00Z" },
+    })).toThrow();
   });
 
   it("rejects floating dependency sources", () => {
@@ -216,6 +296,57 @@ describe("public release contracts", () => {
       }],
     };
     expect(() => assertReleasePlan(floating)).toThrow();
+  });
+
+  it("rejects a floating requirement even with registry source and an exact resolved version", () => {
+    expect(() => assertReleasePlan(floatingRequirementPlan)).toThrow();
+  });
+
+  it.each(["../local", "main", "https://example.com/pkg", "workspace:^1.0.0", "file:../pkg", "path:../pkg"])(
+    "rejects non-registry dependency requirement %s",
+    (requirement) => {
+      const identity = {
+        ...floatingRequirementIdentity,
+        packages: [{
+          ...floatingRequirementIdentity.packages[0],
+          dependencies: [{ ...floatingRequirementIdentity.packages[0]!.dependencies[0], requirement }],
+        }],
+      };
+      expect(() => assertReleasePlan({
+        ...identity,
+        planId: contentSha256(identity as JsonValue),
+      })).toThrow();
+    },
+  );
+
+  it("validates native registry integrity and binds provenance to the packed subject", () => {
+    expect(() => assertComponentReceipt({ ...receipt, registryIntegrity: "latest" })).toThrow();
+    expect(() => assertComponentReceipt({
+      ...receipt,
+      provenanceSubject: { ...receipt.provenanceSubject, digest: sha("f") },
+    })).toThrow();
+    expect(() => assertComponentReceipt({
+      ...receipt,
+      registryIntegrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}`,
+    })).not.toThrow();
+  });
+
+  it("binds publish-receipt event routing fields to the nested receipt", () => {
+    expect(() => assertReleaseEvent(receiptEvent)).not.toThrow();
+    expect(() => assertReleaseEvent({ ...receiptEvent, planId: sha("8") })).toThrow();
+    expect(() => assertReleaseEvent({ ...receiptEvent, sourceRepository: "LioRael/other" })).toThrow();
+    expect(() => assertReleaseEvent({ ...receiptEvent, releaseCommit: oid("8") })).toThrow();
+  });
+
+  it("rejects floating system minimum requirements", () => {
+    expect(() => assertSystemRelease({
+      ...release,
+      requirements: { ...release.requirements, minimumNode: "latest" },
+    })).toThrow();
+    expect(() => assertSystemRelease({
+      ...release,
+      requirements: { ...release.requirements, minimumRust: "stable" },
+    })).toThrow();
   });
 
   it("rejects malformed hashes, OIDs, enums, duplicate IDs, and unknown fields", () => {

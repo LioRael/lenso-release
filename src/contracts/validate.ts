@@ -7,6 +7,7 @@ import type {
   SystemChannelV1,
   SystemReleaseV1,
 } from "./types.js";
+import { sha256 as canonicalSha256, type JsonValue } from "../core/canonical.js";
 
 type RecordValue = Record<string, unknown>;
 
@@ -110,10 +111,49 @@ function stableSemver(value: unknown, path: string): string {
 
 function timestamp(value: unknown, path: string): string {
   const result = string(value, path);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(result) || Number.isNaN(Date.parse(result))) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u.exec(result);
+  if (!match) {
     fail(path, "must be an RFC 3339 timestamp");
   }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > (days[month - 1] ?? 0)) {
+    fail(path, "must contain a real calendar date");
+  }
   return result;
+}
+
+function immutableRequirement(value: unknown, path: string): string {
+  const result = string(value, path);
+  if (
+    !/[0-9]/u.test(result) ||
+    !/^[0-9A-Za-z<>=~^|,. +\-]+$/u.test(result) ||
+    /(?:^|[^A-Za-z])(git|https?|ssh|file|path|workspace|main|master|latest|stable)(?:[^A-Za-z]|$)/iu.test(result) ||
+    /[*x]/iu.test(result)
+  ) {
+    fail(path, "must be an immutable registry version requirement");
+  }
+  return result;
+}
+
+function registryIntegrity(value: unknown, path: string): string {
+  const result = string(value, path);
+  if (/^[0-9a-f]{64}$/u.test(result)) return result;
+  const sri = /^sha512-([A-Za-z0-9+/]+={0,2})$/u.exec(result);
+  if (!sri) fail(path, "must be a crates.io SHA-256 checksum or npm sha512 SRI");
+  const encoded = sri[1] as string;
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.length !== 64 || decoded.toString("base64") !== encoded) {
+    fail(path, "must contain a canonical 64-byte npm sha512 SRI digest");
+  }
+  return result;
+}
+
+function digestRecord(value: RecordValue): string {
+  return canonicalSha256(value as unknown as JsonValue);
 }
 
 function url(value: unknown, path: string): string {
@@ -192,7 +232,7 @@ export function assertReleasePlan(value: unknown): asserts value is ReleasePlanV
       const dependencyPath = `${path}.dependencies[${dependencyIndex}]`;
       const resolved = record(dependency, dependencyPath, ["id", "requirement", "resolvedVersion", "source"]);
       string(resolved.id, `${dependencyPath}.id`);
-      string(resolved.requirement, `${dependencyPath}.requirement`);
+      immutableRequirement(resolved.requirement, `${dependencyPath}.requirement`);
       semver(resolved.resolvedVersion, `${dependencyPath}.resolvedVersion`);
       enumeration(resolved.source, `${dependencyPath}.source`, ["registry", "plan"]);
       return resolved;
@@ -201,6 +241,8 @@ export function assertReleasePlan(value: unknown): asserts value is ReleasePlanV
     return item;
   });
   unique(packages, "id", "releasePlan.packages");
+  const { planId, ...identity } = plan;
+  if (planId !== digestRecord(identity)) fail("releasePlan.planId", "must match the canonical plan identity payload");
 }
 
 function assertEventPackage(value: unknown, path: string): RecordValue {
@@ -242,6 +284,10 @@ export function assertReleaseEvent(value: unknown): asserts value is ReleaseEven
   } else if (eventType === "lenso-publish-receipt") {
     sha256(event.correlationId, "releaseEvent.correlationId");
     assertComponentReceipt(event.receipt);
+    const receipt = event.receipt as ComponentReceiptV1;
+    if (event.planId !== receipt.planId) fail("releaseEvent.planId", "must match receipt.planId");
+    if (event.sourceRepository !== receipt.repository) fail("releaseEvent.sourceRepository", "must match receipt.repository");
+    if (event.releaseCommit !== receipt.sourceCommit) fail("releaseEvent.releaseCommit", "must match receipt.sourceCommit");
   }
 }
 
@@ -258,13 +304,16 @@ export function assertComponentReceipt(value: unknown): asserts value is Compone
   semver(receipt.version, "componentReceipt.version");
   string(receipt.repository, "componentReceipt.repository");
   oid(receipt.sourceCommit, "componentReceipt.sourceCommit");
-  sha256(receipt.packedSha256, "componentReceipt.packedSha256");
-  string(receipt.registryIntegrity, "componentReceipt.registryIntegrity");
+  const packedSha256 = sha256(receipt.packedSha256, "componentReceipt.packedSha256");
+  registryIntegrity(receipt.registryIntegrity, "componentReceipt.registryIntegrity");
   url(receipt.registryUrl, "componentReceipt.registryUrl");
   url(receipt.provenanceUrl, "componentReceipt.provenanceUrl");
   const subject = record(receipt.provenanceSubject, "componentReceipt.provenanceSubject", ["name", "digest"]);
   string(subject.name, "componentReceipt.provenanceSubject.name");
-  string(subject.digest, "componentReceipt.provenanceSubject.digest");
+  const subjectDigest = sha256(subject.digest, "componentReceipt.provenanceSubject.digest");
+  if (subjectDigest !== packedSha256) {
+    fail("componentReceipt.provenanceSubject.digest", "must match packedSha256");
+  }
   url(receipt.workflowUrl, "componentReceipt.workflowUrl");
   url(receipt.tagUrl, "componentReceipt.tagUrl");
   timestamp(receipt.publishedAt, "componentReceipt.publishedAt");
@@ -287,7 +336,7 @@ function assertSystemComponents(value: RecordValue, path: string): void {
     semver(item.version, `${itemPath}.version`);
     url(item.tagUrl, `${itemPath}.tagUrl`);
     url(item.registryUrl, `${itemPath}.registryUrl`);
-    string(item.registryIntegrity, `${itemPath}.registryIntegrity`);
+    registryIntegrity(item.registryIntegrity, `${itemPath}.registryIntegrity`);
     return item;
   });
   unique(packages, "id", `${path}.packages`);
@@ -304,9 +353,9 @@ function assertSystemComponents(value: RecordValue, path: string): void {
   const catalog = record(value.catalog, `${path}.catalog`, ["url", "sha256"]);
   url(catalog.url, `${path}.catalog.url`);
   sha256(catalog.sha256, `${path}.catalog.sha256`);
-  const requirements = record(value.requirements, `${path}.requirements`, ["node", "rust"]);
-  string(requirements.node, `${path}.requirements.node`);
-  string(requirements.rust, `${path}.requirements.rust`);
+  const requirements = record(value.requirements, `${path}.requirements`, ["minimumNode", "minimumRust"]);
+  stableSemver(requirements.minimumNode, `${path}.requirements.minimumNode`);
+  stableSemver(requirements.minimumRust, `${path}.requirements.minimumRust`);
   const receipts = array(value.receipts, `${path}.receipts`).map((entry, index) => {
     const itemPath = `${path}.receipts[${index}]`;
     const item = record(entry, itemPath, ["receiptId", "packageId", "version", "sourceCommit", "packedSha256", "tagUrl"]);
@@ -350,6 +399,11 @@ export function assertSystemCandidate(value: unknown): asserts value is SystemCa
   array(validation.systemSmokeRunUrls, "systemCandidate.validation.systemSmokeRunUrls", true).forEach((entry, index) =>
     url(entry, `systemCandidate.validation.systemSmokeRunUrls[${index}]`));
   assertSystemComponents(candidate, "systemCandidate");
+  const { candidateId: _candidateId, systemVersion: _systemVersion, ...identity } = candidate;
+  const computedCandidateId = digestRecord(identity);
+  if (candidateId !== computedCandidateId) {
+    fail("systemCandidate.candidateId", "must match the canonical candidate identity payload");
+  }
 }
 
 export function assertSystemChannel(value: unknown): asserts value is SystemChannelV1 {
@@ -359,14 +413,15 @@ export function assertSystemChannel(value: unknown): asserts value is SystemChan
     ? ["schema", "channel", "systemVersion", "candidateId", "manifestUrl", "manifestSha256", "updatedAt"]
     : ["schema", "channel", "systemVersion", "manifestUrl", "manifestSha256", "updatedAt"]);
   literal(pointer.schema, "systemChannel.schema", "lenso.system-channel.v1");
-  const version = semver(pointer.systemVersion, "systemChannel.systemVersion");
   if (channel === "next") {
     const candidateId = sha256(pointer.candidateId, "systemChannel.candidateId");
-    if (!version.endsWith(`-next.c${candidateId.slice("sha256:".length)}`)) {
-      fail("systemChannel.systemVersion", "must match candidateId");
+    const version = string(pointer.systemVersion, "systemChannel.systemVersion");
+    const match = /^((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-next\.c([0-9a-f]{64})$/u.exec(version);
+    if (!match || `sha256:${match[2]}` !== candidateId) {
+      fail("systemChannel.systemVersion", "must be an exact candidate version matching candidateId");
     }
   } else {
-    stableSemver(version, "systemChannel.systemVersion");
+    stableSemver(pointer.systemVersion, "systemChannel.systemVersion");
   }
   url(pointer.manifestUrl, "systemChannel.manifestUrl");
   sha256(pointer.manifestSha256, "systemChannel.manifestSha256");
@@ -380,11 +435,14 @@ export function assertFrameworkLock(value: unknown): asserts value is FrameworkL
   literal(lock.schema, "frameworkLock.schema", "lenso.framework-lock.v1");
   const version = semver(lock.systemVersion, "frameworkLock.systemVersion");
   const channel = enumeration(lock.channel, "frameworkLock.channel", ["stable", "next"]);
-  sha256(lock.manifestSha256, "frameworkLock.manifestSha256");
+  const manifestSha256 = sha256(lock.manifestSha256, "frameworkLock.manifestSha256");
   timestamp(lock.resolvedAt, "frameworkLock.resolvedAt");
   if (channel === "stable") assertSystemRelease(lock.manifest);
   else assertSystemCandidate(lock.manifest);
   if ((lock.manifest as SystemReleaseV1 | SystemCandidateV1).systemVersion !== version) {
     fail("frameworkLock.systemVersion", "must match manifest.systemVersion");
+  }
+  if (manifestSha256 !== canonicalSha256(lock.manifest as unknown as JsonValue)) {
+    fail("frameworkLock.manifestSha256", "must match the exact embedded manifest bytes");
   }
 }
