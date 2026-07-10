@@ -192,11 +192,19 @@ async function publishOnce(cwd: string, item: PublishSelection): Promise<void> {
     await execFile("cargo", ["publish", "--locked", "-p", item.id.slice(6), "--token", process.env.CARGO_REGISTRY_TOKEN], { cwd });
   }
 }
-async function createAttestation(artifactPath: string, environment: RuntimeEnvironment): Promise<string> {
-  const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: environment.githubToken } });
-  const url = /https:\/\/github\.com\/[^\s]+/u.exec(stdout)?.[0];
-  if (!url) fail("attestation URL missing");
-  return url;
+async function createAttestation(artifactPath: string, artifactBytes: Uint8Array, environment: RuntimeEnvironment): Promise<string> {
+  let cleanup: string | undefined;
+  if (!artifactPath) {
+    cleanup = await mkdtemp(join(tmpdir(), "lenso-recovery-")); artifactPath = join(cleanup, "artifact");
+    const handle = await open(artifactPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    try { await handle.writeFile(artifactBytes); } finally { await handle.close(); }
+  }
+  try {
+    const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: environment.githubToken } });
+    const url = /https:\/\/github\.com\/[^\s]+/u.exec(stdout)?.[0];
+    if (!url) fail("attestation URL missing");
+    return url;
+  } finally { if (cleanup) await rm(cleanup, { recursive: true, force: true }); }
 }
 function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment): ComponentReceiptV1 {
   const identity = {
@@ -240,6 +248,13 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
   for (const item of environment.packages) {
     const name = item.id.slice(item.id.indexOf(":") + 1);
     let observed = item.id.startsWith("npm:") ? await npmObservation(name, item.version) : await cargoObservation(name, item.version);
+    if (observed.exists) {
+      const recovered = await readExistingReceipt(item, environment);
+      if (recovered) {
+        if (recovered.planId !== plan.planId || recovered.sourceCommit !== environment.releaseCommit || recovered.packedSha256 !== hash(observed.bytes!) || recovered.registryIntegrity !== observed.integrity || recovered.registryUrl !== observed.url || recovered.publishedAt !== observed.publishedAt) fail("existing receipt contradicts authoritative registry state");
+        await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
+      }
+    }
     let artifact = observed.exists ? { path: "", bytes: Buffer.from(observed.bytes!) } : await packedArtifact(environment.cwd, item);
     if (!observed.exists) {
       await publishOnce(environment.cwd, item);
@@ -247,19 +262,13 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
       if (!observed.exists) fail("published package is not registry-visible");
       if (hash(observed.bytes!) !== hash(artifact.bytes)) fail("registry archive differs from packed archive");
     }
-    const provenanceUrl = await createAttestation(artifact.path || await materializeTemp(artifact.bytes), environment);
+    const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
     const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment);
     await createImmutableTag(receipt, environment);
     await dispatchReceipt(receipt, environment);
     receipts.push(receipt);
   }
   return receipts;
-}
-async function materializeTemp(bytes: Uint8Array): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "lenso-recovery-"));
-  const path = join(directory, "artifact");
-  await (await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)).writeFile(bytes);
-  return path;
 }
 async function createImmutableTag(receipt: ComponentReceiptV1, environment: RuntimeEnvironment): Promise<void> {
   const tag = `${receipt.packageId.slice(receipt.packageId.indexOf(":") + 1)}@${receipt.version}`;
@@ -268,7 +277,10 @@ async function createImmutableTag(receipt: ComponentReceiptV1, environment: Runt
   const existing = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers: auth, redirect: "error" });
   if (existing.ok) {
     const body = await existing.json() as { object?: { sha?: string } };
-    if (body.object?.sha !== environment.releaseCommit) fail("existing tag target contradiction");
+    const tagObject = await fetch(`${api}/repos/${environment.repository}/git/tags/${body.object?.sha ?? ""}`, { headers: auth, redirect: "error" });
+    if (!tagObject.ok) fail("existing annotated tag is unreadable");
+    const value = await tagObject.json() as { object?: { sha?: string }; message?: string };
+    if (value.object?.sha !== environment.releaseCommit || value.message !== canonicalBytes(receipt as unknown as JsonValue).toString("utf8")) fail("existing tag receipt contradiction");
     return;
   }
   if (existing.status !== 404) fail(`tag observation ${existing.status}`);
@@ -277,6 +289,19 @@ async function createImmutableTag(receipt: ComponentReceiptV1, environment: Runt
   const { sha } = await object.json() as { sha?: string };
   const ref = await fetch(`${api}/repos/${environment.repository}/git/refs`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }) });
   if (!ref.ok) fail(`tag ref creation ${ref.status}`);
+}
+async function readExistingReceipt(item: PublishSelection, environment: RuntimeEnvironment): Promise<ComponentReceiptV1 | null> {
+  const tag = `${item.id.slice(item.id.indexOf(":") + 1)}@${item.version}`; const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
+  const ref = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers, redirect: "error" });
+  if (ref.status === 404) return null; if (!ref.ok) fail(`tag observation ${ref.status}`);
+  const refBody = await ref.json() as { object?: { sha?: string; type?: string } }; if (refBody.object?.type !== "tag" || !refBody.object.sha) fail("release tag is not annotated");
+  const object = await fetch(`${api}/repos/${environment.repository}/git/tags/${refBody.object.sha}`, { headers, redirect: "error" }); if (!object.ok) fail(`annotated tag observation ${object.status}`);
+  const tagBody = await object.json() as { object?: { sha?: string }; message?: string };
+  if (tagBody.object?.sha !== environment.releaseCommit || typeof tagBody.message !== "string") fail("annotated tag target contradiction");
+  const receipt = parseJson<unknown>(Buffer.from(tagBody.message), "tag receipt"); assertComponentReceipt(receipt);
+  if (receipt.packageId !== item.id || receipt.version !== item.version || receipt.repository !== environment.repository) fail("annotated tag receipt identity contradiction");
+  return receipt;
 }
 
 export async function createPlan(cwd: string, repository: string, sourceCommit: string): Promise<ReleasePlanV1> {

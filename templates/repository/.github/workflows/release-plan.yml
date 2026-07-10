@@ -33,6 +33,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: 24.18.0, cache: pnpm }
+      - name: Install reviewed planning toolchains
+        run: |
+          corepack enable
+          npm install --global npm@11.7.0
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
       - name: Emit ready event for an approved merged plan
         if: ${{ hashFiles('.lenso-release/plan.json') != '' }}
         env:

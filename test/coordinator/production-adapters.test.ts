@@ -135,7 +135,7 @@ describe("production coordinator adapters", () => {
       repository: "LioRael/lenso",
       workflow: ".github/workflows/publish.yml",
       ref: `release-execution/${"b".repeat(64)}`,
-      inputs: { event: "{}", plan_id: eventId, plan_sha256: eventId, release_commit: "2".repeat(40), packages: "[]", source_repository: "LioRael/lenso-release" },
+      inputs: { event_id: eventId, plan_id: eventId, plan_sha256: eventId, release_commit: "2".repeat(40), packages_json: "[]", nonce: "nonce" },
     }, eventId, "token");
     expect(run.runUrl).toBe("https://github.com/LioRael/lenso/actions/runs/99");
     expect(posts).toBe(1);

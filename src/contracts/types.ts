@@ -110,7 +110,7 @@ export type PlanDispatchOutbox = {
   ref: string;
   workflow: string;
   packages: EventPackage[];
-  inputs: Record<"event" | "plan_id" | "plan_sha256" | "release_commit" | "packages" | "source_repository", string>;
+  inputs: Record<"event_id" | "plan_id" | "plan_sha256" | "release_commit" | "packages_json" | "nonce", string>;
   status: "pending" | "in-flight" | "dispatched" | "cancelled";
   claimOwner: string | null;
   leaseExpiresAt: string | null;

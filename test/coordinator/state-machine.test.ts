@@ -71,14 +71,14 @@ function state(): PlanStateV1 {
         workflow: ".github/workflows/publish.yml",
         packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }],
         inputs: {
-          event: "{}",
+          event_id: digest("c"),
           plan_id: planId,
           plan_sha256: digest("b"),
           release_commit: "2".repeat(40),
-          packages: JSON.stringify([
+          packages_json: JSON.stringify([
             { id: "cargo:lenso-contracts", version: "1.0.0" },
           ]),
-          source_repository: "LioRael/lenso-release",
+          nonce: "nonce",
         },
         status: "pending",
         claimOwner: null,
