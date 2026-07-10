@@ -8,31 +8,63 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-function normalize(value: unknown): JsonValue {
+function serialize(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return value;
+    return JSON.stringify(value);
   }
   if (typeof value === "number") {
-    if (Number.isFinite(value)) return value;
+    if (Number.isFinite(value)) return JSON.stringify(value);
     throw new TypeError("canonical JSON cannot encode a non-finite number");
   }
-  if (Array.isArray(value)) return value.map(normalize);
+  if (Array.isArray(value)) {
+    const keys = Reflect.ownKeys(value);
+    const expectedKeyCount = value.length + 1;
+    if (
+      keys.length !== expectedKeyCount ||
+      !keys.every((key) =>
+        key === "length" ||
+        (typeof key === "string" &&
+          Number.isSafeInteger(Number(key)) &&
+          String(Number(key)) === key &&
+          Number(key) >= 0 &&
+          Number(key) < value.length)
+      )
+    ) {
+      throw new TypeError("canonical JSON cannot encode a non-JSON array");
+    }
+    return `[${value.map((item) => serialize(item)).join(",")}]`;
+  }
   if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, normalize(record[key])])
-    );
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("canonical JSON cannot encode a non-plain object");
+    }
+
+    const entries = Reflect.ownKeys(value)
+      .map((key): [string, unknown] => {
+        if (typeof key !== "string") {
+          throw new TypeError("canonical JSON cannot encode a symbol-keyed object");
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new TypeError("canonical JSON cannot encode a non-data property");
+        }
+        return [key, descriptor.value];
+      })
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+
+    return `{${entries
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${serialize(entryValue)}`)
+      .join(",")}}`;
   }
   throw new TypeError(`canonical JSON cannot encode ${typeof value}`);
 }
 
-export function canonicalBytes(value: unknown): Buffer {
-  return Buffer.from(JSON.stringify(normalize(value)), "utf8");
+export function canonicalBytes(value: JsonValue): Buffer {
+  return Buffer.from(serialize(value), "utf8");
 }
 
-export function sha256(value: unknown | Uint8Array): string {
+export function sha256(value: JsonValue | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : canonicalBytes(value);
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
