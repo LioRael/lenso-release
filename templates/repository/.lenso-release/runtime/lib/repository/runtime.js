@@ -142,7 +142,10 @@ async function npmObservation(name, version) {
     const publishedAt = String(body.date ?? body.publishedAt ?? "");
     if (!tarball || !integrity || !publishedAt)
         fail("npm registry observation incomplete");
-    const artifact = await fetch(tarball, { redirect: "error" });
+    const artifactUrl = process.env.LENSO_TEST_ARTIFACT_PROXY_URL || tarball;
+    if (process.env.LENSO_TEST_ARTIFACT_PROXY_URL && process.env.NODE_ENV !== "test")
+        fail("artifact proxy is test-only");
+    const artifact = await fetch(artifactUrl, { redirect: "error" });
     if (!artifact.ok)
         fail(`npm tarball fetch ${artifact.status}`);
     return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity, url: tarball, publishedAt };
