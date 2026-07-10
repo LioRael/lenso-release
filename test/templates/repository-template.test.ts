@@ -134,7 +134,7 @@ describe("publisher preflight execution gate", () => {
     const requests: { method?: string; url?: string; body: string }[] = []; const archive = Buffer.from("reviewed archive"); let base = "";
     const server = createServer((request, response) => { let body = ""; request.on("data", (chunk) => { body += chunk; }); request.on("end", () => { requests.push({ method: request.method, url: request.url, body }); response.setHeader("content-type", "application/json");
       if (request.url === "/artifact.tgz") { response.setHeader("content-type", "application/octet-stream"); response.end(archive); }
-      else if (request.url?.startsWith("/registry/")) response.end(JSON.stringify({ date: "2026-07-11T00:00:00.000Z", dist: { integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`, tarball: `${base}/artifact.tgz` } }));
+      else if (request.url?.startsWith("/registry/")) response.end(JSON.stringify({ date: "2026-07-11T00:00:00.000Z", dist: { integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`, tarball: "https://registry.npmjs.org/@lenso/runtime-console-api/-/runtime-console-api-0.1.1.tgz" } }));
       else if (request.url?.includes("/git/ref/tags/")) { response.statusCode = 404; response.end("{}"); }
       else if (request.url?.endsWith("/git/tags")) response.end(JSON.stringify({ sha: "a".repeat(40) }));
       else if (request.url?.endsWith("/git/refs")) response.end("{}");
@@ -146,13 +146,13 @@ describe("publisher preflight execution gate", () => {
     await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$*" >> '${npmLog}'\necho 11.7.0\n`); await chmod(join(bin, "npm"), 0o755);
     await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.92.0 (x)'\n"); await chmod(join(bin, "rustc"), 0o755);
     await writeFile(join(bin, "gh"), "#!/bin/sh\necho 'https://github.com/LioRael/lenso-runtime-console/attestations/1'\n"); await chmod(join(bin, "gh"), 0o755);
-    const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, github: process.env.LENSO_GITHUB_API_URL, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID };
-    Object.assign(process.env, { PATH: `${bin}:${saved.PATH}`, RUNNER_IMAGE: "ubuntu-24.04", LENSO_NPM_REGISTRY_URL: `${base}/registry`, LENSO_GITHUB_API_URL: base, LENSO_COORDINATOR_RECEIPT_URL: `${base}/receipt`, LENSO_COORDINATOR_CLEANUP_URL: `${base}/cleanup`, LENSO_APP_ID: "123" });
+    const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, proxy: process.env.LENSO_TEST_ARTIFACT_PROXY_URL, github: process.env.LENSO_GITHUB_API_URL, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID };
+    Object.assign(process.env, { PATH: `${bin}:${saved.PATH}`, RUNNER_IMAGE: "ubuntu-24.04", LENSO_NPM_REGISTRY_URL: `${base}/registry`, LENSO_TEST_ARTIFACT_PROXY_URL: `${base}/artifact.tgz`, LENSO_GITHUB_API_URL: base, LENSO_COORDINATOR_RECEIPT_URL: `${base}/receipt`, LENSO_COORDINATOR_CLEANUP_URL: `${base}/cleanup`, LENSO_APP_ID: "123" });
     const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "app-token", eventId: `sha256:${"e".repeat(64)}`, planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
     try {
       const first = await publishSelected(environment); const second = await publishSelected(environment);
       expect(first[0]?.receiptId).toBe(second[0]?.receiptId); expect(await readFile(npmLog, "utf8")).not.toContain("publish");
       expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(2);
-    } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
+    } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
   });
 });
