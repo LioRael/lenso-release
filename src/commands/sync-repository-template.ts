@@ -47,7 +47,7 @@ async function sourceFiles(root: string): Promise<{ path: string; bytes: Buffer;
     }
   }
   await walk(root);
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+  return files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 function validateManifest(value: unknown): TemplateManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid installed manifest");

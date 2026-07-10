@@ -59,5 +59,5 @@ async function walk(directory) {
   }
 }
 await walk(output);
-files.sort((a, b) => a.path.localeCompare(b.path));
+files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 await writeFile(join(output, "manifest.json"), `${JSON.stringify({ schema: "lenso.repository-runtime.v1", sourceRevision: revision, files }, null, 2)}\n`);
