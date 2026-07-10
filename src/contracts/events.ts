@@ -8,7 +8,12 @@ export type ObservedPublishRequest = {
   appId: number;
   repository: string;
   sourceRepository: string;
+  sourceCommit: string;
   releaseCommit: string;
+  sourceCommitRepository: string;
+  releaseCommitRepository: string;
+  releaseCommitContainsSourceCommit: boolean;
+  planSha256: string;
   ref: string;
   workflowPath: string;
 };

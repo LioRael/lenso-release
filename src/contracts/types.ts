@@ -28,6 +28,7 @@ export type PublisherContract = {
   sharedBundleSha256: Sha256;
   runner: string;
   node: string;
+  npm: string;
   rust: string;
 };
 

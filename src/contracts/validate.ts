@@ -247,7 +247,7 @@ function unique(items: RecordValue[], key: string, path: string): void {
 function assertPublisher(value: unknown, path: string): void {
   const item = record(value, path, [
     "workflow", "workflowSha256", "sharedRevision", "sharedBundleSha256",
-    "runner", "node", "rust",
+    "runner", "node", "npm", "rust",
   ]);
   const workflow = string(item.workflow, `${path}.workflow`);
   if (!/^\.github\/workflows\/[A-Za-z0-9._/-]+\.ya?ml$/u.test(workflow)) {
@@ -261,6 +261,7 @@ function assertPublisher(value: unknown, path: string): void {
     fail(`${path}.runner`, "must be a pinned runner label");
   }
   stableSemver(item.node, `${path}.node`);
+  stableSemver(item.npm, `${path}.npm`);
   stableSemver(item.rust, `${path}.rust`);
 }
 

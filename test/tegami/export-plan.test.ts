@@ -15,6 +15,7 @@ const publisher = {
   sharedBundleSha256: `sha256:${"4".repeat(64)}` as const,
   runner: "ubuntu-24.04",
   node: "24.0.0",
+  npm: "11.7.0",
   rust: "1.94.0",
 };
 

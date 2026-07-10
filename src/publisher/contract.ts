@@ -16,9 +16,14 @@ export type ObservedPublisherEnvironment = {
   githubSha: string;
   runner: string;
   node: string;
+  npm: string;
   rust: string;
   planId: string;
   sourceCommit: string;
+  releaseCommit: string;
+  sourceCommitRepository: string;
+  releaseCommitRepository: string;
+  releaseCommitContainsSourceCommit: boolean;
   packages: readonly EventPackage[];
 };
 
@@ -55,9 +60,15 @@ function equalPackages(actual: readonly EventPackage[], expected: readonly Event
   }
 }
 
+function assertObservedOid(value: string, name: string): void {
+  if (!/^[0-9a-f]{40}$/u.test(value)) throw new Error(`${name} must be a full lowercase Git OID`);
+}
+
 export function verifyPublisherContract(planValue: unknown, observed: ObservedPublisherEnvironment): void {
   assertReleasePlan(planValue);
   const plan = planValue;
+  assertObservedOid(observed.sourceCommit, "publisher source commit");
+  assertObservedOid(observed.releaseCommit, "publisher release commit");
   const expectedPackages = plan.packages.map(({ id, nextVersion: version }) => ({ id, version }));
   const checks: readonly [unknown, unknown, string][] = [
     [observed.workflowPath, plan.publisher.workflow, "publisher workflow path mismatch"],
@@ -65,24 +76,29 @@ export function verifyPublisherContract(planValue: unknown, observed: ObservedPu
     [observed.sharedRevision, plan.publisher.sharedRevision, "shared publisher revision mismatch"],
     [observed.sharedBundleSha256, plan.publisher.sharedBundleSha256, "shared publisher bundle digest mismatch"],
     [observed.executionRef, executionRef(plan.planId), "execution ref mismatch"],
-    [observed.executionRefTip, plan.sourceCommit, "execution ref tip mismatch"],
-    [observed.githubSha, plan.sourceCommit, "github.sha mismatch"],
+    [observed.executionRefTip, observed.releaseCommit, "execution ref tip mismatch"],
+    [observed.githubSha, observed.releaseCommit, "github.sha mismatch"],
     [observed.runner, plan.publisher.runner, "publisher runner mismatch"],
     [observed.node, plan.publisher.node, "publisher Node version mismatch"],
+    [observed.npm, plan.publisher.npm, "publisher npm version mismatch"],
     [observed.rust, plan.publisher.rust, "publisher Rust version mismatch"],
     [observed.repository, plan.repository, "publisher repository mismatch"],
     [observed.planId, plan.planId, "publisher planId mismatch"],
     [observed.sourceCommit, plan.sourceCommit, "publisher source commit mismatch"],
+    [observed.sourceCommitRepository, plan.repository, "source commit repository mismatch"],
+    [observed.releaseCommitRepository, plan.repository, "release commit repository mismatch"],
   ];
   for (const [actual, expected, message] of checks) if (actual !== expected) throw new Error(message);
+  if (observed.releaseCommit === observed.sourceCommit) throw new Error("publisher release commit must be distinct from source commit");
+  if (!observed.releaseCommitContainsSourceCommit) throw new Error("release commit does not contain source commit");
   equalPackages(observed.packages, expectedPackages, "publisher");
 }
 
-function expectedPlanUrl(plan: ReleasePlanV1, path: string): string {
+function expectedPlanUrl(plan: ReleasePlanV1, releaseCommit: string, path: string): string {
   if (path.startsWith("/") || path.includes("..") || path.includes("\\") || path.split("/").some((part) => part === "" || part === ".")) {
     throw new Error("plan path must be normalized");
   }
-  return `https://raw.githubusercontent.com/${plan.repository}/${plan.sourceCommit}/${path}`;
+  return `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/${path}`;
 }
 
 function assertCanonicalEventId(event: PublishRequestV1): void {
@@ -105,16 +121,23 @@ export async function assertPublishRequest(
   const plan: ReleasePlanV1 = planValue;
 
   assertCanonicalEventId(event);
+  assertObservedOid(observed.sourceCommit, "observed source commit");
+  assertObservedOid(observed.releaseCommit, "observed release commit");
   if (event.expectedAppId !== policy.expectedAppId || observed.appId !== policy.expectedAppId) throw new Error("GitHub App ID mismatch");
   if (observed.actor !== policy.expectedActor) throw new Error("GitHub actor mismatch");
   if (event.sourceRepository !== policy.expectedSourceRepository) throw new Error("source repository mismatch");
   if (observed.sourceRepository !== policy.expectedSourceRepository) throw new Error("observed source repository mismatch");
   if (observed.repository !== plan.repository) throw new Error("observed repository mismatch");
-  if (event.planId !== plan.planId || event.planSha256 !== plan.planId) throw new Error("plan digest mismatch");
-  if (event.releaseCommit !== plan.sourceCommit || observed.releaseCommit !== plan.sourceCommit) throw new Error("observed release commit mismatch");
+  if (event.planId !== plan.planId || event.planSha256 !== observed.planSha256) throw new Error("plan digest mismatch");
+  if (observed.sourceCommit !== plan.sourceCommit) throw new Error("observed source commit mismatch");
+  if (observed.sourceCommitRepository !== plan.repository) throw new Error("source commit repository mismatch");
+  if (observed.releaseCommitRepository !== plan.repository) throw new Error("release commit repository mismatch");
+  if (!observed.releaseCommitContainsSourceCommit) throw new Error("release commit does not contain source commit");
+  if (observed.releaseCommit === observed.sourceCommit) throw new Error("release commit must be distinct from source commit");
+  if (event.releaseCommit !== observed.releaseCommit) throw new Error("observed release commit mismatch");
   if (observed.ref !== executionRef(plan.planId)) throw new Error("observed execution ref mismatch");
   if (observed.workflowPath !== plan.publisher.workflow) throw new Error("observed workflow path mismatch");
-  if (event.planUrl !== expectedPlanUrl(plan, policy.planPath)) throw new Error("plan URL mismatch");
+  if (event.planUrl !== expectedPlanUrl(plan, observed.releaseCommit, policy.planPath)) throw new Error("plan URL mismatch");
 
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(event.issuedAt)) {
     throw new Error("issuedAt must be canonical RFC 3339 UTC");

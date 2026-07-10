@@ -14,6 +14,7 @@ import {
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const;
 const oid = (character: string) => character.repeat(40);
 const now = new Date("2026-07-11T12:00:00.000Z");
+const releaseCommit = oid("4");
 
 const planIdentity = {
   schema: "lenso.release-plan.v1" as const,
@@ -27,6 +28,7 @@ const planIdentity = {
     sharedBundleSha256: digest("c"),
     runner: "ubuntu-24.04",
     node: "24.0.0",
+    npm: "11.7.0",
     rust: "1.94.0",
   },
   generatedFiles: [{ path: ".lenso-release/plan.json", sha256: digest("9") }],
@@ -44,13 +46,18 @@ const environment = (change: Partial<ObservedPublisherEnvironment> = {}): Observ
   sharedRevision: plan.publisher.sharedRevision,
   sharedBundleSha256: plan.publisher.sharedBundleSha256,
   executionRef: executionRef(plan.planId),
-  executionRefTip: plan.sourceCommit,
-  githubSha: plan.sourceCommit,
+  executionRefTip: releaseCommit,
+  githubSha: releaseCommit,
   runner: plan.publisher.runner,
   node: plan.publisher.node,
+  npm: plan.publisher.npm,
   rust: plan.publisher.rust,
   planId: plan.planId,
   sourceCommit: plan.sourceCommit,
+  releaseCommit,
+  sourceCommitRepository: plan.repository,
+  releaseCommitRepository: plan.repository,
+  releaseCommitContainsSourceCommit: true,
   packages: plan.packages.map(({ id, nextVersion: version }) => ({ id, version })),
   ...change,
 });
@@ -64,9 +71,9 @@ function request(change: Partial<ReleaseEventV1> = {}): ReleaseEventV1 {
     sourceRepository: "LioRael/lenso-release",
     expectedAppId: 12345,
     planId: plan.planId,
-    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${plan.sourceCommit}/.lenso-release/plan.json`,
+    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso-release/plan.json`,
     planSha256: plan.planId,
-    releaseCommit: plan.sourceCommit,
+    releaseCommit,
     packages: plan.packages.map(({ id, nextVersion: version }) => ({ id, version })),
   };
   const { eventId, ...identityChange } = change as Partial<ReleaseEventV1> & { eventId?: ReleaseEventV1["eventId"] };
@@ -79,7 +86,12 @@ const observedRequest = (change: Partial<ObservedPublishRequest> = {}): Observed
   appId: 12345,
   repository: plan.repository,
   sourceRepository: "LioRael/lenso-release",
-  releaseCommit: plan.sourceCommit,
+  sourceCommit: plan.sourceCommit,
+  releaseCommit,
+  sourceCommitRepository: plan.repository,
+  releaseCommitRepository: plan.repository,
+  releaseCommitContainsSourceCommit: true,
+  planSha256: plan.planId,
   ref: executionRef(plan.planId),
   workflowPath: plan.publisher.workflow,
   ...change,
@@ -107,10 +119,16 @@ describe("publisher execution contract", () => {
     ["githubSha", oid("3"), "github.sha mismatch"],
     ["runner", "ubuntu-22.04", "publisher runner mismatch"],
     ["node", "24.1.0", "publisher Node version mismatch"],
+    ["npm", "11.6.0", "publisher npm version mismatch"],
     ["rust", "1.93.0", "publisher Rust version mismatch"],
     ["repository", "attacker/lenso", "publisher repository mismatch"],
     ["planId", digest("d"), "publisher planId mismatch"],
     ["sourceCommit", oid("3"), "publisher source commit mismatch"],
+    ["releaseCommit", "A".repeat(40), "publisher release commit must be a full lowercase Git OID"],
+    ["releaseCommit", oid("3"), "execution ref tip mismatch"],
+    ["sourceCommitRepository", "attacker/lenso", "source commit repository mismatch"],
+    ["releaseCommitRepository", "attacker/lenso", "release commit repository mismatch"],
+    ["releaseCommitContainsSourceCommit", false, "release commit does not contain source commit"],
   ] as const)("fails closed for %s", (key, value, message) => {
     expect(() => verifyPublisherContract(plan, environment({ [key]: value }))).toThrow(message);
   });
@@ -119,6 +137,17 @@ describe("publisher execution contract", () => {
     expect(() => verifyPublisherContract(plan, environment({ packages: [] }))).toThrow("publisher package selection mismatch");
     expect(() => verifyPublisherContract(plan, environment({ packages: [environment().packages[0]!, environment().packages[0]!] }))).toThrow("publisher package selection contains duplicates");
     expect(() => verifyPublisherContract(plan, environment())).not.toThrow();
+  });
+
+  it("keeps pre-version source and post-merge release identities separate", () => {
+    expect(plan.sourceCommit).not.toBe(releaseCommit);
+    expect(() => verifyPublisherContract(plan, environment({ executionRefTip: plan.sourceCommit }))).toThrow("execution ref tip mismatch");
+    expect(() => verifyPublisherContract(plan, environment({ githubSha: plan.sourceCommit }))).toThrow("github.sha mismatch");
+    expect(() => verifyPublisherContract(plan, environment({
+      releaseCommit: plan.sourceCommit,
+      executionRefTip: plan.sourceCommit,
+      githubSha: plan.sourceCommit,
+    }))).toThrow("publisher release commit must be distinct from source commit");
   });
 });
 
@@ -161,11 +190,18 @@ describe("publish request authentication", () => {
     ["wrong source repository", {}, { sourceRepository: "attacker/release" }, "observed source repository mismatch"],
     ["wrong commit", {}, { releaseCommit: oid("3") }, "observed release commit mismatch"],
     ["wrong requested commit", { releaseCommit: oid("3") }, {}, "observed release commit mismatch"],
+    ["source/release cross-wire", { releaseCommit: plan.sourceCommit }, {}, "observed release commit mismatch"],
+    ["wrong observed source commit", {}, { sourceCommit: releaseCommit }, "observed source commit mismatch"],
+    ["wrong source owner", {}, { sourceCommitRepository: "attacker/lenso" }, "source commit repository mismatch"],
+    ["wrong release owner", {}, { releaseCommitRepository: "attacker/lenso" }, "release commit repository mismatch"],
+    ["missing ancestry", {}, { releaseCommitContainsSourceCommit: false }, "release commit does not contain source commit"],
     ["wrong ref", {}, { ref: "main" }, "observed execution ref mismatch"],
     ["wrong workflow", {}, { workflowPath: ".github/workflows/evil.yml" }, "observed workflow path mismatch"],
     ["URL host", { planUrl: `https://example.com/${plan.repository}/${plan.sourceCommit}/.lenso-release/plan.json` }, {}, "plan URL mismatch"],
     ["URL path", { planUrl: `https://raw.githubusercontent.com/${plan.repository}/${plan.sourceCommit}/plan.json` }, {}, "plan URL mismatch"],
+    ["URL source/release cross-wire", { planUrl: `https://raw.githubusercontent.com/${plan.repository}/${plan.sourceCommit}/.lenso-release/plan.json` }, {}, "plan URL mismatch"],
     ["plan digest", { planSha256: digest("e") }, {}, "plan digest mismatch"],
+    ["observed plan digest", {}, { planSha256: digest("e") }, "plan digest mismatch"],
   ] as const)("rejects %s", async (_name, eventChange, observedChange, message) => {
     const replay = consumer();
     await expect(verify(request(eventChange as Partial<ReleaseEventV1>), replay, observedRequest(observedChange))).rejects.toThrow(message);
@@ -195,11 +231,14 @@ describe("publish request authentication", () => {
       ...baseIdentity,
       planId: twoPlan.planId,
       planSha256: twoPlan.planId,
-      planUrl: `https://raw.githubusercontent.com/${twoPlan.repository}/${twoPlan.sourceCommit}/.lenso-release/plan.json`,
+      planUrl: `https://raw.githubusercontent.com/${twoPlan.repository}/${releaseCommit}/.lenso-release/plan.json`,
       packages: [...twoPlan.packages].reverse().map(({ id, nextVersion: version }) => ({ id, version })),
     };
     const event = { ...identity, eventId: sha256(identity as JsonValue) };
-    await expect(assertPublishRequest(event, twoPlan, observedRequest({ ref: executionRef(twoPlan.planId) }), {
+    await expect(assertPublishRequest(event, twoPlan, observedRequest({
+      ref: executionRef(twoPlan.planId),
+      planSha256: twoPlan.planId,
+    }), {
       expectedAppId: 12345, expectedActor: "lenso-release[bot]", expectedSourceRepository: "LioRael/lenso-release",
       planPath: ".lenso-release/plan.json", maxAgeMs: 300_000, maxFutureSkewMs: 30_000, now: () => now, nonceConsumer: consumer(),
     })).rejects.toThrow(/package selection/);
@@ -207,5 +246,27 @@ describe("publish request authentication", () => {
 
   it("fails a replay when atomic consumption reports an existing nonce", async () => {
     await expect(verify(request(), consumer(false))).rejects.toThrow("publish request nonce was already consumed");
+  });
+
+  it("allows exactly one concurrent atomic nonce consumption", async () => {
+    const stored = new Map<string, string>();
+    const atomic: NonceConsumer = {
+      consume: async (nonce, eventId) => {
+        if (stored.has(nonce)) return false;
+        stored.set(nonce, eventId);
+        await Promise.resolve();
+        return true;
+      },
+    };
+    const event = request();
+    const results = await Promise.allSettled(Array.from({ length: 12 }, () => verify(event, atomic)));
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(11);
+    expect(stored.get(event.nonce)).toBe(event.eventId);
+  });
+
+  it("fails closed when atomic nonce storage throws", async () => {
+    const failure: NonceConsumer = { consume: async () => { throw new Error("nonce store unavailable"); } };
+    await expect(verify(request(), failure)).rejects.toThrow("nonce store unavailable");
   });
 });

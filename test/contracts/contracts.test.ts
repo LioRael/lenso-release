@@ -31,6 +31,7 @@ const planIdentity = {
     sharedBundleSha256: sha("c"),
     runner: "ubuntu-24.04",
     node: "24.0.0",
+    npm: "11.7.0",
     rust: "1.94.0",
   },
   generatedFiles: [
@@ -483,6 +484,10 @@ describe("public release contracts", () => {
     expect(() => assertReleasePlan({
       ...plan,
       publisher: { ...plan.publisher, node: "latest" },
+    })).toThrow();
+    expect(() => assertReleasePlan({
+      ...plan,
+      publisher: { ...plan.publisher, npm: "latest" },
     })).toThrow();
     expect(() => assertComponentReceipt({ ...receipt, version: "1.0.0-01" })).toThrow();
   });

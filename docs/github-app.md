@@ -39,13 +39,18 @@ push is denied, and only narrowly scoped App operations may create release refs.
 The repository-local publisher first re-reads GitHub metadata and validates the exact
 repository, workflow path and workflow SHA-256, shared publisher revision and bundle
 SHA-256, protected execution ref and tip, `github.sha`, release commit, runner, exact
-Node and Rust versions, plan ID, source commit, and ordered package IDs and versions.
+Node, npm, and Rust versions, plan ID, source commit, and ordered package IDs and
+versions. The plan's `sourceCommit` is the pre-version main commit. The execution ref,
+`github.sha`, event `releaseCommit`, and raw plan URL use the distinct post-merge Release
+PR commit; both commits must belong to the package repository and the release commit
+must contain the source commit.
 It then runs the full release gate, clean build and pack, digest comparison, and
 registry preflight. Only after all those checks succeed may the named protected
 environment approve the job and `id-token: write` be used to request OIDC. The OIDC
 identity is bound to the package repository, local workflow, ref, and environment.
 
-npm publishing uses a GitHub-hosted runner, Node.js 24, and npm 11.5.1 or newer.
+npm publishing uses a GitHub-hosted runner and the exact Node.js and npm versions
+pinned by the approved plan (currently Node.js `24.0.0` and npm `11.7.0`).
 crates.io authentication uses the reviewed, full-commit-pinned
 `rust-lang/crates-io-auth-action`; its short-lived token is exposed only to the single
 matching `cargo publish` command and its post step revokes it. There is no automatic

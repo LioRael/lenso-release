@@ -13,7 +13,7 @@
     "publisher": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workflow", "workflowSha256", "sharedRevision", "sharedBundleSha256", "runner", "node", "rust"],
+      "required": ["workflow", "workflowSha256", "sharedRevision", "sharedBundleSha256", "runner", "node", "npm", "rust"],
       "properties": {
         "workflow": { "type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9._/-]+\\.ya?ml$" },
         "workflowSha256": { "$ref": "#/$defs/sha256" },
@@ -21,6 +21,7 @@
         "sharedBundleSha256": { "$ref": "#/$defs/sha256" },
         "runner": { "type": "string", "pattern": "^(?!.*(?:^|-)latest$)[A-Za-z0-9._-]*[0-9][A-Za-z0-9._-]*$" },
         "node": { "$ref": "#/$defs/stableSemver" },
+        "npm": { "$ref": "#/$defs/stableSemver" },
         "rust": { "$ref": "#/$defs/stableSemver" }
       }
     },
