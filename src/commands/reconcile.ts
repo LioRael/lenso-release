@@ -12,7 +12,8 @@ import { compatibleDigests, isCanonicalNpmIntegrity, isRfc3339, SEMVER } from ".
 
 type Failure = { failure: string; detail: string };
 type Missing = { missing: true; canonicalUrl?: string };
-type VersionObservation = string | { version: string; digest?: string; publishedAt?: string; canonicalUrl?: string } | Failure | Missing;
+type NotApplicable = { notApplicable: true };
+type VersionObservation = string | { version: string; digest?: string; publishedAt?: string; canonicalUrl?: string } | Failure | Missing | NotApplicable;
 type Surface = Record<string, VersionObservation>;
 
 export type ReconciliationSnapshot = {
@@ -44,6 +45,7 @@ function normalizeObservation(value: VersionObservation | undefined): Reconcilia
   if (typeof value === "string") return { state: "present", version: value, digest: null, publishedAt: null, canonicalUrl: null, failure: null };
   if ("failure" in value) return { state: "failure", version: null, digest: null, publishedAt: null, canonicalUrl: null, failure: value.failure };
   if ("missing" in value) return { state: "missing", version: null, digest: null, publishedAt: null, canonicalUrl: value.canonicalUrl ?? null, failure: null };
+  if ("notApplicable" in value) return { state: "not-applicable", version: null, digest: null, publishedAt: null, canonicalUrl: null, failure: null };
   return {
     state: "present",
     version: value.version,
@@ -78,9 +80,9 @@ function assertSnapshot(snapshot: unknown): asserts snapshot is ReconciliationSn
       if (typeof value === "string") { if (!VERSION.test(value)) throw new TypeError(`snapshot.${surfaceName}.${id} has invalid version`); continue; }
       if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`snapshot.${surfaceName}.${id} has invalid observation`);
       const observation = value as Record<string, unknown>;
-      const forms = [Object.hasOwn(observation, "version"), observation.missing === true, typeof observation.failure === "string"].filter(Boolean).length;
+      const forms = [Object.hasOwn(observation, "version"), observation.missing === true, typeof observation.failure === "string", observation.notApplicable === true].filter(Boolean).length;
       if (forms !== 1) throw new TypeError(`snapshot.${surfaceName}.${id} must have exactly one observation state`);
-      const observationAllowed = Object.hasOwn(observation, "version") ? ["version", "digest", "publishedAt", "canonicalUrl"] : observation.missing === true ? ["missing", "canonicalUrl"] : ["failure", "detail"];
+      const observationAllowed = Object.hasOwn(observation, "version") ? ["version", "digest", "publishedAt", "canonicalUrl"] : observation.missing === true ? ["missing", "canonicalUrl"] : observation.notApplicable === true ? ["notApplicable"] : ["failure", "detail"];
       for (const key of Object.keys(observation)) if (!observationAllowed.includes(key)) throw new TypeError(`snapshot.${surfaceName}.${id}.${key} is not allowed`);
       if (Object.hasOwn(observation, "version") && (typeof observation.version !== "string" || !VERSION.test(observation.version))) throw new TypeError(`snapshot.${surfaceName}.${id} has invalid version`);
       if (observation.digest !== undefined && (typeof observation.digest !== "string" || !DIGEST.test(observation.digest) || (observation.digest.startsWith("sha512-") && !isCanonicalNpmIntegrity(observation.digest)))) throw new TypeError(`snapshot.${surfaceName}.${id} has invalid digest`);
@@ -125,7 +127,7 @@ export function reconcileSnapshot(snapshot: ReconciliationSnapshot): Reconciliat
         issues.push(issue("observation.missing-surface", "observation-failure", id, `${surfaceName} was not observed`));
       } else if (typeof value === "object" && "failure" in value) {
         issues.push(issue("observation.failed", "observation-failure", id, `${surfaceName}: ${value.failure}`));
-      } else if (typeof value === "object" && "missing" in value) {
+      } else if (typeof value === "object" && ("missing" in value || "notApplicable" in value)) {
         // Registry absence is useful truth; other absent surfaces mean the observation was successful but empty.
       } else {
         const version = observationVersion(value);
@@ -157,7 +159,8 @@ export function reconcileSnapshot(snapshot: ReconciliationSnapshot): Reconciliat
     if (versions.tag && versions.registry === versions.tag && tagDigest && registryDigest && compatibleDigests(tagDigest, registryDigest) && tagDigest !== registryDigest) {
       issues.push(issue("tag.registry-digest-conflict", "blocked", id, "immutable tag receipt contradicts registry integrity"));
     }
-    if (versions.source && versions.registry !== versions.source && !nonPublishable.has(id)) {
+    const registryNotApplicable = registry && typeof registry === "object" && "notApplicable" in registry;
+    if (versions.source && versions.registry !== versions.source && !nonPublishable.has(id) && !registryNotApplicable) {
       const severity = versions.registry && compareVersions(versions.source, versions.registry) < 0 ? "drift" : "blocked";
       issues.push(issue("source.registry-version-missing", severity, id, `source ${versions.source} is not the observed registry version`));
     }
@@ -249,6 +252,13 @@ async function sourceVersion(root: string, id: string): Promise<VersionObservati
         if (manifest.name === name && typeof manifest.version === "string") return manifest.version;
       } catch { /* continue to the next checkout manifest */ }
     }
+  } else if (kind === "artifact" && name === "lenso-runtime-console") {
+    for (const path of await findFiles(root, "package.json")) {
+      try {
+        const manifest = JSON.parse(await readFile(path, "utf8")) as { name?: unknown; version?: unknown };
+        if (manifest.name === "@lenso/runtime-console" && typeof manifest.version === "string") return manifest.version;
+      } catch { /* continue */ }
+    }
   } else if (kind === "cargo") {
     for (const path of await findFiles(root, "Cargo.toml")) {
       const manifest = await readFile(path, "utf8");
@@ -297,17 +307,20 @@ async function liveSnapshot(): Promise<ReconciliationSnapshot> {
   const embeddedCatalog: Surface = {};
   const workerCatalog: Surface = {};
   for (const id of known) {
-    const observedSource = await sourceVersion(frameworkRoot, id);
+    const observedSource: VersionObservation = id.startsWith("catalog:") ? { notApplicable: true } : await sourceVersion(frameworkRoot, id);
     source[id] = observedSource;
     const version = observationVersion(observedSource);
-    if (id.startsWith("npm:") && version) registry[id] = await observeNpmVersion(id.slice(4), version);
-    else if (id.startsWith("cargo:") && version) registry[id] = await observeCrateVersion(id.slice(6), version);
-    else registry[id] = { failure: "unavailable", detail: "no public immutable registry observer is configured for this component kind" };
     const component = componentRegistry.packages[id]!;
+    if (!component.publishable || id.startsWith("artifact:") || id.startsWith("catalog:")) registry[id] = { notApplicable: true };
+    else if (id.startsWith("npm:") && version) registry[id] = await observeNpmVersion(id.slice(4), version);
+    else if (id.startsWith("cargo:") && version) registry[id] = await observeCrateVersion(id.slice(6), version);
+    else registry[id] = { failure: "unavailable", detail: "required registry observation could not be performed" };
     if ((id.startsWith("npm:") || id.startsWith("cargo:")) && version && component.publishable) {
       const packageName = id.slice(id.indexOf(":") + 1);
       const tagName = (id === "cargo:lenso-cli" || id === "npm:@lenso/cli") ? `lenso-cli@${version}` : `${packageName}@${version}`;
       tag[id] = await observeGithubTag(component.repository, tagName, id, version, { token: process.env.GITHUB_TOKEN });
+    } else if (!component.publishable || id.startsWith("catalog:")) {
+      tag[id] = { notApplicable: true };
     } else {
       tag[id] = { failure: "unsupported-kind", detail: "this component has no package-tag convention" };
     }

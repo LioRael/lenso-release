@@ -37,11 +37,17 @@ export async function observeGithubTag(repository: string, tag: string, packageI
     if (annotated?.tag !== tag || typeof annotated.message !== "string") return { failure: "schema", detail: "annotated GitHub tag response was malformed" };
     let receipt: Record<string, unknown> | undefined;
     try { receipt = object(JSON.parse(annotated.message)); } catch { return { failure: "schema", detail: "annotated GitHub tag did not contain a JSON receipt" }; }
+    const integrityValid = packageId.startsWith("npm:")
+      ? typeof receipt?.registryIntegrity === "string" && isCanonicalNpmIntegrity(receipt.registryIntegrity)
+      : packageId.startsWith("cargo:")
+        ? typeof receipt?.registryIntegrity === "string" && /^[a-f0-9]{64}$/u.test(receipt.registryIntegrity)
+        : false;
     if (receipt?.schema !== "lenso.component-receipt.v1" || receipt.packageId !== packageId || receipt.version !== version ||
         typeof receipt.registryIntegrity !== "string" || typeof receipt.publishedAt !== "string" || !isRfc3339(receipt.publishedAt) ||
-        (packageId.startsWith("npm:") && !isCanonicalNpmIntegrity(receipt.registryIntegrity))) {
+        !integrityValid) {
       return { failure: "schema", detail: "annotated GitHub tag receipt did not match the requested package" };
     }
-    return { version, digest: receipt.registryIntegrity, publishedAt: receipt.publishedAt, canonicalUrl };
+    const digest = packageId.startsWith("cargo:") ? `sha256:${receipt.registryIntegrity}` : receipt.registryIntegrity;
+    return { version, digest, publishedAt: receipt.publishedAt, canonicalUrl };
   } finally { clearTimeout(timeout); }
 }

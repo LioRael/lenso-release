@@ -26,7 +26,7 @@ export function assertReconciliationReport(value: unknown): asserts value is Rec
     previousId = id;
     for (const surface of ["source", "registry", "tag", "embeddedCatalog", "workerCatalog"] as const) {
       const observation = record(item[surface], `report.components[${index}].${surface}`, ["state", "version", "digest", "publishedAt", "canonicalUrl", "failure"]);
-      const state = enumeration(observation.state, `report.components[${index}].${surface}.state`, ["present", "missing", "failure"] as const);
+      const state = enumeration(observation.state, `report.components[${index}].${surface}.state`, ["present", "missing", "failure", "not-applicable"] as const);
       for (const field of ["version", "digest", "publishedAt", "canonicalUrl", "failure"] as const) {
         if (observation[field] !== null && typeof observation[field] !== "string") fail(`report.components[${index}].${surface}.${field}`, "must be a string or null");
       }
@@ -35,6 +35,7 @@ export function assertReconciliationReport(value: unknown): asserts value is Rec
       if (state === "present" && observation.failure !== null) fail(`report.components[${index}].${surface}.failure`, "must be null when present");
       if (state === "missing" && [observation.version, observation.digest, observation.publishedAt, observation.failure].some((field) => field !== null)) fail(`report.components[${index}].${surface}`, "missing observations may contain only a canonical URL");
       if (state === "failure" && [observation.version, observation.digest, observation.publishedAt, observation.canonicalUrl].some((field) => field !== null)) fail(`report.components[${index}].${surface}`, "failure observations may contain only a failure code");
+      if (state === "not-applicable" && [observation.version, observation.digest, observation.publishedAt, observation.canonicalUrl, observation.failure].some((field) => field !== null)) fail(`report.components[${index}].${surface}`, "not-applicable observations must not contain evidence");
       if (typeof observation.version === "string" && !SEMVER.test(observation.version)) fail(`report.components[${index}].${surface}.version`, "must be semantic version");
       if (typeof observation.digest === "string" && !SHA256.test(observation.digest) && !isCanonicalNpmIntegrity(observation.digest) && !/^git:[a-f0-9]{40}$/u.test(observation.digest)) fail(`report.components[${index}].${surface}.digest`, "must be a supported canonical digest");
       if (typeof observation.publishedAt === "string" && !isRfc3339(observation.publishedAt)) fail(`report.components[${index}].${surface}.publishedAt`, "must be a real RFC 3339 timestamp");

@@ -8,7 +8,7 @@ import { assertReconciliationReport } from "../../src/contracts/validate.js";
 import { observeCrateVersion } from "../../src/registry/crates.js";
 import { observeNpmVersion } from "../../src/registry/npm.js";
 import { observeGithubTag } from "../../src/registry/github.js";
-import { observeCatalogFile, reconcileSnapshot, runReconcile } from "../../src/commands/reconcile.js";
+import { observeCatalogFile, reconcileSnapshot, runReconcile, type ReconciliationSnapshot } from "../../src/commands/reconcile.js";
 
 const known = ["npm:@lenso/auth-console"];
 const sri = (byte: number) => `sha512-${Buffer.alloc(64, byte).toString("base64")}`;
@@ -164,6 +164,17 @@ describe("immutable registry observations", () => {
     expect(fetch.mock.calls[0]?.[0]).toContain("%40lenso%2Fauth-console%400.1.3");
   });
 
+  it("normalizes a valid Cargo annotated receipt checksum and rejects malformed checksums", async () => {
+    const checksum = "a".repeat(64);
+    const response = (registryIntegrity: string) => vi.fn(async (input: RequestInfo | URL) => String(input).includes("/git/ref/")
+      ? new Response(JSON.stringify({ object: { type: "tag", sha: "b".repeat(40) } }))
+      : new Response(JSON.stringify({ tag: "lenso@0.1.0", message: JSON.stringify({ schema: "lenso.component-receipt.v1", packageId: "cargo:lenso", version: "0.1.0", registryIntegrity, publishedAt: "2026-07-11T00:00:00Z" }) })));
+    const valid = await observeGithubTag("LioRael/lenso", "lenso@0.1.0", "cargo:lenso", "0.1.0", { fetch: response(checksum) });
+    expect(valid).toMatchObject({ version: "0.1.0", digest: `sha256:${checksum}` });
+    const malformed = await observeGithubTag("LioRael/lenso", "lenso@0.1.0", "cargo:lenso", "0.1.0", { fetch: response("A".repeat(64)) });
+    expect(malformed).toMatchObject({ failure: "schema" });
+  });
+
   it("distinguishes GitHub 404, HTTP, transport, and timeout without leaking errors", async () => {
     const args = ["LioRael/lenso", "lenso@1.0.0", "cargo:lenso", "1.0.0"] as const;
     expect(await observeGithubTag(...args, { fetch: async () => new Response("", { status: 404 }) })).toMatchObject({ missing: true });
@@ -187,6 +198,29 @@ describe("strict snapshot and catalog input", () => {
     const empty = join(directory, "empty.json");
     await import("node:fs/promises").then(({ writeFile }) => writeFile(empty, '{"version":"1","modules":[]}'));
     await expect(observeCatalogFile(empty)).resolves.toEqual({ values: {} });
+  });
+
+  it("treats non-applicable surfaces as non-failures while unavailable remains exit 2", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lenso-not-applicable-"));
+    const aligned: ReconciliationSnapshot = {
+      schema: "lenso.reconciliation-snapshot.v1", asOf: "2026-07-11T00:00:00Z",
+      known: ["catalog:lenso-official-module-catalog"], nonPublishable: [],
+      source: { "catalog:lenso-official-module-catalog": "1.0.0" },
+      registry: { "catalog:lenso-official-module-catalog": { notApplicable: true } },
+      tag: { "catalog:lenso-official-module-catalog": { notApplicable: true } },
+      embeddedCatalog: { "catalog:lenso-official-module-catalog": { notApplicable: true } },
+      workerCatalog: { "catalog:lenso-official-module-catalog": { notApplicable: true } },
+    };
+    const alignedPath = join(directory, "aligned.json");
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(alignedPath, JSON.stringify(aligned)));
+    expect(await runReconcile(["--snapshot", alignedPath, "--output", join(directory, "aligned.out")])).toBe(0);
+    const report = reconcileSnapshot(aligned);
+    expect(report.status).toBe("aligned");
+    expect(report.components[0]?.registry.state).toBe("not-applicable");
+    expect(() => assertReconciliationReport(report)).not.toThrow();
+    const unavailable = structuredClone(aligned);
+    unavailable.registry["catalog:lenso-official-module-catalog"] = { failure: "unavailable", detail: "observer unavailable" } as never;
+    expect(reconcileSnapshot(unavailable).status).toBe("observation-failure");
   });
 
   it("rejects missing/wrong snapshot schema, invalid time, and unknown properties through exit 2", async () => {

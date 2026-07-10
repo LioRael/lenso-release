@@ -190,7 +190,7 @@ export type ReconciliationIssue = {
   detail: string;
 };
 export type ReconciliationObservation = {
-  state: "present" | "missing" | "failure";
+  state: "present" | "missing" | "failure" | "not-applicable";
   version: string | null;
   digest: string | null;
   publishedAt: string | null;
