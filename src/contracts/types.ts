@@ -104,6 +104,18 @@ export type PlanStatePackage = {
   requestEventId: Sha256 | null;
 };
 export type PlanStateEvidence = { kind: string; url: string | null; digest: string | null };
+export type PlanDispatchOutbox = {
+  eventId: Sha256;
+  nonce: string;
+  ref: string;
+  workflow: string;
+  packages: EventPackage[];
+  inputs: Record<"event" | "plan_id" | "plan_sha256" | "release_commit" | "packages" | "source_repository", string>;
+  status: "pending" | "in-flight" | "dispatched";
+  runUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 export type PlanStateV1 = {
   schema: "lenso.plan-state.v1";
   repository: string;
@@ -117,7 +129,9 @@ export type PlanStateV1 = {
   packages: PlanStatePackage[];
   receipts: ComponentReceiptV1[];
   attempts: PlanStateAttempt[];
+  outbox: PlanDispatchOutbox[];
   occupancyKeys: string[];
+  executionRef: { name: string; tip: GitOid; protected: true };
   revision: number;
   previousBlobSha: GitOid | null;
   createdAt: string;

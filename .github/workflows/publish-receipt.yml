@@ -3,8 +3,7 @@ on:
   repository_dispatch:
     types: [lenso-publish-receipt]
 permissions:
-  contents: write
-  actions: write
+  contents: read
 concurrency:
   group: publish-receipt-${{ github.event.client_payload.planId }}
   cancel-in-progress: false
@@ -24,3 +23,10 @@ jobs:
       - run: node dist/src/commands/handle-event.js --event-file "$EVENT_PATH" --event-key client_payload
         env:
           EVENT_PATH: ${{ github.event_path }}
+          LENSO_COORDINATOR_TOKEN: ${{ secrets.LENSO_COORDINATOR_TOKEN }}
+          LENSO_GITHUB_APP_ID: ${{ secrets.LENSO_GITHUB_APP_ID }}
+          LENSO_GITHUB_APP_INSTALLATION_ID: ${{ secrets.LENSO_GITHUB_APP_INSTALLATION_ID }}
+          LENSO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.LENSO_GITHUB_APP_PRIVATE_KEY }}
+          LENSO_GITHUB_APP_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}
+          LENSO_EVENT_ACTOR: ${{ github.actor }}
+          LENSO_COORDINATOR_FACTS_MODULE: file://${{ github.workspace }}/dist/src/coordinator/production-facts.js

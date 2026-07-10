@@ -4,7 +4,7 @@
   "title": "Lenso immutable release plan state",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "repository", "planId", "planSha256", "sourceCommit", "releaseCommit", "status", "reason", "evidence", "packages", "receipts", "attempts", "occupancyKeys", "revision", "previousBlobSha", "createdAt", "updatedAt"],
+  "required": ["schema", "repository", "planId", "planSha256", "sourceCommit", "releaseCommit", "status", "reason", "evidence", "packages", "receipts", "attempts", "outbox", "occupancyKeys", "executionRef", "revision", "previousBlobSha", "createdAt", "updatedAt"],
   "properties": {
     "schema": { "const": "lenso.plan-state.v1" },
     "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
@@ -18,7 +18,9 @@
     "packages": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "version", "phase", "status", "requestEventId"], "properties": { "id": { "type": "string", "pattern": "^(cargo|npm):" }, "version": { "type": "string" }, "phase": { "type": "integer", "minimum": 0 }, "status": { "enum": ["pending", "dispatched", "received"] }, "requestEventId": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] } } } },
     "receipts": { "type": "array", "items": { "$ref": "lenso.component-receipt.v1.schema.json" } },
     "attempts": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["eventId", "kind", "at", "outcome", "detail"], "properties": { "eventId": { "$ref": "#/$defs/sha256" }, "kind": { "enum": ["ready", "dispatch", "receipt", "recovery", "cancel"] }, "at": { "type": "string", "format": "date-time" }, "outcome": { "enum": ["accepted", "duplicate", "conflict", "blocked"] }, "detail": { "type": ["string", "null"] } } } },
+    "outbox": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["eventId", "nonce", "ref", "workflow", "packages", "inputs", "status", "runUrl", "createdAt", "updatedAt"], "properties": { "eventId": { "$ref": "#/$defs/sha256" }, "nonce": { "type": "string", "minLength": 1 }, "ref": { "type": "string", "pattern": "^release-execution/[0-9a-f]{64}$" }, "workflow": { "type": "string" }, "packages": { "type": "array" }, "inputs": { "type": "object", "additionalProperties": false, "required": ["event", "plan_id", "plan_sha256", "release_commit", "packages", "source_repository"], "properties": { "event": { "type": "string" }, "plan_id": { "type": "string" }, "plan_sha256": { "type": "string" }, "release_commit": { "type": "string" }, "packages": { "type": "string" }, "source_repository": { "type": "string" } } }, "status": { "enum": ["pending", "in-flight", "dispatched"] }, "runUrl": { "type": ["string", "null"] }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } } } },
     "occupancyKeys": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "executionRef": { "type": "object", "additionalProperties": false, "required": ["name", "tip", "protected"], "properties": { "name": { "type": "string", "pattern": "^release-execution/[0-9a-f]{64}$" }, "tip": { "$ref": "#/$defs/oid" }, "protected": { "const": true } } },
     "revision": { "type": "integer", "minimum": 0 },
     "previousBlobSha": { "oneOf": [{ "$ref": "#/$defs/oid" }, { "type": "null" }] },
     "createdAt": { "type": "string", "format": "date-time" },
