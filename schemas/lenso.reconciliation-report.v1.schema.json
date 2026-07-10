@@ -7,7 +7,7 @@
   "properties": {
     "schema": { "const": "lenso.reconciliation-report.v1" },
     "status": { "enum": ["aligned", "drift", "blocked", "observation-failure"] },
-    "observedAt": { "type": "string", "minLength": 1 },
+    "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" },
     "components": {
       "type": "array",
       "items": {
@@ -46,10 +46,10 @@
       "required": ["state", "version", "digest", "publishedAt", "canonicalUrl", "failure"],
       "properties": {
         "state": { "enum": ["present", "missing", "failure"] },
-        "version": { "type": ["string", "null"] },
-        "digest": { "type": ["string", "null"] },
-        "publishedAt": { "type": ["string", "null"] },
-        "canonicalUrl": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"], "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$" },
+        "digest": { "type": ["string", "null"], "pattern": "^(?:sha256:[a-f0-9]{64}|sha512-[A-Za-z0-9+/]{86}==|git:[a-f0-9]{40})$" },
+        "publishedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$" },
+        "canonicalUrl": { "type": ["string", "null"], "pattern": "^https://" },
         "failure": { "type": ["string", "null"] }
       }
     }

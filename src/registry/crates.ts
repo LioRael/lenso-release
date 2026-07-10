@@ -1,4 +1,5 @@
 import type { RegistryObservation, RegistryObserverOptions } from "./npm.js";
+import { isRfc3339 } from "./validation.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -33,7 +34,7 @@ export async function observeCrateVersion(
     try { root = object(await response.json()); } catch { return { failure: "schema", detail: "registry returned invalid JSON" }; }
     const entry = object(root?.version);
     if (entry?.crate !== name || entry?.num !== version || typeof entry.checksum !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(entry.checksum) || typeof entry.created_at !== "string") {
+        !/^[a-f0-9]{64}$/u.test(entry.checksum) || typeof entry.created_at !== "string" || !isRfc3339(entry.created_at)) {
       return { failure: "schema", detail: "registry response did not match the requested crate version" };
     }
     return {

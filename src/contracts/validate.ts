@@ -9,13 +9,14 @@ import type {
   ReconciliationReportV1,
 } from "./types.js";
 import { sha256 as canonicalSha256, type JsonValue } from "../core/canonical.js";
+import { isCanonicalNpmIntegrity, isRfc3339, SEMVER, SHA256 } from "../registry/validation.js";
 
 export function assertReconciliationReport(value: unknown): asserts value is ReconciliationReportV1 {
   const root = record(value, "report", ["schema", "status", "observedAt", "components", "issues"]);
   literal(root.schema, "report.schema", "lenso.reconciliation-report.v1");
   enumeration(root.status, "report.status", ["aligned", "drift", "blocked", "observation-failure"] as const);
   const observedAt = string(root.observedAt, "report.observedAt");
-  if (!Number.isFinite(Date.parse(observedAt))) fail("report.observedAt", "must be an RFC 3339 timestamp");
+  if (!isRfc3339(observedAt)) fail("report.observedAt", "must be a real RFC 3339 timestamp");
   const components = array(root.components, "report.components", true);
   let previousId = "";
   for (const [index, component] of components.entries()) {
@@ -31,6 +32,13 @@ export function assertReconciliationReport(value: unknown): asserts value is Rec
       }
       if (state === "present" && typeof observation.version !== "string") fail(`report.components[${index}].${surface}.version`, "is required when present");
       if (state === "failure" && typeof observation.failure !== "string") fail(`report.components[${index}].${surface}.failure`, "is required on failure");
+      if (state === "present" && observation.failure !== null) fail(`report.components[${index}].${surface}.failure`, "must be null when present");
+      if (state === "missing" && [observation.version, observation.digest, observation.publishedAt, observation.failure].some((field) => field !== null)) fail(`report.components[${index}].${surface}`, "missing observations may contain only a canonical URL");
+      if (state === "failure" && [observation.version, observation.digest, observation.publishedAt, observation.canonicalUrl].some((field) => field !== null)) fail(`report.components[${index}].${surface}`, "failure observations may contain only a failure code");
+      if (typeof observation.version === "string" && !SEMVER.test(observation.version)) fail(`report.components[${index}].${surface}.version`, "must be semantic version");
+      if (typeof observation.digest === "string" && !SHA256.test(observation.digest) && !isCanonicalNpmIntegrity(observation.digest) && !/^git:[a-f0-9]{40}$/u.test(observation.digest)) fail(`report.components[${index}].${surface}.digest`, "must be a supported canonical digest");
+      if (typeof observation.publishedAt === "string" && !isRfc3339(observation.publishedAt)) fail(`report.components[${index}].${surface}.publishedAt`, "must be a real RFC 3339 timestamp");
+      if (typeof observation.canonicalUrl === "string" && !/^https:\/\//u.test(observation.canonicalUrl)) fail(`report.components[${index}].${surface}.canonicalUrl`, "must be HTTPS");
     }
   }
   const issues = array(root.issues, "report.issues", true);

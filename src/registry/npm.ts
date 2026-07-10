@@ -1,3 +1,5 @@
+import { isCanonicalNpmIntegrity, isRfc3339 } from "./validation.js";
+
 export type RegistryFailureKind = "transport" | "http" | "schema" | "timeout";
 export type RegistryObservation =
   | { version: string; digest: string; publishedAt: string; canonicalUrl: string }
@@ -41,7 +43,7 @@ export async function observeNpmVersion(
     let root: Record<string, unknown> | undefined;
     try { root = object(await response.json()); } catch { return { failure: "schema", detail: "registry returned invalid JSON" }; }
     const dist = object(root?.dist);
-    if (root?.name !== name || root?.version !== version || typeof dist?.integrity !== "string" ||
+    if (root?.name !== name || root?.version !== version || typeof dist?.integrity !== "string" || !isCanonicalNpmIntegrity(dist.integrity) ||
         typeof dist.tarball !== "string") {
       return { failure: "schema", detail: "registry response did not match the requested npm version" };
     }
@@ -65,6 +67,7 @@ export async function observeNpmVersion(
       if (typeof times?.[version] !== "string") return { failure: "schema", detail: "registry response omitted publication time" };
       publishedAt = times[version];
     }
+    if (!isRfc3339(publishedAt)) return { failure: "schema", detail: "registry response contained an invalid publication time" };
     return { version, digest: dist.integrity, publishedAt, canonicalUrl };
   } finally {
     clearTimeout(timeout);
