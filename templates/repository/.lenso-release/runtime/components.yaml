@@ -1,0 +1,327 @@
+schema: lenso.component-registry.v1
+internalPackages: []
+packages:
+  - id: cargo:lenso-contracts
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-core
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-http
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-runtime
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-testing
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-module
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-module-remote
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-service
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-module-story
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-module-auth
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-contracts
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-anonymous
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-device
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-oauth
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-github
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-google
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-oidc
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-password
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-audit-log
+    repository: LioRael/lenso-audit-log-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-contracts
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-module
+  - id: cargo:lenso-module-organization
+    repository: LioRael/lenso-organization-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-module-audit-log
+      - cargo:lenso-module-auth
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+  - id: npm:@lenso/runtime-console-api
+    repository: LioRael/lenso-runtime-console
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: npm:@lenso/auth-console
+    repository: LioRael/lenso-auth-module
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: [npm:@lenso/runtime-console-api]
+  - id: npm:@lenso/auth-device-console
+    repository: LioRael/lenso-auth-module
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: [npm:@lenso/runtime-console-api]
+  - id: npm:@lenso/auth-provider-console
+    repository: LioRael/lenso-auth-module
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: [npm:@lenso/runtime-console-api]
+  - id: npm:@lenso/organization-console
+    repository: LioRael/lenso-organization-module
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: [npm:@lenso/runtime-console-api]
+  - id: npm:@lenso/remote-module-kit
+    repository: LioRael/lenso-runtime-console
+    registry: npm
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: npm:@lenso/service-kit
+    repository: LioRael/lenso-runtime-console
+    registry: npm
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies: [npm:@lenso/remote-module-kit]
+  - id: cargo:lenso-platform-admin-data
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-platform-admin
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-bootstrap
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-module-auth
+      - cargo:lenso-module-auth-anonymous
+      - cargo:lenso-module-auth-github
+      - cargo:lenso-module-auth-google
+      - cargo:lenso-module-auth-oauth
+      - cargo:lenso-module-auth-oidc
+      - cargo:lenso-module-auth-password
+  - id: cargo:lenso-migrate
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-worker
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-api
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: true
+    dependencies: [cargo:lenso-module-organization]
+  - id: cargo:lenso-operator
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: host
+    userFacing: true
+    publishable: false
+    dependencies: []
+  - id: artifact:lenso-runtime-console
+    repository: LioRael/lenso-runtime-console
+    registry: github-release
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: []
+  - id: cargo:lenso-cli
+    repository: LioRael/lenso-cli
+    registry: crates-io
+    releaseGroup: distribution
+    userFacing: true
+    publishable: true
+    dependencies:
+      - artifact:lenso-runtime-console
+      - cargo:lenso
+  - id: npm:@lenso/cli
+    repository: LioRael/lenso-cli
+    registry: npm
+    releaseGroup: distribution
+    userFacing: true
+    publishable: true
+    dependencies:
+      - artifact:lenso-runtime-console
+      - cargo:lenso
+      - cargo:lenso-cli
+  - id: catalog:lenso-official-module-catalog
+    repository: LioRael/lenso-release
+    registry: github-release
+    releaseGroup: catalog
+    userFacing: true
+    publishable: true
+    dependencies:
+      - artifact:lenso-runtime-console
+      - cargo:lenso-module-audit-log
+      - cargo:lenso-module-auth
+      - cargo:lenso-module-auth-anonymous
+      - cargo:lenso-module-auth-device
+      - cargo:lenso-module-auth-github
+      - cargo:lenso-module-auth-google
+      - cargo:lenso-module-auth-oauth
+      - cargo:lenso-module-auth-oidc
+      - cargo:lenso-module-auth-password
+      - cargo:lenso-module-organization
+      - npm:@lenso/auth-console
+      - npm:@lenso/auth-device-console
+      - npm:@lenso/auth-provider-console
+      - npm:@lenso/organization-console

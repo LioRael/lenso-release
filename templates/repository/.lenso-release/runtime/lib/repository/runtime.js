@@ -1,0 +1,354 @@
+import { execFile as execFileCallback } from "node:child_process";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { loadComponents } from "../config/components.js";
+import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
+import { canonicalBytes, sha256 } from "../core/canonical.js";
+import { verifyPublisherContract } from "../publisher/contract.js";
+import { exportReleasePlan } from "../tegami/export-plan.js";
+const execFile = promisify(execFileCallback);
+const OID = /^[0-9a-f]{40}$/u;
+const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
+const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+function fail(message) { throw new Error(`repository runtime: ${message}`); }
+function hash(bytes) { return sha256(bytes); }
+function safeRelative(path) {
+    if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === ".."))
+        fail(`unsafe path ${path}`);
+}
+async function safeRead(root, path) {
+    safeRelative(path);
+    let current = resolve(root);
+    for (const segment of path.split("/")) {
+        current = join(current, segment);
+        const info = await lstat(current);
+        if (info.isSymbolicLink())
+            fail(`symlink is forbidden: ${path}`);
+    }
+    if (!resolve(current).startsWith(`${resolve(root)}/`))
+        fail(`path escaped root: ${path}`);
+    const handle = await open(current, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        return await handle.readFile();
+    }
+    finally {
+        await handle.close();
+    }
+}
+function parseJson(bytes, name) {
+    try {
+        return JSON.parse(Buffer.from(bytes).toString("utf8"));
+    }
+    catch (error) {
+        throw new Error(`invalid ${name} JSON`, { cause: error });
+    }
+}
+async function readRuntimeManifest(cwd) {
+    const bytes = await safeRead(cwd, ".lenso-release/runtime/manifest.json");
+    const manifest = parseJson(bytes, "runtime manifest");
+    if (manifest.schema !== "lenso.repository-runtime.v1" || !OID.test(manifest.sourceRevision) || !Array.isArray(manifest.files))
+        fail("invalid runtime manifest");
+    let previous = "";
+    for (const file of manifest.files) {
+        safeRelative(file.path);
+        if (file.path <= previous || !/^sha256:[0-9a-f]{64}$/u.test(file.sha256))
+            fail("runtime manifest files must be sorted and digested");
+        previous = file.path;
+        if (hash(await safeRead(cwd, file.path)) !== file.sha256)
+            fail(`runtime digest mismatch for ${file.path}`);
+    }
+    return { manifest, bytes };
+}
+function exactSelection(plan, selected) {
+    if (selected.length === 0 || new Set(selected.map(({ id }) => id)).size !== selected.length)
+        fail("empty or duplicate package selection");
+    for (const item of selected) {
+        if (!PACKAGE.test(item.id) || !VERSION.test(item.version))
+            fail("invalid package selection");
+        if (!plan.packages.some(({ id, nextVersion }) => id === item.id && nextVersion === item.version))
+            fail(`package selection is not in plan: ${item.id}`);
+    }
+}
+async function verifyReviewedComponents(cwd, plan) {
+    const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
+    for (const item of plan.packages) {
+        const component = registry.packages[item.id];
+        if (!component || component.repository !== plan.repository || !component.publishable || component.releaseGroup !== item.releaseGroup || component.userFacing !== item.userFacing)
+            fail(`unreviewed component metadata: ${item.id}`);
+        const allowed = new Set(component.dependencies);
+        if (item.dependencies.some(({ id }) => !allowed.has(id)))
+            fail(`unreviewed dependency edge: ${item.id}`);
+    }
+}
+export async function preflight(environment) {
+    if (!OID.test(environment.releaseCommit) || environment.githubSha !== environment.releaseCommit)
+        fail("github.sha/release commit mismatch");
+    const planBytes = await safeRead(environment.cwd, ".lenso-release/plan.json");
+    if (hash(planBytes) !== environment.planSha256)
+        fail("plan byte digest mismatch");
+    const plan = parseJson(planBytes, "release plan");
+    assertReleasePlan(plan);
+    if (plan.planId !== environment.planId || plan.repository !== environment.repository)
+        fail("plan identity mismatch");
+    exactSelection(plan, environment.packages);
+    const runtime = await readRuntimeManifest(environment.cwd);
+    const workflowBytes = await safeRead(environment.cwd, environment.workflowPath);
+    verifyPublisherContract(plan, {
+        repository: environment.repository,
+        workflowPath: environment.workflowPath,
+        workflowSha256: hash(workflowBytes),
+        sharedRevision: runtime.manifest.sourceRevision,
+        sharedBundleSha256: hash(runtime.bytes),
+        executionRef: environment.refName,
+        executionRefTip: environment.releaseCommit,
+        githubSha: environment.githubSha,
+        runner: process.env.RUNNER_IMAGE ?? "ubuntu-24.04",
+        node: process.version.slice(1),
+        npm: (await execFile("npm", ["--version"])).stdout.trim(),
+        rust: (await execFile("rustc", ["--version"])).stdout.trim().split(" ")[1] ?? "",
+        planId: environment.planId,
+        sourceCommit: plan.sourceCommit,
+        releaseCommit: environment.releaseCommit,
+        sourceCommitRepository: environment.repository,
+        releaseCommitRepository: environment.repository,
+        releaseCommitContainsSourceCommit: (await execFile("git", ["merge-base", "--is-ancestor", plan.sourceCommit, environment.releaseCommit], { cwd: environment.cwd }).then(() => true, () => false)),
+        packages: environment.packages,
+    });
+    for (const generated of plan.generatedFiles)
+        if (hash(await safeRead(environment.cwd, generated.path)) !== generated.sha256)
+            fail(`generated file mismatch: ${generated.path}`);
+    await verifyReviewedComponents(environment.cwd, plan);
+    return plan;
+}
+async function requestJson(url, init) {
+    const response = await fetch(url, { ...init, redirect: "error" });
+    const body = await response.json().catch(() => ({}));
+    return { response, body };
+}
+async function npmObservation(name, version) {
+    const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
+    const encoded = name.replace("/", "%2f");
+    const { response, body } = await requestJson(`${base}/${encoded}/${version}`);
+    if (response.status === 404)
+        return { exists: false };
+    if (!response.ok)
+        fail(`npm registry observation ${response.status}`);
+    const dist = body.dist;
+    const tarball = String(dist?.tarball ?? "");
+    const integrity = String(dist?.integrity ?? "");
+    const publishedAt = String(body.date ?? body.publishedAt ?? "");
+    if (!tarball || !integrity || !publishedAt)
+        fail("npm registry observation incomplete");
+    const artifact = await fetch(tarball, { redirect: "error" });
+    if (!artifact.ok)
+        fail(`npm tarball fetch ${artifact.status}`);
+    return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity, url: `${base}/${encoded}/${version}`, publishedAt };
+}
+async function cargoObservation(name, version) {
+    const base = process.env.LENSO_CRATES_API_URL ?? "https://crates.io";
+    const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`);
+    if (response.status === 404)
+        return { exists: false };
+    if (!response.ok)
+        fail(`crates registry observation ${response.status}`);
+    const crate = body.version;
+    const checksum = String(crate?.checksum ?? "");
+    const publishedAt = String(crate?.created_at ?? "");
+    const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
+    const artifact = await fetch(download, { redirect: "error" });
+    if (!artifact.ok || !checksum || !publishedAt)
+        fail("crates registry observation incomplete");
+    return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: `sha256-${checksum}`, url: `${base}/crates/${encodeURIComponent(name)}/${version}`, publishedAt };
+}
+async function packedArtifact(cwd, item) {
+    if (item.id.startsWith("npm:")) {
+        if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN)
+            fail("npm token fallback is forbidden");
+        const name = item.id.slice(4);
+        const { stdout } = await execFile("npm", ["pack", "--json", "--ignore-scripts"], { cwd });
+        const result = JSON.parse(stdout);
+        if (result.length !== 1 || result[0]?.name !== name || result[0].version !== item.version || !result[0].integrity || !/^[0-9a-f]{40}$/u.test(result[0].shasum))
+            fail("npm archive identity mismatch");
+        const path = join(cwd, result[0].filename);
+        return { path, bytes: await readFile(path) };
+    }
+    const name = item.id.slice(6);
+    await execFile("cargo", ["package", "--locked", "-p", name], { cwd });
+    const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
+    return { path, bytes: await readFile(path) };
+}
+async function publishOnce(cwd, item) {
+    if (item.id.startsWith("npm:")) {
+        await execFile("npm", ["publish", "--dry-run", "--ignore-scripts"], { cwd });
+        await execFile("npm", ["publish", "--provenance", "--access", "public", "--ignore-scripts"], { cwd });
+    }
+    else {
+        if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN)
+            fail("official crates.io token is required without fallback");
+        await execFile("cargo", ["publish", "--dry-run", "--locked", "-p", item.id.slice(6)], { cwd });
+        await execFile("cargo", ["publish", "--locked", "-p", item.id.slice(6), "--token", process.env.CARGO_REGISTRY_TOKEN], { cwd });
+    }
+}
+async function createAttestation(artifactPath, artifactBytes, environment) {
+    let cleanup;
+    if (!artifactPath) {
+        cleanup = await mkdtemp(join(tmpdir(), "lenso-recovery-"));
+        artifactPath = join(cleanup, "artifact");
+        const handle = await open(artifactPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+        try {
+            await handle.writeFile(artifactBytes);
+        }
+        finally {
+            await handle.close();
+        }
+    }
+    try {
+        const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: environment.githubToken } });
+        const url = /https:\/\/github\.com\/[^\s]+/u.exec(stdout)?.[0];
+        if (!url)
+            fail("attestation URL missing");
+        return url;
+    }
+    finally {
+        if (cleanup)
+            await rm(cleanup, { recursive: true, force: true });
+    }
+}
+function receiptFor(plan, item, observation, provenanceUrl, environment) {
+    const identity = {
+        schema: "lenso.component-receipt.v1",
+        planId: plan.planId, packageId: item.id, version: item.version,
+        repository: plan.repository, sourceCommit: environment.releaseCommit,
+        packedSha256: hash(observation.bytes), registryIntegrity: observation.integrity, registryUrl: observation.url,
+        provenanceUrl, provenanceSubject: { name: basename(new URL(observation.url).pathname), digest: hash(observation.bytes) },
+        workflowUrl: environment.runUrl,
+        tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(item.id.slice(item.id.indexOf(":") + 1))}%40${item.version}`,
+        publishedAt: observation.publishedAt,
+    };
+    return { ...identity, receiptId: sha256(identity) };
+}
+async function dispatchReceipt(receipt, environment) {
+    const identity = { schema: "lenso.release-event.v1", eventType: "lenso-publish-receipt", issuedAt: new Date().toISOString(), nonce: crypto.randomUUID(), sourceRepository: environment.repository, expectedAppId: Number(process.env.LENSO_APP_ID), planId: environment.planId, planUrl: receipt.tagUrl, planSha256: environment.planSha256, releaseCommit: environment.releaseCommit, correlationId: environment.eventId, receipt };
+    const event = { ...identity, eventId: sha256(identity) };
+    const endpoint = process.env.LENSO_COORDINATOR_RECEIPT_URL;
+    if (!endpoint)
+        fail("coordinator receipt endpoint is required");
+    const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": receipt.receiptId }, body: JSON.stringify(event) });
+    if (!response.ok)
+        fail(`coordinator receipt confirmation ${response.status}`);
+    const confirmation = await response.json();
+    if (confirmation.receiptId !== receipt.receiptId || !["publishing", "verified"].includes(confirmation.planStatus ?? ""))
+        fail("coordinator receipt confirmation mismatch");
+    if (confirmation.planStatus === "verified") {
+        const cleanup = process.env.LENSO_COORDINATOR_CLEANUP_URL;
+        if (!cleanup)
+            fail("verified plan has no coordinator cleanup endpoint");
+        const cleanupResponse = await fetch(cleanup, {
+            method: "POST", redirect: "error",
+            headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": environment.planId },
+            body: JSON.stringify({ schema: "lenso.cleanup-request.v1", repository: environment.repository, planId: environment.planId, planSha256: environment.planSha256, releaseCommit: environment.releaseCommit, dispatchEventId: environment.eventId }),
+        });
+        if (!cleanupResponse.ok)
+            fail(`coordinator cleanup confirmation ${cleanupResponse.status}`);
+        const cleanupBody = await cleanupResponse.json();
+        if (cleanupBody.accepted !== true || cleanupBody.planId !== environment.planId)
+            fail("coordinator cleanup confirmation mismatch");
+    }
+}
+export async function publishSelected(environment) {
+    const plan = await preflight(environment); // This is deliberately before packaging and any OIDC-consuming publish command.
+    const receipts = [];
+    for (const item of environment.packages) {
+        const name = item.id.slice(item.id.indexOf(":") + 1);
+        let observed = item.id.startsWith("npm:") ? await npmObservation(name, item.version) : await cargoObservation(name, item.version);
+        if (observed.exists) {
+            const recovered = await readExistingReceipt(item, environment);
+            if (recovered) {
+                if (recovered.planId !== plan.planId || recovered.sourceCommit !== environment.releaseCommit || recovered.packedSha256 !== hash(observed.bytes) || recovered.registryIntegrity !== observed.integrity || recovered.registryUrl !== observed.url || recovered.publishedAt !== observed.publishedAt)
+                    fail("existing receipt contradicts authoritative registry state");
+                await dispatchReceipt(recovered, environment);
+                receipts.push(recovered);
+                continue;
+            }
+        }
+        let artifact = observed.exists ? { path: "", bytes: Buffer.from(observed.bytes) } : await packedArtifact(environment.cwd, item);
+        if (!observed.exists) {
+            await publishOnce(environment.cwd, item);
+            observed = item.id.startsWith("npm:") ? await npmObservation(name, item.version) : await cargoObservation(name, item.version);
+            if (!observed.exists)
+                fail("published package is not registry-visible");
+            if (hash(observed.bytes) !== hash(artifact.bytes))
+                fail("registry archive differs from packed archive");
+        }
+        const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
+        const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
+        await createImmutableTag(receipt, environment);
+        await dispatchReceipt(receipt, environment);
+        receipts.push(receipt);
+    }
+    return receipts;
+}
+async function createImmutableTag(receipt, environment) {
+    const tag = `${receipt.packageId.slice(receipt.packageId.indexOf(":") + 1)}@${receipt.version}`;
+    const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+    const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+    const existing = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers: auth, redirect: "error" });
+    if (existing.ok) {
+        const body = await existing.json();
+        const tagObject = await fetch(`${api}/repos/${environment.repository}/git/tags/${body.object?.sha ?? ""}`, { headers: auth, redirect: "error" });
+        if (!tagObject.ok)
+            fail("existing annotated tag is unreadable");
+        const value = await tagObject.json();
+        if (value.object?.sha !== environment.releaseCommit || value.message !== canonicalBytes(receipt).toString("utf8"))
+            fail("existing tag receipt contradiction");
+        return;
+    }
+    if (existing.status !== 404)
+        fail(`tag observation ${existing.status}`);
+    const object = await fetch(`${api}/repos/${environment.repository}/git/tags`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ tag, message: canonicalBytes(receipt).toString("utf8"), object: environment.releaseCommit, type: "commit" }) });
+    if (!object.ok)
+        fail(`annotated tag creation ${object.status}`);
+    const { sha } = await object.json();
+    const ref = await fetch(`${api}/repos/${environment.repository}/git/refs`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }) });
+    if (!ref.ok)
+        fail(`tag ref creation ${ref.status}`);
+}
+async function readExistingReceipt(item, environment) {
+    const tag = `${item.id.slice(item.id.indexOf(":") + 1)}@${item.version}`;
+    const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+    const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
+    const ref = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers, redirect: "error" });
+    if (ref.status === 404)
+        return null;
+    if (!ref.ok)
+        fail(`tag observation ${ref.status}`);
+    const refBody = await ref.json();
+    if (refBody.object?.type !== "tag" || !refBody.object.sha)
+        fail("release tag is not annotated");
+    const object = await fetch(`${api}/repos/${environment.repository}/git/tags/${refBody.object.sha}`, { headers, redirect: "error" });
+    if (!object.ok)
+        fail(`annotated tag observation ${object.status}`);
+    const tagBody = await object.json();
+    if (tagBody.object?.sha !== environment.releaseCommit || typeof tagBody.message !== "string")
+        fail("annotated tag target contradiction");
+    const receipt = parseJson(Buffer.from(tagBody.message), "tag receipt");
+    assertComponentReceipt(receipt);
+    if (receipt.packageId !== item.id || receipt.version !== item.version || receipt.repository !== environment.repository)
+        fail("annotated tag receipt identity contradiction");
+    return receipt;
+}
+export async function createPlan(cwd, repository, sourceCommit) {
+    const { manifest, bytes } = await readRuntimeManifest(cwd);
+    const config = parseJson(await safeRead(cwd, ".lenso-release/config.json"), "repository config");
+    if (config.schema !== "lenso.repository-config.v1" || config.repository !== repository)
+        fail("repository config mismatch");
+    const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
+    const components = Object.fromEntries(Object.values(registry.packages).filter(({ repository: owner }) => owner === repository).map(({ id, releaseGroup, userFacing }) => [id, { releaseGroup, userFacing }]));
+    return exportReleasePlan({ cwd, repository, sourceCommit, components, publisher: {
+            workflow: ".github/workflows/publish.yml", workflowSha256: hash(await safeRead(cwd, ".github/workflows/publish.yml")),
+            sharedRevision: manifest.sourceRevision, sharedBundleSha256: hash(bytes), runner: "ubuntu-24.04", node: "24.18.0", npm: "11.7.0", rust: "1.92.0",
+        } });
+}
