@@ -91,11 +91,17 @@ export function tagRefIsImmutable(value: unknown, tagRef: string): boolean {
   if (!Array.isArray(value)) return false;
   const match = (pattern: string): boolean | null => {
     if (pattern === "~ALL") return true;
-    if (pattern === tagRef) return true;
-    if (/^refs\/tags\/[A-Za-z0-9@._/-]*\*$/u.test(pattern) && pattern.indexOf("*") === pattern.length - 1)
-      return tagRef.startsWith(pattern.slice(0, -1));
-    if (!pattern.includes("*")) return false;
-    return null;
+    if (!/^refs\/tags\/[A-Za-z0-9@._/*-]+$/u.test(pattern) || pattern.includes("***")) return null;
+    let expression = "^";
+    for (let index = 0; index < pattern.length; index += 1) {
+      const character = pattern[index]!;
+      if (character === "*" && pattern[index + 1] === "*") {
+        expression += ".*";
+        index += 1;
+      } else if (character === "*") expression += "[^/]*";
+      else expression += character.replace(/[.\\+?^${}()|[\]]/gu, "\\$&");
+    }
+    return new RegExp(`${expression}$`, "u").test(tagRef);
   };
   return value.some((raw) => {
     const ruleset = raw as Record<string, unknown>;

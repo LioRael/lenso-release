@@ -62,15 +62,18 @@ export class GhAttestationVerifier implements ProvenanceVerifier {
         const signature = result?.signature as Record<string, unknown> | undefined;
         const certificate = signature?.certificate;
         const timestamps = result?.verifiedTimestamps;
-        const certificateFacts = JSON.stringify(certificate);
+        if (certificate === null || typeof certificate !== "object" || Array.isArray(certificate)) continue;
+        const identity = certificate as Record<string, unknown>;
+        const sourceRef = `refs/heads/${expected.ref}`;
         if (
           statement?.predicateType === "https://slsa.dev/provenance/v1" &&
           subject &&
           Array.isArray(timestamps) && timestamps.length > 0 &&
-          certificateFacts.includes(expected.repository) &&
-          certificateFacts.includes(expected.workflow) &&
-          certificateFacts.includes(expected.sha) &&
-          certificateFacts.includes(`https://github.com/${expected.repository}/actions/runs/${expected.runId}`)
+          identity.sourceRepositoryURI === `https://github.com/${expected.repository}` &&
+          identity.sourceRepositoryDigest === expected.sha &&
+          identity.sourceRepositoryRef === sourceRef &&
+          identity.buildSignerURI === `https://github.com/${expected.repository}/${expected.workflow}@${sourceRef}` &&
+          identity.runInvocationURI === `https://github.com/${expected.repository}/actions/runs/${expected.runId}`
         ) return { name: expected.subjectName, digest: expected.digest };
       }
       return null;

@@ -28,6 +28,10 @@ describe("production coordinator adapters", () => {
     expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/core@1.0.0"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(true);
     expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/other*"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(false);
     expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/**/ambiguous"], exclude: [] } } }], "refs/tags/core@1.0.0")).toBe(false);
+    expect(tagRefIsImmutable(protectedRules, "refs/tags/@lenso/pkg@1.0.0")).toBe(false);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/**"], exclude: [] } } }], "refs/tags/@lenso/pkg@1.0.0")).toBe(true);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/@lenso/*"], exclude: [] } } }], "refs/tags/@lenso/pkg@1.0.0")).toBe(true);
+    expect(tagRefIsImmutable([{ ...protectedRules[0], conditions: { ref_name: { include: ["refs/tags/**"], exclude: ["refs/tags/@lenso/*"] } } }], "refs/tags/@lenso/pkg@1.0.0")).toBe(false);
     expect(tagRefIsImmutable([{ ...protectedRules[0], enforcement: "disabled" }], "refs/tags/core@1.0.0")).toBe(false);
     expect(tagRefIsImmutable([{ ...protectedRules[0], rules: [{ type: "deletion" }] }], "refs/tags/core@1.0.0")).toBe(false);
   });
@@ -47,7 +51,9 @@ describe("production coordinator adapters", () => {
     const digest = `sha256:${"a".repeat(64)}`;
     const expected = { artifactBytes: Buffer.from("artifact"), subjectName: "core-1.0.0.crate", digest, repository: "LioRael/lenso", workflow: ".github/workflows/publish.yml", ref: `release-execution/${"b".repeat(64)}`, sha: "2".repeat(40), runId: "42", githubToken: "top-secret" };
     let invocation: { file: string; args: readonly string[] } | undefined;
-    const exact = { statement: { predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: expected.subjectName, digest: { sha256: digest.slice(7) } }] }, signature: { certificate: { sourceRepository: expected.repository, workflow: expected.workflow, sourceDigest: expected.sha, runInvocationUri: `https://github.com/${expected.repository}/actions/runs/${expected.runId}` } }, verifiedTimestamps: [{ type: "tlog" }] };
+    const sourceRef = `refs/heads/${expected.ref}`;
+    const exactCertificate = { sourceRepositoryURI: `https://github.com/${expected.repository}`, sourceRepositoryDigest: expected.sha, sourceRepositoryRef: sourceRef, buildSignerURI: `https://github.com/${expected.repository}/${expected.workflow}@${sourceRef}`, runInvocationURI: `https://github.com/${expected.repository}/actions/runs/${expected.runId}` };
+    const exact = { statement: { predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: expected.subjectName, digest: { sha256: digest.slice(7) } }] }, signature: { certificate: exactCertificate }, verifiedTimestamps: [{ type: "tlog" }] };
     const verifier = new GhAttestationVerifier(async (file, args, options) => {
       invocation = { file, args };
       expect(options.env.GH_TOKEN).toBe("top-secret");
@@ -60,8 +66,18 @@ describe("production coordinator adapters", () => {
     expect(invocation?.args).toContain("--source-ref");
     expect(invocation?.args).toContain("--source-digest");
     expect(JSON.stringify(invocation)).not.toMatch(/token|secret|shell/iu);
-    const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { repository: "attacker/repo" } } } }]) }));
+    const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { ...exactCertificate, sourceRepositoryURI: `https://github.com/${expected.repository}-suffix`, runInvocationURI: `https://github.com/${expected.repository}/actions/runs/420` } } } }]) }));
     await expect(wrong.verify(expected)).resolves.toBeNull();
+    for (const certificate of [
+      { ...exactCertificate, buildSignerURI: `${exactCertificate.buildSignerURI}-suffix` },
+      { ...exactCertificate, sourceRepositoryDigest: `${expected.sha}0` },
+      { ...exactCertificate, sourceRepositoryRef: `${sourceRef}/extra` },
+      [exactCertificate],
+      null,
+    ]) {
+      const verifier = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate } } }]) }));
+      await expect(verifier.verify(expected)).resolves.toBeNull();
+    }
     const failed = new GhAttestationVerifier(async () => { throw new Error("verifier unavailable"); });
     await expect(failed.verify(expected)).rejects.toThrow("verifier unavailable");
   });
