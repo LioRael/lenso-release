@@ -35,44 +35,146 @@ packages:
 `;
 
 const expectedInventory = {
-  "artifact:lenso-runtime-console": ["LioRael/lenso-runtime-console", "github-release", true, true],
-  "cargo:lenso": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-api": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-bootstrap": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-cli": ["LioRael/lenso-cli", "crates-io", true, true],
-  "cargo:lenso-contracts": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-migrate": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-module-audit-log": ["LioRael/lenso-audit-log-module", "crates-io", true, true],
-  "cargo:lenso-module-auth": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-anonymous": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-device": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-github": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-google": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-oauth": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-oidc": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-auth-password": ["LioRael/lenso-auth-module", "crates-io", true, true],
-  "cargo:lenso-module-organization": ["LioRael/lenso-organization-module", "crates-io", true, true],
-  "cargo:lenso-module-story": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-operator": ["LioRael/lenso", "crates-io", false, true],
-  "cargo:lenso-platform-admin": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-admin-data": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-core": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-http": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-module": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-module-remote": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-runtime": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-platform-testing": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-service": ["LioRael/lenso", "crates-io", true, true],
-  "cargo:lenso-worker": ["LioRael/lenso", "crates-io", true, true],
-  "catalog:lenso-official-module-catalog": ["LioRael/lenso-release", "github-release", true, true],
-  "npm:@lenso/auth-console": ["LioRael/lenso-auth-module", "npm", true, true],
-  "npm:@lenso/auth-device-console": ["LioRael/lenso-auth-module", "npm", true, true],
-  "npm:@lenso/auth-provider-console": ["LioRael/lenso-auth-module", "npm", true, true],
-  "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", true, true],
-  "npm:@lenso/organization-console": ["LioRael/lenso-organization-module", "npm", true, true],
-  "npm:@lenso/remote-module-kit": ["LioRael/lenso-runtime-console", "npm", true, true],
-  "npm:@lenso/runtime-console-api": ["LioRael/lenso-runtime-console", "npm", true, true],
-  "npm:@lenso/service-kit": ["LioRael/lenso-runtime-console", "npm", true, true]
+  "artifact:lenso-runtime-console": [
+    "LioRael/lenso-runtime-console",
+    "github-release",
+    "console",
+    true,
+    true
+  ],
+  "cargo:lenso": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-api": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-bootstrap": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-cli": ["LioRael/lenso-cli", "crates-io", "distribution", true, true],
+  "cargo:lenso-contracts": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-migrate": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-module-audit-log": [
+    "LioRael/lenso-audit-log-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth": ["LioRael/lenso-auth-module", "crates-io", "modules", true, true],
+  "cargo:lenso-module-auth-anonymous": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-device": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-github": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-google": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-oauth": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-oidc": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-auth-password": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-organization": [
+    "LioRael/lenso-organization-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
+  "cargo:lenso-module-story": ["LioRael/lenso", "crates-io", "modules", true, true],
+  "cargo:lenso-operator": ["LioRael/lenso", "crates-io", "host", false, true],
+  "cargo:lenso-platform-admin": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-platform-admin-data": ["LioRael/lenso", "crates-io", "host", true, true],
+  "cargo:lenso-platform-core": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-platform-http": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-platform-module": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-platform-module-remote": [
+    "LioRael/lenso",
+    "crates-io",
+    "foundation",
+    true,
+    true
+  ],
+  "cargo:lenso-platform-runtime": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-platform-testing": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-service": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-worker": ["LioRael/lenso", "crates-io", "host", true, true],
+  "catalog:lenso-official-module-catalog": [
+    "LioRael/lenso-release",
+    "github-release",
+    "catalog",
+    true,
+    true
+  ],
+  "npm:@lenso/auth-console": ["LioRael/lenso-auth-module", "npm", "console", true, true],
+  "npm:@lenso/auth-device-console": [
+    "LioRael/lenso-auth-module",
+    "npm",
+    "console",
+    true,
+    true
+  ],
+  "npm:@lenso/auth-provider-console": [
+    "LioRael/lenso-auth-module",
+    "npm",
+    "console",
+    true,
+    true
+  ],
+  "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", "distribution", true, true],
+  "npm:@lenso/organization-console": [
+    "LioRael/lenso-organization-module",
+    "npm",
+    "console",
+    true,
+    true
+  ],
+  "npm:@lenso/remote-module-kit": [
+    "LioRael/lenso-runtime-console",
+    "npm",
+    "modules",
+    true,
+    true
+  ],
+  "npm:@lenso/runtime-console-api": [
+    "LioRael/lenso-runtime-console",
+    "npm",
+    "console",
+    true,
+    true
+  ],
+  "npm:@lenso/service-kit": ["LioRael/lenso-runtime-console", "npm", "modules", true, true]
 } as const;
 
 const expectedDependencies: Record<string, readonly string[]> = {
@@ -202,11 +304,18 @@ describe("component release graph", () => {
     const actual = Object.fromEntries(
       Object.entries(registry.packages).map(([id, component]) => [
         id,
-        [component.repository, component.registry, component.publishable, component.userFacing]
+        [
+          component.repository,
+          component.registry,
+          component.releaseGroup,
+          component.publishable,
+          component.userFacing
+        ]
       ])
     );
 
     expect(actual).toEqual(expectedInventory);
+    expect(registry.internalPackages).toEqual([]);
   });
 
   it("matches every reviewed cross-repository and release-phase edge", async () => {
