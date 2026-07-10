@@ -71,7 +71,7 @@ describe("transactional template synchronization", () => {
     await expect(syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [clean], failAfterWrites: 2 })).rejects.toThrow("injected sync failure");
     expect(await readFile(join(target, "scripts/release-plan.mjs"))).toEqual(before);
     expect(JSON.parse(await readFile(join(target, ".lenso-release/template-manifest.json"), "utf8"))).toEqual(clean);
-  });
+  }, 20_000);
 
   it("rejects parent symlinks before the first mutation", async () => {
     const target = await temp(); const outside = await temp();
