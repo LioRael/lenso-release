@@ -38,6 +38,7 @@ export type ReleasePlanV1 = {
   sourceCommit: GitOid;
   tegamiVersion: "1.2.5";
   publisher: PublisherContract;
+  generatedFiles: { path: string; sha256: Sha256 }[];
   packages: ReleasePackage[];
 };
 

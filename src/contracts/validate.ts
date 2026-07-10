@@ -217,7 +217,7 @@ function assertPublisher(value: unknown, path: string): void {
 
 export function assertReleasePlan(value: unknown): asserts value is ReleasePlanV1 {
   const plan = record(value, "releasePlan", [
-    "schema", "planId", "repository", "sourceCommit", "tegamiVersion", "publisher", "packages",
+    "schema", "planId", "repository", "sourceCommit", "tegamiVersion", "publisher", "generatedFiles", "packages",
   ]);
   literal(plan.schema, "releasePlan.schema", "lenso.release-plan.v1");
   sha256(plan.planId, "releasePlan.planId");
@@ -225,6 +225,22 @@ export function assertReleasePlan(value: unknown): asserts value is ReleasePlanV
   oid(plan.sourceCommit, "releasePlan.sourceCommit");
   literal(plan.tegamiVersion, "releasePlan.tegamiVersion", "1.2.5");
   assertPublisher(plan.publisher, "releasePlan.publisher");
+  const generatedFiles = array(plan.generatedFiles, "releasePlan.generatedFiles").map((entry, index) => {
+    const path = `releasePlan.generatedFiles[${index}]`;
+    const item = record(entry, path, ["path", "sha256"]);
+    const filePath = string(item.path, `${path}.path`);
+    if (filePath.startsWith("/") || filePath.includes("\\") || filePath.split("/").some((part) => part === "" || part === "." || part === "..")) {
+      fail(`${path}.path`, "must be a normalized workspace-relative path");
+    }
+    sha256(item.sha256, `${path}.sha256`);
+    return item;
+  });
+  unique(generatedFiles, "path", "releasePlan.generatedFiles");
+  for (let index = 1; index < generatedFiles.length; index += 1) {
+    if ((generatedFiles[index - 1]!.path as string) >= (generatedFiles[index]!.path as string)) {
+      fail("releasePlan.generatedFiles", "must be sorted by path");
+    }
+  }
   const packages = array(plan.packages, "releasePlan.packages").map((entry, index) => {
     const path = `releasePlan.packages[${index}]`;
     const item = record(entry, path, [

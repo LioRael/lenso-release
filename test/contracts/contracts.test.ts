@@ -32,6 +32,10 @@ const planIdentity = {
     node: "24.0.0",
     rust: "1.94.0",
   },
+  generatedFiles: [
+    { path: ".tegami/publish-lock.yaml", sha256: sha("9") },
+    { path: "Cargo.lock", sha256: sha("8") },
+  ],
   packages: [
     {
       id: "cargo:lenso-contracts",
@@ -49,6 +53,17 @@ const plan = {
   ...planIdentity,
   planId: contentSha256(planIdentity as JsonValue),
 };
+
+it("rejects unsafe, duplicate, and unsorted generated file paths", () => {
+  for (const generatedFiles of [
+    [{ path: "../outside", sha256: sha("1") }],
+    [{ path: "Cargo.lock", sha256: sha("1") }, { path: "Cargo.lock", sha256: sha("2") }],
+    [{ path: "z.lock", sha256: sha("1") }, { path: "a.lock", sha256: sha("2") }],
+  ]) {
+    const identity = { ...planIdentity, generatedFiles };
+    expect(() => assertReleasePlan({ ...identity, planId: contentSha256(identity as JsonValue) })).toThrow();
+  }
+});
 
 const receipt = {
   schema: "lenso.component-receipt.v1",
