@@ -48,12 +48,22 @@ describe("Tegami release plan export", () => {
       { previousVersion: "1.0.0", nextVersion: "1.0.1", bump: "patch" },
     ]);
     expect(plan.tegamiVersion).toBe("1.2.5");
+    expect(plan.generatedFiles.map(({ path }) => path)).toEqual([
+      ".tegami/publish-lock.yaml",
+      "Cargo.lock",
+      "crates/core/CHANGELOG.md",
+      "crates/core/Cargo.toml",
+      "packages/console/CHANGELOG.md",
+      "packages/console/package.json",
+      "pnpm-lock.yaml",
+    ]);
     const { planId, ...identity } = plan;
     expect(planId).toBe(sha256(identity));
     expect(() => assertReleasePlan(plan)).not.toThrow();
     await expect(readFile(join(cwd, ".tegami/publish-lock.yaml"), "utf8")).resolves.toContain("fixture-core");
     await expect(readFile(join(cwd, ".lenso-release/plan.json"), "utf8")).resolves.toBe(`${JSON.stringify(plan, null, 2)}\n`);
     await expect(readFile(join(cwd, "crates/core/Cargo.toml"), "utf8")).resolves.toContain('version = "0.2.0"');
+    await expect(readFile(join(cwd, "Cargo.lock"), "utf8")).resolves.toContain('version = "0.2.0"');
     await expect(readFile(join(cwd, "packages/console/package.json"), "utf8")).resolves.toContain('"version": "1.0.1"');
     await expect(readFile(join(cwd, "crates/core/CHANGELOG.md"), "utf8")).resolves.toContain("0.2.0");
     await expect(readFile(join(cwd, "packages/console/CHANGELOG.md"), "utf8")).resolves.toContain("1.0.1");
@@ -143,6 +153,45 @@ describe("Tegami release plan export", () => {
     await writeFile(join(cwd, "package.json"), (await readFile(join(cwd, "package.json"), "utf8")).replace("^2.3.4", "~2.3.4"));
     await writeFile(join(cwd, "pnpm-lock.yaml"), (await readFile(join(cwd, "pnpm-lock.yaml"), "utf8")).replace("specifier: ^2.3.4", "specifier: ~2.3.4"));
     await expect(exportReleasePlan(options)).rejects.toThrow("persisted plan does not match current workspace");
+  });
+
+  it.each(["crates/core/CHANGELOG.md", ".tegami/publish-lock.yaml"])("rejects generated output tamper at %s", async (path) => {
+    const cwd = await fixture("mixed");
+    const options = {
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["cargo:fixture-core", "foundation", true], ["npm:@fixture/console", "console", true]),
+    };
+    await exportReleasePlan(options);
+    await writeFile(join(cwd, path), "tampered\n");
+    await expect(exportReleasePlan(options)).rejects.toThrow("generated file digest mismatch");
+  });
+
+  it("rejects Cargo git sources before mutation", async () => {
+    const cwd = await fixture("cargo-only");
+    const manifestPath = join(cwd, "Cargo.toml");
+    const original = await readFile(manifestPath, "utf8");
+    await writeFile(manifestPath, `${original}\n[dependencies]\nfixture-git = { git = "https://example.invalid/repo.git", version = "1.0.0" }\n`);
+    const modified = await readFile(manifestPath, "utf8");
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["cargo:fixture-core", "foundation", true], ["cargo:fixture-git", "foundation", false]),
+    })).rejects.toThrow("unsupported Cargo dependency source");
+    expect(await readFile(manifestPath, "utf8")).toBe(modified);
+    await expect(readFile(join(cwd, ".tegami/release.md"), "utf8")).resolves.toContain("fixture-core");
+  });
+
+  it("rejects a symlinked rollback target without mutating outside the workspace", async () => {
+    const cwd = await fixture("cargo-only");
+    const outside = join(await mkdtemp(join(tmpdir(), "lenso-rollback-outside-")), "CHANGELOG.md");
+    const outsideBytes = "outside changelog\n";
+    await writeFile(outside, outsideBytes);
+    await symlink(outside, join(cwd, "CHANGELOG.md"));
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["cargo:fixture-core", "foundation", true]),
+    })).rejects.toThrow("unsafe workspace symlink");
+    expect(await readFile(outside, "utf8")).toBe(outsideBytes);
+    await expect(readFile(join(cwd, ".tegami/release.md"), "utf8")).resolves.toContain("fixture-core");
   });
 
   it("rejects a symlinked persistence directory without partial output", async () => {
