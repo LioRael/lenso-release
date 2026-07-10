@@ -1,5 +1,6 @@
 export type Sha256 = `sha256:${string}`;
 export type GitOid = string;
+export type RegistryPackageId = `cargo:${string}` | `npm:${string}`;
 
 export type PackageDependency = {
   id: string;
@@ -71,7 +72,7 @@ export type ComponentReceiptV1 = {
   schema: "lenso.component-receipt.v1";
   receiptId: Sha256;
   planId: Sha256;
-  packageId: string;
+  packageId: RegistryPackageId;
   version: string;
   repository: string;
   sourceCommit: GitOid;
@@ -91,7 +92,7 @@ export type RepositoryRevision = {
 };
 
 export type SystemPackage = {
-  id: string;
+  id: RegistryPackageId;
   version: string;
   tagUrl: string;
   registryUrl: string;

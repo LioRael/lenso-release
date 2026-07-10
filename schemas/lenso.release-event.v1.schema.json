@@ -23,11 +23,15 @@
     "receipt": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "packageId": { "type": "string", "pattern": "^cargo:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^[0-9a-f]{64}$" } } } },
+        { "if": { "properties": { "packageId": { "type": "string", "pattern": "^npm:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" } } } }
+      ],
       "required": ["schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
       "properties": {
         "schema": { "const": "lenso.component-receipt.v1" },
         "receiptId": { "$ref": "#/$defs/sha256" }, "planId": { "$ref": "#/$defs/sha256" },
-        "packageId": { "$ref": "#/$defs/nonEmpty" }, "version": { "$ref": "#/$defs/semver" },
+        "packageId": { "type": "string", "pattern": "^(?:cargo|npm):.+$" }, "version": { "$ref": "#/$defs/semver" },
         "repository": { "$ref": "#/$defs/nonEmpty" }, "sourceCommit": { "$ref": "#/$defs/oid" },
         "packedSha256": { "$ref": "#/$defs/sha256" }, "registryIntegrity": { "$ref": "#/$defs/registryIntegrity" },
         "registryUrl": { "$ref": "#/$defs/httpsUrl" }, "provenanceUrl": { "$ref": "#/$defs/httpsUrl" },
@@ -36,7 +40,7 @@
         "publishedAt": { "$ref": "#/$defs/timestamp" }
       }
     },
-    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$" }] },
+    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" }] },
     "planReady": {
       "type": "object", "additionalProperties": false,
       "required": ["schema", "eventId", "eventType", "issuedAt", "nonce", "sourceRepository", "expectedAppId", "planId", "planUrl", "planSha256", "releaseCommit"],

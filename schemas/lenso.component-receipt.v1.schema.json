@@ -3,12 +3,16 @@
   "$comment": "Runtime assertion binds provenanceSubject.digest to packedSha256.",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "packageId": { "type": "string", "pattern": "^cargo:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^[0-9a-f]{64}$" } } } },
+    { "if": { "properties": { "packageId": { "type": "string", "pattern": "^npm:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" } } } }
+  ],
   "required": ["schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
   "properties": {
     "schema": { "const": "lenso.component-receipt.v1" },
     "receiptId": { "$ref": "#/$defs/sha256" },
     "planId": { "$ref": "#/$defs/sha256" },
-    "packageId": { "$ref": "#/$defs/nonEmpty" },
+    "packageId": { "type": "string", "pattern": "^(?:cargo|npm):.+$" },
     "version": { "$ref": "#/$defs/semver" },
     "repository": { "$ref": "#/$defs/nonEmpty" },
     "sourceCommit": { "$ref": "#/$defs/oid" },
@@ -37,6 +41,6 @@
     "httpsUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
     "timestamp": { "$ref": "#/$defs/rfc3339" },
     "rfc3339": { "type": "string", "pattern": "^[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$", "$comment": "Runtime assertion additionally validates leap-year calendar semantics." },
-    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$" }] }
+    "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" }] }
   }
 }

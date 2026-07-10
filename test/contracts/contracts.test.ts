@@ -71,6 +71,20 @@ const receipt = {
   publishedAt: "2026-07-11T10:00:00Z",
 };
 
+const npmIntegrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
+const npmReceipt = {
+  ...receipt,
+  receiptId: sha("c"),
+  packageId: "npm:@lenso/runtime-console-api",
+  version: "0.5.0",
+  registryIntegrity: npmIntegrity,
+  registryUrl: "https://registry.npmjs.org/@lenso/runtime-console-api/-/runtime-console-api-0.5.0.tgz",
+  provenanceSubject: {
+    name: "runtime-console-api-0.5.0.tgz",
+    digest: receipt.packedSha256,
+  },
+};
+
 const release = {
   schema: "lenso.system-release.v1",
   systemVersion: "0.1.0",
@@ -251,9 +265,14 @@ describe("public release contracts", () => {
     ["lenso.release-event.v1.schema.json", assertReleaseEvent, { ...event, issuedAt: "2026-07-11T24:00:00Z" }],
     ["lenso.release-plan.v1.schema.json", assertReleasePlan, floatingRequirementPlan],
     ["lenso.component-receipt.v1.schema.json", assertComponentReceipt, { ...receipt, registryIntegrity: "latest" }],
+    ["lenso.component-receipt.v1.schema.json", assertComponentReceipt, { ...receipt, registryIntegrity: npmIntegrity }],
     ["lenso.system-release.v1.schema.json", assertSystemRelease, {
       ...release,
       requirements: { ...release.requirements, minimumNode: "latest" },
+    }],
+    ["lenso.system-release.v1.schema.json", assertSystemRelease, {
+      ...release,
+      packages: [{ ...release.packages[0], registryIntegrity: npmIntegrity }],
     }],
   ] as const)("rejects the same structural invalid fixture through %s and runtime validation", (file, assertContract, fixture) => {
     expect(() => assertContract(fixture)).toThrow();
@@ -302,7 +321,7 @@ describe("public release contracts", () => {
     expect(() => assertReleasePlan(floatingRequirementPlan)).toThrow();
   });
 
-  it.each(["../local", "main", "https://example.com/pkg", "workspace:^1.0.0", "file:../pkg", "path:../pkg"])(
+  it.each(["../local", "main", "release1", "https://example.com/pkg", "workspace:^1.0.0", "file:../pkg", "path:../pkg"])(
     "rejects non-registry dependency requirement %s",
     (requirement) => {
       const identity = {
@@ -319,15 +338,61 @@ describe("public release contracts", () => {
     },
   );
 
+  it.each(["1.2.3", "=1.2.3", "^1.2.3", "~1.2.3", ">=1.2.3", ">=1.2.3, <2.0.0", "^1.2.3 || ^2.0.0"])(
+    "accepts supported registry SemVer requirement %s",
+    (requirement) => {
+      const identity = {
+        ...floatingRequirementIdentity,
+        packages: [{
+          ...floatingRequirementIdentity.packages[0],
+          dependencies: [{ ...floatingRequirementIdentity.packages[0]!.dependencies[0], requirement }],
+        }],
+      };
+      expect(() => assertReleasePlan({
+        ...identity,
+        planId: contentSha256(identity as JsonValue),
+      })).not.toThrow();
+    },
+  );
+
+  it("requires resolved dependency versions to be exact stable SemVer", () => {
+    const identity = {
+      ...floatingRequirementIdentity,
+      packages: [{
+        ...floatingRequirementIdentity.packages[0],
+        dependencies: [{
+          ...floatingRequirementIdentity.packages[0]!.dependencies[0],
+          requirement: "^1.2.3",
+          resolvedVersion: "1.2.3-next.1",
+        }],
+      }],
+    };
+    expect(() => assertReleasePlan({
+      ...identity,
+      planId: contentSha256(identity as JsonValue),
+    })).toThrow();
+  });
+
   it("validates native registry integrity and binds provenance to the packed subject", () => {
     expect(() => assertComponentReceipt({ ...receipt, registryIntegrity: "latest" })).toThrow();
     expect(() => assertComponentReceipt({
       ...receipt,
       provenanceSubject: { ...receipt.provenanceSubject, digest: sha("f") },
     })).toThrow();
-    expect(() => assertComponentReceipt({
-      ...receipt,
-      registryIntegrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}`,
+    expect(() => assertComponentReceipt({ ...receipt, registryIntegrity: npmIntegrity })).toThrow();
+    expect(() => assertComponentReceipt(npmReceipt)).not.toThrow();
+    expect(() => assertComponentReceipt({ ...npmReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
+    expect(() => assertSystemRelease({
+      ...release,
+      packages: [{ ...release.packages[0], registryIntegrity: npmIntegrity }],
+    })).toThrow();
+    expect(() => assertSystemRelease({
+      ...release,
+      packages: [{
+        ...release.packages[0],
+        id: "npm:@lenso/runtime-console-api",
+        registryIntegrity: npmIntegrity,
+      }],
     })).not.toThrow();
   });
 

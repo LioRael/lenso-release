@@ -128,22 +128,30 @@ function timestamp(value: unknown, path: string): string {
 
 function immutableRequirement(value: unknown, path: string): string {
   const result = string(value, path);
-  if (
-    !/[0-9]/u.test(result) ||
-    !/^[0-9A-Za-z<>=~^|,. +\-]+$/u.test(result) ||
-    /(?:^|[^A-Za-z])(git|https?|ssh|file|path|workspace|main|master|latest|stable)(?:[^A-Za-z]|$)/iu.test(result) ||
-    /[*x]/iu.test(result)
-  ) {
+  const version = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)";
+  const token = `(?:\\^|~|=|>=|<=|>|<)?${version}`;
+  const comparatorSet = `${token}(?:[ ,]+${token})*`;
+  if (!new RegExp(`^${comparatorSet}(?: *\\|\\| *${comparatorSet})*$`, "u").test(result)) {
     fail(path, "must be an immutable registry version requirement");
   }
   return result;
 }
 
-function registryIntegrity(value: unknown, path: string): string {
+function packageEcosystem(packageId: unknown, path: string): "cargo" | "npm" {
+  const result = string(packageId, path);
+  if (/^cargo:.+/u.test(result)) return "cargo";
+  if (/^npm:.+/u.test(result)) return "npm";
+  fail(path, "must use a cargo: or npm: package ID");
+}
+
+function registryIntegrity(value: unknown, ecosystem: "cargo" | "npm", path: string): string {
   const result = string(value, path);
-  if (/^[0-9a-f]{64}$/u.test(result)) return result;
+  if (ecosystem === "cargo") {
+    if (!/^[0-9a-f]{64}$/u.test(result)) fail(path, "must be a crates.io lowercase SHA-256 checksum");
+    return result;
+  }
   const sri = /^sha512-([A-Za-z0-9+/]+={0,2})$/u.exec(result);
-  if (!sri) fail(path, "must be a crates.io SHA-256 checksum or npm sha512 SRI");
+  if (!sri) fail(path, "must be an npm sha512 SRI");
   const encoded = sri[1] as string;
   const decoded = Buffer.from(encoded, "base64");
   if (decoded.length !== 64 || decoded.toString("base64") !== encoded) {
@@ -233,7 +241,7 @@ export function assertReleasePlan(value: unknown): asserts value is ReleasePlanV
       const resolved = record(dependency, dependencyPath, ["id", "requirement", "resolvedVersion", "source"]);
       string(resolved.id, `${dependencyPath}.id`);
       immutableRequirement(resolved.requirement, `${dependencyPath}.requirement`);
-      semver(resolved.resolvedVersion, `${dependencyPath}.resolvedVersion`);
+      stableSemver(resolved.resolvedVersion, `${dependencyPath}.resolvedVersion`);
       enumeration(resolved.source, `${dependencyPath}.source`, ["registry", "plan"]);
       return resolved;
     });
@@ -305,7 +313,8 @@ export function assertComponentReceipt(value: unknown): asserts value is Compone
   string(receipt.repository, "componentReceipt.repository");
   oid(receipt.sourceCommit, "componentReceipt.sourceCommit");
   const packedSha256 = sha256(receipt.packedSha256, "componentReceipt.packedSha256");
-  registryIntegrity(receipt.registryIntegrity, "componentReceipt.registryIntegrity");
+  const ecosystem = packageEcosystem(receipt.packageId, "componentReceipt.packageId");
+  registryIntegrity(receipt.registryIntegrity, ecosystem, "componentReceipt.registryIntegrity");
   url(receipt.registryUrl, "componentReceipt.registryUrl");
   url(receipt.provenanceUrl, "componentReceipt.provenanceUrl");
   const subject = record(receipt.provenanceSubject, "componentReceipt.provenanceSubject", ["name", "digest"]);
@@ -336,7 +345,8 @@ function assertSystemComponents(value: RecordValue, path: string): void {
     semver(item.version, `${itemPath}.version`);
     url(item.tagUrl, `${itemPath}.tagUrl`);
     url(item.registryUrl, `${itemPath}.registryUrl`);
-    registryIntegrity(item.registryIntegrity, `${itemPath}.registryIntegrity`);
+    const ecosystem = packageEcosystem(item.id, `${itemPath}.id`);
+    registryIntegrity(item.registryIntegrity, ecosystem, `${itemPath}.registryIntegrity`);
     return item;
   });
   unique(packages, "id", `${path}.packages`);
