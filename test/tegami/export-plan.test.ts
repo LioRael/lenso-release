@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -53,9 +53,10 @@ describe("Tegami release plan export", () => {
     expect(() => assertReleasePlan(plan)).not.toThrow();
     await expect(readFile(join(cwd, ".tegami/publish-lock.yaml"), "utf8")).resolves.toContain("fixture-core");
     await expect(readFile(join(cwd, ".lenso-release/plan.json"), "utf8")).resolves.toBe(`${JSON.stringify(plan, null, 2)}\n`);
-    await expect(readFile(join(cwd, "Cargo.toml"), "utf8")).resolves.toContain('version = "0.2.0"');
-    await expect(readFile(join(cwd, "package.json"), "utf8")).resolves.toContain('"version": "1.0.1"');
-    await expect(readFile(join(cwd, "CHANGELOG.md"), "utf8")).resolves.toContain("0.2.0");
+    await expect(readFile(join(cwd, "crates/core/Cargo.toml"), "utf8")).resolves.toContain('version = "0.2.0"');
+    await expect(readFile(join(cwd, "packages/console/package.json"), "utf8")).resolves.toContain('"version": "1.0.1"');
+    await expect(readFile(join(cwd, "crates/core/CHANGELOG.md"), "utf8")).resolves.toContain("0.2.0");
+    await expect(readFile(join(cwd, "packages/console/CHANGELOG.md"), "utf8")).resolves.toContain("1.0.1");
   });
 
   it.each([
@@ -86,5 +87,74 @@ describe("Tegami release plan export", () => {
     await expect(exportReleasePlan({
       cwd: await fixture("npm-only"), repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher, components: {},
     })).rejects.toThrow("missing component registry metadata");
+  });
+
+  it("rejects an unknown dependency before mutating manifests or intents", async () => {
+    const cwd = await fixture("npm-only");
+    const manifest = await readFile(join(cwd, "package.json"), "utf8");
+    const intent = await readFile(join(cwd, ".tegami/release.md"), "utf8");
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["npm:@fixture/console", "console", false]),
+    })).rejects.toThrow("dependency npm:@fixture/runtime has no component registry metadata");
+    expect(await readFile(join(cwd, "package.json"), "utf8")).toBe(manifest);
+    expect(await readFile(join(cwd, ".tegami/release.md"), "utf8")).toBe(intent);
+  });
+
+  it("rejects ambiguous pnpm resolution before applying the draft", async () => {
+    const cwd = await fixture("npm-only");
+    await writeFile(join(cwd, "pnpm-lock.yaml"), (await readFile(join(cwd, "pnpm-lock.yaml"), "utf8")).replace(
+      "version: 2.3.4", "version: 2.3.4\n        alternate: 2.3.5",
+    ));
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["npm:@fixture/console", "console", false], ["npm:@fixture/runtime", "console", false]),
+    })).rejects.toThrow("ambiguous pnpm lock resolution");
+    await expect(readFile(join(cwd, "package.json"), "utf8")).resolves.toContain('"version": "1.0.0"');
+  });
+
+  it("rejects stale plan reuse after metadata drift", async () => {
+    const cwd = await fixture("cargo-only");
+    const base = { cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher };
+    await exportReleasePlan({ ...base, components: metadata(["cargo:fixture-core", "foundation", true]) });
+    await expect(exportReleasePlan({
+      ...base, components: metadata(["cargo:fixture-core", "host", true]),
+    })).rejects.toThrow("persisted plan does not match current workspace");
+  });
+
+  it("rejects stale plan reuse after manifest version drift", async () => {
+    const cwd = await fixture("cargo-only");
+    const options = {
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["cargo:fixture-core", "foundation", true]),
+    };
+    await exportReleasePlan(options);
+    await writeFile(join(cwd, "Cargo.toml"), (await readFile(join(cwd, "Cargo.toml"), "utf8")).replace("0.1.1", "9.9.9"));
+    await expect(exportReleasePlan(options)).rejects.toThrow("persisted plan does not match current workspace");
+  });
+
+  it("rejects stale plan reuse after dependency drift", async () => {
+    const cwd = await fixture("npm-only");
+    const options = {
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["npm:@fixture/console", "console", false], ["npm:@fixture/runtime", "console", false]),
+    };
+    await exportReleasePlan(options);
+    await writeFile(join(cwd, "package.json"), (await readFile(join(cwd, "package.json"), "utf8")).replace("^2.3.4", "~2.3.4"));
+    await writeFile(join(cwd, "pnpm-lock.yaml"), (await readFile(join(cwd, "pnpm-lock.yaml"), "utf8")).replace("specifier: ^2.3.4", "specifier: ~2.3.4"));
+    await expect(exportReleasePlan(options)).rejects.toThrow("persisted plan does not match current workspace");
+  });
+
+  it("rejects a symlinked persistence directory without partial output", async () => {
+    const cwd = await fixture("cargo-only");
+    const outside = await mkdtemp(join(tmpdir(), "lenso-plan-outside-"));
+    await symlink(outside, join(cwd, ".lenso-release"));
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["cargo:fixture-core", "foundation", true]),
+    })).rejects.toThrow("unsafe plan persistence path");
+    await expect(readFile(join(outside, "plan.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(cwd, "Cargo.toml"), "utf8")).resolves.toContain('version = "0.1.0"');
+    await rm(outside, { recursive: true, force: true });
   });
 });

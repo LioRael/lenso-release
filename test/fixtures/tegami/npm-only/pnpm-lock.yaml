@@ -1,0 +1,15 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      '@fixture/runtime':
+        specifier: ^2.3.4
+        version: 2.3.4
+
+packages:
+  '@fixture/runtime@2.3.4':
+    resolution: {integrity: sha512-Zml4dHVyZS1ydW50aW1l}
+
+snapshots:
+  '@fixture/runtime@2.3.4': {}
