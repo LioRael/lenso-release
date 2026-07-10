@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  ci:
+    name: ci
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
