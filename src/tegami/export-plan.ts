@@ -85,7 +85,8 @@ async function npmObservations(
     const rawDependencies = manifest[field];
     if (rawDependencies === undefined) continue;
     const manifestDependencies = record(rawDependencies, `${pkg.id} ${field}`);
-    const lockedDependencies = importer[field] === undefined ? {} : record(importer[field], `pnpm importer ${importerKey}.${field}`);
+    const lockedField = importer[field] ?? (field === "peerDependencies" ? importer.dependencies : undefined);
+    const lockedDependencies = lockedField === undefined ? {} : record(lockedField, `pnpm importer ${importerKey}.${field}`);
     for (const [alias, rawRequirement] of Object.entries(manifestDependencies)) {
       if (typeof rawRequirement !== "string") fail(`${pkg.id} dependency ${alias} requirement must be a string`);
       const aliasMatch = /^npm:((?:@[^/]+\/)?[^@]+)@(.+)$/u.exec(rawRequirement);
