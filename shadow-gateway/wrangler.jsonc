@@ -10,7 +10,7 @@
     "head_sampling_rate": 1
   },
   "secrets": {
-    "required": ["SHADOW_TOKEN"]
+    "required": ["SHADOW_TOKEN", "PREFLIGHT_PRIVATE_KEY"]
   },
   "r2_buckets": [
     {
