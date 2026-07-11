@@ -152,8 +152,11 @@ export async function createCoordinatorHandlers(
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
 }> {
+  const registryPath = import.meta.url.includes("/dist/src/")
+    ? new URL("../../../config/components.yaml", import.meta.url).pathname
+    : new URL("../../config/components.yaml", import.meta.url).pathname;
   const registry = await loadComponents(
-    new URL("../../config/components.yaml", import.meta.url).pathname,
+    registryPath,
   );
   const planPath =
     input.env.LENSO_RELEASE_PLAN_PATH ?? ".lenso-release/plan.json";
