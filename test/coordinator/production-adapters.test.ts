@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -17,6 +17,17 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("accepts only immutable execution-ref branch protection", () => {
+    const exact = {
+      enforce_admins: { enabled: true },
+      allow_force_pushes: { enabled: false },
+      allow_deletions: { enabled: false },
+    };
+    expect(executionRefProtectionIsImmutable(exact)).toBe(true);
+    expect(executionRefProtectionIsImmutable({ ...exact, allow_deletions: { enabled: true } })).toBe(false);
+    expect(executionRefProtectionIsImmutable({ ...exact, enforce_admins: null })).toBe(false);
+  });
+
   it("follows only trusted GitHub asset redirects without forwarding authorization", async () => {
     const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
