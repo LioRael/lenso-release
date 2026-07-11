@@ -164,6 +164,7 @@ export async function createCoordinatorHandlers(
   const now = () => new Date();
   const request = input.request ?? fetch;
   const provenanceVerifier = input.provenanceVerifier ?? new GhAttestationVerifier();
+  const shadow = input.env.LENSO_COORDINATOR_MODE === "shadow";
   const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
     if (id.startsWith("artifact:")) {
       const component = registry.packages[id];
@@ -200,7 +201,9 @@ export async function createCoordinatorHandlers(
         ReleaseEventV1,
         { eventType: "lenso-plan-ready" }
       >;
-      const sourceToken = await input.tokens.tokenFor(event.sourceRepository, { contents: "write", administration: "write", metadata: "read" });
+      const sourceToken = await input.tokens.tokenFor(event.sourceRepository, shadow
+        ? { contents: "write", metadata: "read" }
+        : { contents: "write", administration: "write", metadata: "read" });
       const api = `https://api.github.com/repos/${event.sourceRepository}`;
       const github = {
         async readAtReleaseCommit() {
@@ -235,9 +238,8 @@ export async function createCoordinatorHandlers(
               if (!selectedIds.has(dep.id)) {
                 if (!await dependencyVisible(dep.id, dep.resolvedVersion)) externalDependenciesVisible = false;
               }
-          const branch = await githubJson(
-            `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}/protection`,
-            sourceToken,
+          const branch = shadow ? { shadow: true } : await githubJson(
+            `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}/protection`, sourceToken,
           );
           return {
             actor: observedActor,
@@ -289,6 +291,7 @@ export async function createCoordinatorHandlers(
             sourceToken,
           );
           const tip = String((observed.object as Record<string, unknown>).sha);
+          if (shadow) return { tip, protected: true };
           const protectedResponse = await request(`${api}/branches/${encodeURIComponent(ref)}/protection`, {
             method: "PUT",
             redirect: "error",

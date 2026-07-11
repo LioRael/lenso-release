@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { npmPublication, parseCargoUpload } from "../shadow-gateway/src/protocol.js";
+import { canonical, canonicalSha256, signAuthorization } from "../shadow-gateway/src/coordinator.js";
 
 describe("shadow gateway protocols", () => {
   it("parses the Cargo publish wire format without changing artifact bytes", () => {
@@ -34,5 +35,21 @@ describe("shadow gateway protocols", () => {
     header.writeUInt32LE(2, 0);
     header.writeUInt32LE(0, 4);
     expect(() => parseCargoUpload(Buffer.concat([header.subarray(0, 4), Buffer.from("{}"), header.subarray(4), Buffer.from("x")]))).toThrow("length mismatch");
+  });
+
+  it("canonicalizes and digests coordinator bindings deterministically", async () => {
+    const left = { z: [2, { b: true, a: null }], a: "value" };
+    const right = { a: "value", z: [2, { a: null, b: true }] };
+    expect(canonical(left)).toBe(canonical(right));
+    expect(await canonicalSha256(left)).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(await canonicalSha256(left)).toBe(await canonicalSha256(right));
+  });
+
+  it("signs a publisher authorization with an Ed25519 PKCS8 key", async () => {
+    const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+    const privateKey = Buffer.from(await crypto.subtle.exportKey("pkcs8", pair.privateKey)).toString("base64");
+    const authorization = { schema: "lenso.publisher-authorization.v1", eventId: "sha256:test" };
+    const signature = Buffer.from((await signAuthorization(authorization, privateKey)).replaceAll("-", "+").replaceAll("_", "/"), "base64");
+    expect(await crypto.subtle.verify("Ed25519", pair.publicKey, signature, Buffer.from(canonical(authorization)))).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { npmPublication, parseCargoUpload, sha256 } from "./protocol.ts";
+import { coordinatorRoute } from "./coordinator.ts";
 
 type JsonObject = Record<string, unknown>;
 type ReleaseRow = { id: number; repository: string; tag_name: string; target_commitish: string; name: string; draft: number; prerelease: number; created_at: string };
@@ -199,6 +200,7 @@ export default {
       if (url.pathname.startsWith("/npm/")) return await npmRoute(request, env, url);
       if (url.pathname.startsWith("/cargo/")) return await cargoRoute(request, env, url);
       if (url.pathname.startsWith("/github/")) return await githubRoute(request, env, url);
+      if (url.pathname.startsWith("/coordinator/")) return await coordinatorRoute(request, env, url);
       if (url.pathname === "/attestations") return await attestationRoute(request, env, url);
       if (request.method === "GET" && /^\/attestations\/[0-9a-f]{64}$/u.test(url.pathname)) {
         const row = await env.DB.prepare("SELECT * FROM attestations WHERE id=?1").bind(url.pathname.slice("/attestations/".length)).first();
