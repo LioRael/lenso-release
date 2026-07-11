@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -17,6 +17,21 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("follows only trusted GitHub asset redirects without forwarding authorization", async () => {
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://api.github.com/")) {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+        return new Response(null, { status: 302, headers: { location: "https://release-assets.githubusercontent.com/archive" } });
+      }
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return new Response("archive");
+    });
+    await expect(checkedGithubAsset(request as typeof fetch, "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).resolves.toHaveProperty("status", 200);
+    expect(request).toHaveBeenCalledTimes(2);
+    await expect(checkedGithubAsset(async () => new Response(null, { status: 302, headers: { location: "https://evil.example/archive" } }), "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).rejects.toThrow("not trusted");
+  });
+
   it("requires active update-and-delete protection for the exact tag ref", () => {
     const protectedRules = [{
       target: "tag", enforcement: "active",

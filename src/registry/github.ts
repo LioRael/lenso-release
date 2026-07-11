@@ -16,7 +16,7 @@ export async function observeGithubArtifact(repository: string, name: string, ve
   const headers: Record<string, string> = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
   const request = async (url: string, accept = "application/vnd.github+json"): Promise<Response | RegistryObservation> => {
-    try { return await (options.fetch ?? globalThis.fetch)(url, { signal: controller.signal, headers: { ...headers, accept }, redirect: "error" }); }
+    try { return await (options.fetch ?? globalThis.fetch)(url, { signal: controller.signal, headers: { ...headers, accept }, redirect: "manual" }); }
     catch { return controller.signal.aborted ? { failure: "timeout", detail: "GitHub request timed out" } : { failure: "transport", detail: "GitHub request failed" }; }
   };
   try {
@@ -37,8 +37,21 @@ export async function observeGithubArtifact(repository: string, name: string, ve
     if (!Number.isSafeInteger(asset.id) || Number(asset.id) <= 0 || !Number.isSafeInteger(checksumAsset.id) || Number(checksumAsset.id) <= 0) {
       return { failure: "schema", detail: "GitHub hosted artifact assets were malformed" };
     }
-    const downloadAsset = async (id: number): Promise<Response | RegistryObservation> =>
-      request(`https://api.github.com/repos/${repository}/releases/assets/${id}`, "application/octet-stream");
+    const downloadAsset = async (id: number): Promise<Response | RegistryObservation> => {
+      const initial = await request(`https://api.github.com/repos/${repository}/releases/assets/${id}`, "application/octet-stream");
+      if (!(initial instanceof Response) || ![301, 302, 303, 307, 308].includes(initial.status)) return initial;
+      const location = initial.headers.get("location");
+      if (!location) return { failure: "schema", detail: "GitHub hosted artifact redirect was malformed" };
+      const target = new URL(location);
+      if (target.protocol !== "https:" || !["objects.githubusercontent.com", "release-assets.githubusercontent.com"].includes(target.hostname)) {
+        return { failure: "schema", detail: "GitHub hosted artifact redirect target was not trusted" };
+      }
+      try {
+        return await (options.fetch ?? globalThis.fetch)(target, { signal: controller.signal, headers: { accept: "application/octet-stream" }, redirect: "error" });
+      } catch {
+        return controller.signal.aborted ? { failure: "timeout", detail: "GitHub request timed out" } : { failure: "transport", detail: "GitHub request failed" };
+      }
+    };
     const archiveResult = await downloadAsset(Number(asset.id));
     if (!(archiveResult instanceof Response)) return archiveResult;
     if (!archiveResult.ok) return { failure: "http", detail: `GitHub returned HTTP ${archiveResult.status}` };

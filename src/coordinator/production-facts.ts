@@ -63,6 +63,20 @@ export async function checkedExternal(request: typeof fetch, url: string): Promi
   }
   throw new Error("external observation redirect limit exceeded");
 }
+export async function checkedGithubAsset(request: typeof fetch, url: string, token: string): Promise<Response> {
+  assertGithubApi(url);
+  const parsed = new URL(url);
+  if (!/^\/repos\/[^/]+\/[^/]+\/releases\/assets\/\d+$/u.test(parsed.pathname))
+    throw new TypeError("GitHub asset URL is invalid");
+  const initial = await request(parsed, { redirect: "manual", headers: { ...headers(token), accept: "application/octet-stream" } });
+  if (![301, 302, 303, 307, 308].includes(initial.status)) return initial;
+  const location = initial.headers.get("location");
+  if (!location) throw new TypeError("GitHub asset redirect missing location");
+  const target = new URL(location);
+  if (target.protocol !== "https:" || !["objects.githubusercontent.com", "release-assets.githubusercontent.com"].includes(target.hostname))
+    throw new TypeError("GitHub asset redirect target is not trusted");
+  return request(target, { redirect: "error", headers: { accept: "application/octet-stream" } });
+}
 function nonce() {
   return crypto.randomUUID();
 }
@@ -363,11 +377,11 @@ export async function createCoordinatorHandlers(
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
             const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
             if (!asset?.url || !asset.browser_download_url || !checksumAsset?.url) return null;
-            const artifact = await request(String(asset.url), { redirect: "error", headers: { ...headers(token), accept: "application/octet-stream" } });
+            const artifact = await checkedGithubAsset(request, String(asset.url), token);
             if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = sha256(packedBytes);
-            const checksum = await request(String(checksumAsset.url), { redirect: "error", headers: { ...headers(token), accept: "application/octet-stream" } });
+            const checksum = await checkedGithubAsset(request, String(checksumAsset.url), token);
             const expectedChecksum = `${nativeIntegrity.slice("sha256:".length)}  ${packageName}.tar.gz\n`;
             if (!checksum.ok || Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) return null;
             publishedAt = String(release.created_at);

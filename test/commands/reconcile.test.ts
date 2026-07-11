@@ -178,10 +178,14 @@ describe("immutable registry observations", () => {
   it("observes exact hosted artifact bytes and accepts artifact receipt integrity", async () => {
     const archive = Buffer.from("hosted console archive");
     const digest = (await import("node:crypto")).createHash("sha256").update(archive).digest("hex");
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/releases/tags/v1.2.3")) return new Response(JSON.stringify({ draft: true, created_at: "2026-07-11T00:00:00Z", assets: [{ id: 1, name: "lenso-runtime-console.tar.gz" }, { id: 2, name: "lenso-runtime-console.tar.gz.sha256" }] }));
-      if (url.endsWith("/assets/1")) return new Response(archive);
+      if (url.endsWith("/assets/1")) return new Response(null, { status: 302, headers: { location: "https://release-assets.githubusercontent.com/lenso-runtime-console.tar.gz" } });
+      if (url === "https://release-assets.githubusercontent.com/lenso-runtime-console.tar.gz") {
+        expect(new Headers(init?.headers).has("authorization")).toBe(false);
+        return new Response(archive);
+      }
       if (url.endsWith("/assets/2")) return new Response(`${digest}  lenso-runtime-console.tar.gz\n`);
       if (url.includes("/git/ref/")) return new Response(JSON.stringify({ object: { type: "tag", sha: "c".repeat(40) } }));
       return new Response(JSON.stringify({ tag: "lenso-runtime-console@1.2.3", message: JSON.stringify({ schema: "lenso.component-receipt.v1", packageId: "artifact:lenso-runtime-console", version: "1.2.3", registryIntegrity: `sha256:${digest}`, publishedAt: "2026-07-11T00:00:00Z" }) }));
