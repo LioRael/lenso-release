@@ -43,7 +43,7 @@ function assertKnown(id, components, owner) {
 }
 async function npmObservations(cwd, pkg, components, planned) {
     const manifest = record(JSON.parse(await readFile(join(pkg.path, "package.json"), "utf8")), `${pkg.id} manifest`);
-    const hasDependencies = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+    const hasDependencies = ["dependencies", "peerDependencies", "optionalDependencies"]
         .some((field) => manifest[field] !== undefined && Object.keys(record(manifest[field], `${pkg.id} ${field}`)).length > 0);
     if (!hasDependencies)
         return [];
@@ -52,7 +52,7 @@ async function npmObservations(cwd, pkg, components, planned) {
     const importerKey = relative(cwd, pkg.path).replaceAll("\\", "/") || ".";
     const importer = record(importers[importerKey], `pnpm importer ${importerKey}`);
     const result = [];
-    for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
         const rawDependencies = manifest[field];
         if (rawDependencies === undefined)
             continue;
@@ -65,7 +65,7 @@ async function npmObservations(cwd, pkg, components, planned) {
             const name = aliasMatch?.[1] ?? alias;
             const id = `npm:${name}`;
             const tracked = Object.hasOwn(components, id);
-            if (!tracked && name.startsWith("@lenso/"))
+            if (!tracked && name.startsWith("@"))
                 assertKnown(id, components, pkg.id);
             if (!tracked) {
                 normalizeRequirement(aliasMatch?.[2] ?? rawRequirement, id);
