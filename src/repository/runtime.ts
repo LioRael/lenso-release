@@ -369,7 +369,7 @@ async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ pa
 }
 async function publishOnce(environment: RuntimeEnvironment, item: PublishSelection, artifact: { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }): Promise<void> {
   if (item.id.startsWith("npm:")) {
-    await execFile("npm", ["publish", artifact.path, "--provenance", "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
+    await execFile("npm", ["publish", artifact.path, ...(process.env.LENSO_RELEASE_MODE === "production" ? ["--provenance"] : []), "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
   } else if (item.id.startsWith("cargo:")) {
     if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN) fail("official crates.io token is required without fallback");
     if (!artifact.cargoMetadata) fail("signed Cargo upload metadata missing"); await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata);
