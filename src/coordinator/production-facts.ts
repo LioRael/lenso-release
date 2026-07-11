@@ -350,11 +350,15 @@ export async function createCoordinatorHandlers(
             if (release.draft !== true || typeof release.created_at !== "string") return null;
             const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
-            if (!asset?.url || !asset.browser_download_url) return null;
+            const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
+            if (!asset?.url || !asset.browser_download_url || !checksumAsset?.url) return null;
             const artifact = await request(String(asset.url), { redirect: "error", headers: { ...headers(token), accept: "application/octet-stream" } });
             if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = sha256(packedBytes);
+            const checksum = await request(String(checksumAsset.url), { redirect: "error", headers: { ...headers(token), accept: "application/octet-stream" } });
+            const expectedChecksum = `${nativeIntegrity.slice("sha256:".length)}  ${packageName}.tar.gz\n`;
+            if (!checksum.ok || Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) return null;
             publishedAt = String(release.created_at);
             registryUrl = String(asset.browser_download_url);
           }
@@ -362,10 +366,13 @@ export async function createCoordinatorHandlers(
           const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
           const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
-          if (!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          if (!workflow) return null;
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if (runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
+          if (runUrl !== expected.workflowUrl || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
+          const completed = workflow.status === "completed" && workflow.conclusion === "success";
+          const receiptStepInProgress = workflow.status === "in_progress" && (workflow.conclusion === null || workflow.conclusion === undefined);
+          if (!completed && !receiptStepInProgress) return null;
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;

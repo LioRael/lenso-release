@@ -84,6 +84,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_ATTESTATION_TOKEN: ${{ github.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_COORDINATOR_CLEANUP_URL: ${{ vars.LENSO_COORDINATOR_CLEANUP_URL }}

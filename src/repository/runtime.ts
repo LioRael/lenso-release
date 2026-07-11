@@ -249,13 +249,15 @@ async function requestJson(url: string, init?: RequestInit): Promise<{ response:
 async function npmObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
   const encoded = name.replace("/", "%2f");
-  const { response, body } = await requestJson(`${base}/${encoded}/${version}`);
+  const { response, body } = await requestJson(`${base}/${encoded}`);
   if (response.status === 404) return { exists: false };
   if (!response.ok) fail(`npm registry observation ${response.status}`);
-  const dist = body.dist as Record<string, unknown> | undefined;
+  const metadata = (body.versions as Record<string, Record<string, unknown>> | undefined)?.[version];
+  if (!metadata) return { exists: false };
+  const dist = metadata.dist as Record<string, unknown> | undefined;
   const tarball = String(dist?.tarball ?? "");
   const integrity = String(dist?.integrity ?? "");
-  const publishedAt = String(body.date ?? body.publishedAt ?? "");
+  const publishedAt = String((body.time as Record<string, unknown> | undefined)?.[version] ?? "");
   if (!tarball || !integrity || !publishedAt) fail("npm registry observation incomplete");
   const artifactUrl = process.env.LENSO_TEST_ARTIFACT_PROXY_URL || tarball;
   if (process.env.LENSO_TEST_ARTIFACT_PROXY_URL && process.env.NODE_ENV !== "test") fail("artifact proxy is test-only");
@@ -284,11 +286,18 @@ async function artifactObservation(name: string, version: string, environment: R
   if (!release.ok) fail(`hosted artifact release observation ${release.status}`);
   const body = await release.json() as { draft?: boolean; created_at?: string; assets?: Array<{ name?: string; url?: string; browser_download_url?: string }> };
   if (body.draft !== true || !body.created_at) fail("hosted artifact release must remain a verified draft");
-  const asset = body.assets?.find(({ name: assetName }) => assetName === `${name}.tar.gz`);
-  if (!asset?.url || !asset.browser_download_url) fail("hosted artifact release asset is missing");
+  const assetName = `${name}.tar.gz`;
+  const asset = body.assets?.find(({ name: candidate }) => candidate === assetName);
+  const checksumAsset = body.assets?.find(({ name: candidate }) => candidate === `${assetName}.sha256`);
+  if (!asset || !checksumAsset) return { exists: false };
+  if (!asset.url || !asset.browser_download_url || !checksumAsset.url) fail("hosted artifact release asset is incomplete");
   const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
   if (!download.ok) fail(`hosted artifact download ${download.status}`);
   const bytes = new Uint8Array(await download.arrayBuffer());
+  const checksum = await fetch(checksumAsset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+  if (!checksum.ok) fail(`hosted artifact checksum download ${checksum.status}`);
+  const expectedChecksum = `${hash(bytes).slice("sha256:".length)}  ${assetName}\n`;
+  if (Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) fail("hosted artifact checksum contradicts archive");
   return { exists: true, bytes, integrity: hash(bytes), url: asset.browser_download_url, publishedAt: body.created_at };
 }
 async function npmWorkspaceDirectory(cwd: string, name: string): Promise<string> {
@@ -351,12 +360,17 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
   } else {
     const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
     const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
-    const created = await fetch(`${api}/repos/${environment.repository}/releases`, {
-      method: "POST", headers, redirect: "error",
-      body: JSON.stringify({ tag_name: `v${item.version}`, target_commitish: environment.releaseCommit, name: `Lenso Runtime Console ${item.version}`, draft: true, prerelease: false }),
-    });
-    if (!created.ok) fail(`draft hosted artifact release creation ${created.status}`);
-    const release = await created.json() as { upload_url?: string };
+    const releaseUrl = `${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${item.version}`)}`;
+    let releaseResponse = await fetch(releaseUrl, { headers, redirect: "error" });
+    if (releaseResponse.status === 404) {
+      releaseResponse = await fetch(`${api}/repos/${environment.repository}/releases`, {
+        method: "POST", headers, redirect: "error",
+        body: JSON.stringify({ tag_name: `v${item.version}`, target_commitish: environment.releaseCommit, name: `Lenso Runtime Console ${item.version}`, draft: true, prerelease: false }),
+      });
+    }
+    if (!releaseResponse.ok) fail(`draft hosted artifact release creation ${releaseResponse.status}`);
+    const release = await releaseResponse.json() as { draft?: boolean; target_commitish?: string; upload_url?: string; assets?: Array<{ name?: string; url?: string }> };
+    if (release.draft !== true || release.target_commitish !== environment.releaseCommit) fail("hosted artifact draft identity mismatch");
     const uploadBase = release.upload_url?.replace(/\{.*$/u, "");
     if (!uploadBase) fail("draft hosted artifact upload URL is missing");
     const assetName = `${item.id.slice("artifact:".length)}.tar.gz`;
@@ -365,11 +379,19 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
       headers: { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": contentType, "content-length": String(bytes.length) },
       body: Buffer.from(bytes),
     });
-    const archive = await upload(assetName, artifact.bytes, "application/gzip");
-    if (!archive.ok) fail(`draft hosted artifact upload ${archive.status}`);
     const checksum = Buffer.from(`${hash(artifact.bytes).slice("sha256:".length)}  ${assetName}\n`);
-    const digest = await upload(`${assetName}.sha256`, checksum, "text/plain");
-    if (!digest.ok) fail(`draft hosted checksum upload ${digest.status}`);
+    const ensureAsset = async (name: string, bytes: Uint8Array, contentType: string): Promise<void> => {
+      const existing = release.assets?.find(({ name: candidate }) => candidate === name);
+      if (existing?.url) {
+        const downloaded = await fetch(existing.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+        if (!downloaded.ok || !Buffer.from(await downloaded.arrayBuffer()).equals(Buffer.from(bytes))) fail(`draft hosted artifact asset contradicts sealed bytes: ${name}`);
+        return;
+      }
+      const response = await upload(name, bytes, contentType);
+      if (!response.ok) fail(`draft hosted artifact upload ${response.status}: ${name}`);
+    };
+    await ensureAsset(assetName, artifact.bytes, "application/gzip");
+    await ensureAsset(`${assetName}.sha256`, checksum, "text/plain");
   }
 }
 export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
@@ -386,7 +408,9 @@ async function createAttestation(artifactPath: string, artifactBytes: Uint8Array
     try { await handle.writeFile(artifactBytes); } finally { await handle.close(); }
   }
   try {
-    const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: environment.githubToken } });
+    const token = process.env.LENSO_ATTESTATION_TOKEN;
+    if (!token) fail("workflow attestation token is required");
+    const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: token } });
     const url = /https:\/\/github\.com\/[^\s]+/u.exec(stdout)?.[0];
     if (!url) fail("attestation URL missing");
     return url;
