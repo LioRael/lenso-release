@@ -261,8 +261,8 @@ export async function createCoordinatorHandlers(
               if (!selectedIds.has(dep.id)) {
                 if (!await dependencyVisible(dep.id, dep.resolvedVersion)) externalDependenciesVisible = false;
               }
-          const branch = shadow ? { shadow: true } : await githubJson(
-            `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}/protection`, sourceToken,
+          const branch = shadow ? { protected: true } : await githubJson(
+            `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}`, sourceToken,
           );
           return {
             actor: observedActor,
@@ -280,7 +280,7 @@ export async function createCoordinatorHandlers(
             node: plan.publisher.node,
             npm: plan.publisher.npm,
             rust: plan.publisher.rust,
-            branchProtected: Object.keys(branch).length > 0,
+            branchProtected: branch.protected === true,
             generatedFilesValid,
             externalDependenciesVisible,
             source,
