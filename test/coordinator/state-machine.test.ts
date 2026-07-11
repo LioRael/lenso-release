@@ -142,8 +142,8 @@ describe("atomic coordinator state", () => {
       publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest("b"), sharedRevision: "4".repeat(40), sharedBundleSha256: digest("c"), runner: "ubuntu-24.04", node: "24.0.0", npm: "11.7.0", rust: "1.94.0" },
       generatedFiles: [{ path: "Cargo.lock", sha256: digest("d") }],
       packages: [
-        { id: "cargo:lenso-service", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] },
         { id: "cargo:lenso", previousVersion: "0.3.18", nextVersion: "0.3.19", bump: "patch" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] },
+        { id: "cargo:lenso-service", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] },
       ],
     };
     const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as JsonValue) as Sha256 };
@@ -164,8 +164,8 @@ describe("atomic coordinator state", () => {
       },
     });
     expect(accepted.state.outbox[0]!.packages.map(({ id }) => id)).toEqual([
-      "cargo:lenso-service",
       "cargo:lenso",
+      "cargo:lenso-service",
     ]);
   });
   it("runs ready and exact receipts through a two-phase plan to verified", async () => {
