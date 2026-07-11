@@ -452,7 +452,7 @@ async function packedArtifact(cwd, item) {
 }
 async function publishOnce(environment, item, artifact) {
     if (item.id.startsWith("npm:")) {
-        await execFile("npm", ["publish", artifact.path, "--provenance", "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
+        await execFile("npm", ["publish", artifact.path, ...(process.env.LENSO_RELEASE_MODE === "production" ? ["--provenance"] : []), "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
     }
     else if (item.id.startsWith("cargo:")) {
         if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN)
