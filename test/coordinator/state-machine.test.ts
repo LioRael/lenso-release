@@ -133,6 +133,41 @@ function snapshot(value = state()): ReleaseStateSnapshot {
 }
 
 describe("atomic coordinator state", () => {
+  it("keeps same-phase package ordering stable across state and dispatch", async () => {
+    const identity = {
+      schema: "lenso.release-plan.v1" as const,
+      repository: "LioRael/lenso",
+      sourceCommit: "1".repeat(40),
+      tegamiVersion: "1.2.5" as const,
+      publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest("b"), sharedRevision: "4".repeat(40), sharedBundleSha256: digest("c"), runner: "ubuntu-24.04", node: "24.0.0", npm: "11.7.0", rust: "1.94.0" },
+      generatedFiles: [{ path: "Cargo.lock", sha256: digest("d") }],
+      packages: [
+        { id: "cargo:lenso-service", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] },
+        { id: "cargo:lenso", previousVersion: "0.3.18", nextVersion: "0.3.19", bump: "patch" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] },
+      ],
+    };
+    const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as JsonValue) as Sha256 };
+    const planBytes = Buffer.from(JSON.stringify(plan));
+    const planSha = sha256(planBytes);
+    const registry: ComponentRegistry = {
+      schema: "lenso.component-registry.v1",
+      internalPackages: [],
+      packages: Object.fromEntries(identity.packages.map(({ id, releaseGroup, userFacing }) => [id, { id, repository: identity.repository, registry: "crates-io", releaseGroup, userFacing, publishable: true, dependencies: [] }])),
+    } as ComponentRegistry;
+    const releaseCommit = "2".repeat(40);
+    const accepted = await acceptReadyEvent({ schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready", issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit }, {
+      store: new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} }), registry, appId: 42, expectedActor: "lenso-app[bot]",
+      now: () => new Date("2026-07-11T00:00:00Z"), nonce: () => "dispatch-nonce-1",
+      github: {
+        async readAtReleaseCommit() { return { actor: "lenso-app[bot]", appId: 42, planBytes, plan, planSha256: planSha, sourceCommitRepository: plan.repository, releaseCommitRepository: plan.repository, releaseCommitContainsSourceCommit: true, workflowSha256: plan.publisher.workflowSha256, sharedRevision: plan.publisher.sharedRevision, sharedBundleSha256: plan.publisher.sharedBundleSha256, runner: plan.publisher.runner, node: plan.publisher.node, npm: plan.publisher.npm, rust: plan.publisher.rust, branchProtected: true, generatedFilesValid: true, externalDependenciesVisible: true }; },
+        async ensureExecutionRef(_repository, name) { return { tip: releaseCommit, protected: true as const, name }; },
+      },
+    });
+    expect(accepted.state.outbox[0]!.packages.map(({ id }) => id)).toEqual([
+      "cargo:lenso-service",
+      "cargo:lenso",
+    ]);
+  });
   it("runs ready and exact receipts through a two-phase plan to verified", async () => {
     const identity = {
       schema: "lenso.release-plan.v1" as const,

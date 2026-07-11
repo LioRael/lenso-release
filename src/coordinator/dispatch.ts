@@ -69,7 +69,11 @@ export function newlyReadyPackages(
     return [];
   return pending
     .filter((item) => item.phase === phase)
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => {
+      const left = `${a.id}:${a.version}`;
+      const right = `${b.id}:${b.version}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
 }
 export function publishRequest(
   plan: ReleasePlanV1,
