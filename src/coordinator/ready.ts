@@ -124,9 +124,11 @@ function packagesFor(
       status: "pending" as const,
       requestEventId: null,
     }))
-    .sort((a, b) =>
-      `${a.id}:${a.version}`.localeCompare(`${b.id}:${b.version}`),
-    );
+    .sort((a, b) => {
+      const left = `${a.id}:${a.version}`;
+      const right = `${b.id}:${b.version}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
 }
 
 export async function acceptReadyEvent(
