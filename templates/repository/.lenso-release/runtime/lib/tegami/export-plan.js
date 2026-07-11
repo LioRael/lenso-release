@@ -152,12 +152,16 @@ async function cargoObservations(cwd, pkg, components, planned, locked = true) {
     const node = metadata.resolve?.nodes.find((item) => item.id === owner.id);
     if (!node)
         fail(`cargo metadata has no resolved node for ${pkg.id}`);
-    return owner.dependencies.map((dependency) => {
+    return owner.dependencies.flatMap((dependency) => {
         const id = `cargo:${dependency.name}`;
-        assertKnown(id, components, pkg.id);
+        if (!components[id]) {
+            if (dependency.path || !dependency.source)
+                fail(`${id} is a workspace dependency without component registry metadata`);
+            if (!isCratesIoSource(dependency.source))
+                fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
+            return [];
+        }
         const localVersion = planned.get(id);
-        if ((dependency.path || !dependency.source) && !localVersion)
-            fail(`${id} is a workspace dependency absent from the plan`);
         if (dependency.source && !isCratesIoSource(dependency.source))
             fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
         const matches = node.deps.filter((entry) => entry.name === (dependency.rename ?? dependency.name));
