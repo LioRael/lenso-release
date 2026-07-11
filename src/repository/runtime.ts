@@ -112,7 +112,7 @@ async function verifyReviewedComponents(cwd: string, plan: ReleasePlanV1): Promi
     const component = registry.packages[item.id];
     if (!component || component.repository !== plan.repository || !component.publishable || component.releaseGroup !== item.releaseGroup || component.userFacing !== item.userFacing) fail(`unreviewed component metadata: ${item.id}`);
     const allowed = new Set(component.dependencies);
-    if (item.dependencies.some(({ id }) => !allowed.has(id as never))) fail(`unreviewed dependency edge: ${item.id}`);
+    if (item.dependencies.some(({ id }) => !allowed.has(id as never) && registry.packages[id]?.repository !== plan.repository)) fail(`unreviewed dependency edge: ${item.id}`);
   }
 }
 

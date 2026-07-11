@@ -105,6 +105,13 @@ const expectedInventory = {
     true,
     true
   ],
+  "cargo:lenso-module-auth-phone": [
+    "LioRael/lenso-auth-module",
+    "crates-io",
+    "modules",
+    true,
+    true
+  ],
   "cargo:lenso-module-organization": [
     "LioRael/lenso-organization-module",
     "crates-io",
@@ -207,6 +214,11 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-password": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-module"
+  ],
+  "cargo:lenso-module-auth-phone": [
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
