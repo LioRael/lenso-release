@@ -198,7 +198,7 @@ describe("atomic coordinator state", () => {
       internalPackages: [],
       packages: {
         "cargo:a": { id: "cargo:a", repository: "LioRael/lenso", registry: "crates-io", releaseGroup: "foundation", userFacing: true, publishable: true, dependencies: [] },
-        "cargo:b": { id: "cargo:b", repository: "LioRael/lenso", registry: "crates-io", releaseGroup: "foundation", userFacing: true, publishable: true, dependencies: ["cargo:a"] },
+        "cargo:b": { id: "cargo:b", repository: "LioRael/lenso", registry: "crates-io", releaseGroup: "foundation", userFacing: true, publishable: true, dependencies: [] },
       },
     };
     const store = new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} });

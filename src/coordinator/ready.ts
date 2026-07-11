@@ -1,4 +1,4 @@
-import type { ComponentRegistry } from "../config/components.js";
+import type { ComponentId, ComponentRegistry } from "../config/components.js";
 import type {
   PlanStatePackage,
   PlanStateV1,
@@ -112,8 +112,24 @@ function packagesFor(
   plan: ReleasePlanV1,
   registry: ComponentRegistry,
 ): PlanStatePackage[] {
+  const selected = new Set(plan.packages.map(({ id }) => id));
+  const planRegistry: ComponentRegistry = {
+    ...registry,
+    packages: {
+      ...registry.packages,
+      ...Object.fromEntries(plan.packages.map((item) => [
+        item.id,
+        {
+          ...registry.packages[item.id]!,
+          dependencies: item.dependencies
+            .map(({ id }) => id as ComponentId)
+            .filter((id) => selected.has(id)),
+        },
+      ])),
+    },
+  };
   const phases = topologicalPhases(
-    registry,
+    planRegistry,
     plan.packages.map(({ id }) => id),
   );
   return plan.packages
