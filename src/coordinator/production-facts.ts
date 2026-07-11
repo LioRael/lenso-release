@@ -342,7 +342,27 @@ export async function createCoordinatorHandlers(
         ReleaseEventV1,
         { eventType: "lenso-publish-receipt" }
       >;
-      const expected = event.receipt;
+      const recoveryOnly = event.eventId === `sha256:${"0".repeat(64)}`;
+      let expected = event.receipt;
+      if (recoveryOnly && shadow) {
+        const repository = expected.repository;
+        const packageName = expected.packageId.startsWith("cargo:")
+          ? expected.packageId.slice(6)
+          : expected.packageId.startsWith("npm:@lenso/")
+            ? expected.packageId.slice("npm:@lenso/".length)
+            : expected.packageId.slice("artifact:".length);
+        const tagName = `${packageName}@${expected.version}`;
+        const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", metadata: "read" });
+        const tagApi = `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}`;
+        const ref = await request(`${tagApi}/git/ref/tags/${encodeURIComponent(tagName)}`, { redirect: "error", headers: headers(token) });
+        if (!ref.ok) throw new IncompleteEvidenceError("recovery tag evidence incomplete");
+        const refBody = await ref.json() as Record<string, unknown>;
+        const object = refBody.object as Record<string, unknown>;
+        const tag = await request(`${tagApi}/git/tags/${String(object.sha)}`, { redirect: "error", headers: headers(token) });
+        if (!tag.ok) throw new IncompleteEvidenceError("recovery tag evidence incomplete");
+        const tagBody = await tag.json() as Record<string, unknown>;
+        expected = JSON.parse(String(tagBody.message)) as ComponentReceiptV1;
+      }
       let tagWrite: { githubApi: string; token: string; tagName: string; immutable: boolean } | null = null;
       const observer = {
         async observe(context: ReceiptObservationContext, packageId: string, packageVersion: string): Promise<ReceiptObservation | null> {
@@ -545,7 +565,6 @@ export async function createCoordinatorHandlers(
         nonce,
         appId: input.config.appId,
       };
-      const recoveryOnly = event.eventId === `sha256:${"0".repeat(64)}`;
       let result: StoredPlanState | null = null;
       if (!recoveryOnly) {
         try {
