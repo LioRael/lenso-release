@@ -202,7 +202,7 @@ describe("atomic coordinator state", () => {
       const selected = current.packages.find(({ id }) => id === packageId)!;
       const fixture = makeReceipt(packageId, selected.requestEventId!);
       current = (await acceptReceiptEvent(fixture.event, {
-        store, appId: 42, expectedActor: "lenso-app[bot]", now: () => new Date("2026-07-11T00:02:00Z"), nonce: () => `dispatch-nonce-${++nonce}`,
+        store, appId: 42, expectedActor: "lenso-app[bot]", environment: "production", now: () => new Date("2026-07-11T00:02:00Z"), nonce: () => `dispatch-nonce-${++nonce}`,
         authenticate: async () => ({ actor: "lenso-app[bot]", appId: 42 }), readPlan: async () => ({ plan, planBytes }),
         dependenciesVisible: async (_plan, ids) => { visibilityChecks.push(ids); return true; },
         observer: { async observe(context) { return { registry: { packedBytes: fixture.bytes, nativeIntegrity: fixture.receipt.registryIntegrity, url: fixture.receipt.registryUrl, publishedAt: fixture.receipt.publishedAt }, provenance: { url: fixture.receipt.provenanceUrl, subject: fixture.receipt.provenanceSubject }, workflow: { url: fixture.receipt.workflowUrl, repository: plan.repository, ref: current.executionRef.name, sha: releaseCommit, runName: `lenso-publish-requested:${context.eventId}`, workflowPath: context.workflow }, tag: { url: fixture.receipt.tagUrl, annotated: true, immutable: true, targetSha: releaseCommit, receipt: fixture.receipt } }; }, async createAnnotatedTag() {} },
@@ -471,7 +471,7 @@ describe("atomic coordinator state", () => {
       tag: { url: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", annotated: tagReceipt !== null, immutable: tagReceipt !== null, targetSha: value.releaseCommit, receipt: tagReceipt },
     });
     const recovered = await recoverLostReceipt(value.repository, value.planId, value.packages[0]!.id, value.packages[0]!.version, {
-      store, appId: 42, expectedActor: "lenso-app[bot]", now: () => new Date("2026-07-11T00:03:00Z"), nonce: () => "recovery-nonce-123",
+      store, appId: 42, expectedActor: "lenso-app[bot]", environment: "production", now: () => new Date("2026-07-11T00:03:00Z"), nonce: () => "recovery-nonce-123",
       authenticate: async () => ({ actor: "lenso-app[bot]", appId: 42 }), readPlan: async () => ({ plan, planBytes }),
       observer: { async observe() { return observation(); }, async createAnnotatedTag(_repository, receipt) { creates++; tagReceipt = receipt; } },
     });

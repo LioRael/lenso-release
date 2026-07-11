@@ -535,6 +535,7 @@ export async function createCoordinatorHandlers(
       const receiptDependencies: ReceiptDependencies = {
         store: input.store,
         observer,
+        environment: shadow ? "shadow" : "production",
         authenticate: async () => ({
           actor: observedActor,
           appId: input.config.appId,
@@ -609,7 +610,7 @@ export async function createCoordinatorHandlers(
             correlationId: pkg.requestEventId,
             receipt: {
               schema: "lenso.component-receipt.v1",
-              environment: "production",
+              environment: shadow ? "shadow" : "production",
               receiptId: zero,
               planId: state.planId,
               packageId: pkg.id,
