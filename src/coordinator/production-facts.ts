@@ -224,9 +224,10 @@ export async function createCoordinatorHandlers(
         ReleaseEventV1,
         { eventType: "lenso-plan-ready" }
       >;
-      const sourceToken = await input.tokens.tokenFor(event.sourceRepository, shadow
-        ? { contents: "write", metadata: "read" }
-        : { contents: "write", administration: "write", metadata: "read" });
+      const sourceToken = await input.tokens.tokenFor(event.sourceRepository, {
+        contents: "write",
+        metadata: "read",
+      });
       const api = `https://api.github.com/repos/${event.sourceRepository}`;
       const github = {
         async readAtReleaseCommit() {
