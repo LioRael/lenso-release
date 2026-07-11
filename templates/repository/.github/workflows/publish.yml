@@ -32,12 +32,17 @@ jobs:
         with:
           ref: ${{ inputs.release_commit }}
           persist-credentials: false
+      - uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0
+        with:
+          run_install: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.18.0
           cache: pnpm
       - name: Install reviewed publishing toolchains
         run: |
+          corepack enable
+          pnpm install --frozen-lockfile
           npm install --global npm@11.7.0
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0

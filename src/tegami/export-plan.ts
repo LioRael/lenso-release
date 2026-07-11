@@ -28,6 +28,7 @@ export type ExportReleasePlanOptions = {
   components: Readonly<Record<string, ReleaseComponentMetadata>>;
   /** Maps a reviewed plan component ID to the Tegami workspace package that owns its version. */
   aliases?: Readonly<Record<string, string>>;
+  ignore?: readonly string[];
 };
 
 type DependencyObservation = { id: string; requirement: string; resolvedVersion: string };
@@ -463,7 +464,7 @@ export async function exportReleasePlan(options: ExportReleasePlanOptions): Prom
   const path = await assertSafePlanPath(options.cwd);
   await assertSupportedCargoSources(options.cwd);
   const captured = new Map<string, WorkspacePackage>();
-  const project = tegami({ cwd: options.cwd, plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
+  const project = tegami({ cwd: options.cwd, ignore: [...(options.ignore ?? [])], plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
   const draft = await project.draft();
   const pending = [...draft.getPackageDrafts()].flatMap(([id, packageDraft]) => {
     const pkg = captured.get(id);
