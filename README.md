@@ -46,6 +46,13 @@ Generated build output is written to `dist/` and is not committed.
 
 The schemas in [`schemas/`](schemas/) are the public wire contracts for release events, plans, state, receipts, reconciliation, framework locks, candidates, channels, and releases. [`config/components.yaml`](config/components.yaml) is the reviewed component catalog.
 
+## Operator and agent runbook
+
+Before planning, changing, or executing a framework release, read
+[`docs/release-runbook.md`](docs/release-runbook.md). It documents the reviewed
+release path, shadow and production modes, coordinator configuration, npm package
+bootstrapping, receipt recovery, break-glass constraints, and completion evidence.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md). Never report a vulnerability or paste credentials into a public issue.
