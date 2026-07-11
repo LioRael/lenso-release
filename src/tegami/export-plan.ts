@@ -185,7 +185,7 @@ async function cargoObservations(
     }
     const localVersion = planned.get(id);
     if (dependency.source && !isCratesIoSource(dependency.source)) fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
-    const matches = node.deps.filter((entry) => entry.name === (dependency.rename ?? dependency.name));
+    const matches = node.deps.filter((entry) => metadata.packages.some((candidate) => candidate.id === entry.pkg && candidate.name === dependency.name));
     if (matches.length !== 1) fail(`ambiguous cargo lock resolution for ${id}`);
     const resolved = metadata.packages.find((item) => item.id === matches[0]!.pkg);
     if (!resolved) fail(`cargo lock observation for ${id} is missing`);
