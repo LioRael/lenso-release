@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -452,7 +452,31 @@ async function packedArtifact(cwd, item) {
 }
 async function publishOnce(environment, item, artifact) {
     if (item.id.startsWith("npm:")) {
-        await execFile("npm", ["publish", artifact.path, ...(process.env.LENSO_RELEASE_MODE === "production" ? ["--provenance"] : []), "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
+        const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
+        const registry = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
+        let authDirectory;
+        try {
+            const authArgs = [];
+            if (shadow) {
+                const token = process.env.NODE_AUTH_TOKEN;
+                if (!token)
+                    fail("shadow npm registry token is required");
+                const url = new URL(registry);
+                authDirectory = await mkdtemp(join(tmpdir(), "lenso-npm-auth-"));
+                const userConfig = join(authDirectory, "npmrc");
+                const authPath = `${url.pathname.replace(/\/?$/u, "/")}`;
+                await writeFile(userConfig, `registry=${registry}\n//${url.host}${authPath}:_authToken=${token}\nalways-auth=true\n`, { mode: 0o600 });
+                authArgs.push("--userconfig", userConfig);
+            }
+            else if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) {
+                fail("npm token fallback is forbidden");
+            }
+            await execFile("npm", ["publish", artifact.path, "--registry", registry, ...authArgs, ...(shadow ? [] : ["--provenance"]), "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
+        }
+        finally {
+            if (authDirectory)
+                await rm(authDirectory, { recursive: true, force: true });
+        }
     }
     else if (item.id.startsWith("cargo:")) {
         if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN)
