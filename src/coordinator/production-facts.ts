@@ -81,6 +81,19 @@ function nonce() {
   return crypto.randomUUID();
 }
 
+export function executionRefProtectionIsImmutable(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const protection = value as Record<string, unknown>;
+  const enabled = (key: string, expected: boolean) => {
+    const setting = protection[key];
+    return typeof setting === "object" && setting !== null && !Array.isArray(setting) &&
+      (setting as Record<string, unknown>).enabled === expected;
+  };
+  return enabled("enforce_admins", true) &&
+    enabled("allow_force_pushes", false) &&
+    enabled("allow_deletions", false);
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -301,7 +314,16 @@ export async function createCoordinatorHandlers(
           );
           const tip = String((observed.object as Record<string, unknown>).sha);
           if (shadow) return { tip, protected: true };
-          const protectedResponse = await request(`${api}/branches/${encodeURIComponent(ref)}/protection`, {
+          const protectionUrl = `${api}/branches/${encodeURIComponent(ref)}/protection`;
+          const existingProtection = await request(protectionUrl, {
+            redirect: "error",
+            headers: headers(sourceToken),
+          });
+          if (existingProtection.ok && executionRefProtectionIsImmutable(await existingProtection.json()))
+            return { tip, protected: true };
+          if (existingProtection.status !== 404 && !existingProtection.ok)
+            throw new Error(`execution ref protection observation ${existingProtection.status}`);
+          const protectedResponse = await request(protectionUrl, {
             method: "PUT",
             redirect: "error",
             headers: headers(sourceToken),
