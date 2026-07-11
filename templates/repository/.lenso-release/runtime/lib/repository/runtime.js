@@ -544,25 +544,7 @@ async function dispatchReceipt(receipt, environment) {
         fail("coordinator receipt endpoint is required");
     const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": receipt.receiptId }, body: JSON.stringify(event) });
     if (!response.ok)
-        fail(`coordinator receipt confirmation ${response.status}`);
-    const confirmation = await response.json();
-    if (confirmation.receiptId !== receipt.receiptId || !["publishing", "verified"].includes(confirmation.planStatus ?? ""))
-        fail("coordinator receipt confirmation mismatch");
-    if (confirmation.planStatus === "verified") {
-        const cleanup = process.env.LENSO_COORDINATOR_CLEANUP_URL;
-        if (!cleanup)
-            fail("verified plan has no coordinator cleanup endpoint");
-        const cleanupResponse = await fetch(cleanup, {
-            method: "POST", redirect: "error",
-            headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": environment.planId },
-            body: JSON.stringify({ schema: "lenso.cleanup-request.v1", repository: environment.repository, planId: environment.planId, planSha256: environment.planSha256, releaseCommit: environment.releaseCommit, dispatchEventId: environment.eventId }),
-        });
-        if (!cleanupResponse.ok)
-            fail(`coordinator cleanup confirmation ${cleanupResponse.status}`);
-        const cleanupBody = await cleanupResponse.json();
-        if (cleanupBody.accepted !== true || cleanupBody.planId !== environment.planId)
-            fail("coordinator cleanup confirmation mismatch");
-    }
+        fail(`coordinator receipt enqueue ${response.status}`);
 }
 export async function publishSelected(environment) {
     const { plan, artifacts } = await consumeSealedMarker(environment);

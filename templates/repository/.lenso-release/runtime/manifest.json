@@ -1,6 +1,6 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "8e9d1959bb127173043202c60a4624a72d5553a6",
+  "sourceRevision": "72a5606ddb170fb79485e6d168536ba0806e0501",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
@@ -48,7 +48,7 @@
     },
     {
       "path": ".lenso-release/runtime/lib/repository/runtime.js",
-      "sha256": "sha256:46cd60c29637687ba2b2ef184ba01cd836dc915c9299c438b88ea4db423392e6"
+      "sha256": "sha256:d094bc70d45c6c5149c3de731d4987efb2365c60c1c5f7850dd099ff253f5d71"
     },
     {
       "path": ".lenso-release/runtime/lib/tegami/capture-plugin.js",
