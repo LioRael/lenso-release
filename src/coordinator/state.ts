@@ -287,8 +287,19 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     const expectedPackages = packages
       .filter((item) => item.requestEventId === entry.eventId)
       .map(({ id, version }) => ({ id, version }));
+    const canonicalSelection = (
+      selection: readonly { id: unknown; version: unknown }[],
+    ) => selection.map(({ id, version }) => ({
+      id: String(id),
+      version: String(version),
+    })).sort((a, b) => {
+      const left = `${a.id}:${a.version}`;
+      const right = `${b.id}:${b.version}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
     if (
-      JSON.stringify(entry.packages) !== JSON.stringify(expectedPackages) ||
+      JSON.stringify(canonicalSelection(entry.packages)) !==
+        JSON.stringify(canonicalSelection(expectedPackages)) ||
       entry.inputs.plan_id !== state.planId ||
       entry.inputs.plan_sha256 !== state.planSha256 ||
       entry.inputs.release_commit !== state.releaseCommit ||

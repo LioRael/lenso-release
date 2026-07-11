@@ -84,6 +84,9 @@ export function publishRequest(
   nonce: string,
   appId: number,
 ): Extract<ReleaseEventV1, { eventType: "lenso-publish-requested" }> {
+  const planOrder = new Map(
+    plan.packages.map(({ id }, index) => [id, index] as const),
+  );
   const identity = {
     schema: "lenso.release-event.v1" as const,
     eventType: "lenso-publish-requested" as const,
@@ -95,7 +98,9 @@ export function publishRequest(
     planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso-release/plan.json`,
     planSha256,
     releaseCommit,
-    packages: packages.map(({ id, version }) => ({ id, version })),
+    packages: [...packages]
+      .sort((a, b) => planOrder.get(a.id)! - planOrder.get(b.id)!)
+      .map(({ id, version }) => ({ id, version })),
   };
   return { eventId: sha256(identity as JsonValue) as Sha256, ...identity };
 }
