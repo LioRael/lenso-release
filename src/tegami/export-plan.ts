@@ -42,6 +42,11 @@ function fail(message: string): never {
   throw new TypeError(`cannot export Tegami release plan: ${message}`);
 }
 
+function copiesCargoWorkspaceSource(cwd: string, source: string): boolean {
+  const path = relative(cwd, source);
+  return !path.split(/[\\/]/u).some((segment) => segment === ".git" || segment === "node_modules" || segment === "target");
+}
+
 function sourceId(options: ExportReleasePlanOptions, planId: string): string {
   return options.aliases?.[planId] ?? planId;
 }
@@ -140,7 +145,7 @@ async function assertSupportedCargoSources(cwd: string): Promise<void> {
   }
   const temp = await mkdtemp(join(tmpdir(), "lenso-cargo-source-check-"));
   try {
-    await cp(cwd, temp, { recursive: true, filter: (source) => !source.includes(`${join(cwd, ".git")}`) });
+    await cp(cwd, temp, { recursive: true, filter: (source) => copiesCargoWorkspaceSource(cwd, source) });
     const { stdout } = await execFileAsync("cargo", ["metadata", "--no-deps", "--offline", "--format-version", "1"], { cwd: temp, maxBuffer: CARGO_METADATA_BUFFER });
     const metadata = JSON.parse(stdout) as CargoMetadata;
     for (const owner of metadata.packages) {
@@ -163,7 +168,7 @@ async function cargoObservations(
   let cleanup: string | undefined;
   if (!locked) {
     cleanup = await mkdtemp(join(tmpdir(), "lenso-cargo-observe-"));
-    await cp(cwd, cleanup, { recursive: true, filter: (source) => !source.includes(`${join(cwd, ".git")}`) });
+    await cp(cwd, cleanup, { recursive: true, filter: (source) => copiesCargoWorkspaceSource(cwd, source) });
     metadataCwd = cleanup;
   }
   let stdout: string;
