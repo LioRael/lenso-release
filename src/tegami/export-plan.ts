@@ -18,6 +18,7 @@ import { capturePackages } from "./capture-plugin.js";
 import { refreshCargoLock } from "./cargo-lock-plugin.js";
 
 const execFileAsync = promisify(execFile);
+const CARGO_METADATA_BUFFER = 64 * 1024 * 1024;
 
 export type ReleaseComponentMetadata = { releaseGroup: string; userFacing: boolean };
 export type ExportReleasePlanOptions = {
@@ -137,7 +138,7 @@ async function assertSupportedCargoSources(cwd: string): Promise<void> {
   const temp = await mkdtemp(join(tmpdir(), "lenso-cargo-source-check-"));
   try {
     await cp(cwd, temp, { recursive: true, filter: (source) => !source.includes(`${join(cwd, ".git")}`) });
-    const { stdout } = await execFileAsync("cargo", ["metadata", "--no-deps", "--offline", "--format-version", "1"], { cwd: temp });
+    const { stdout } = await execFileAsync("cargo", ["metadata", "--no-deps", "--offline", "--format-version", "1"], { cwd: temp, maxBuffer: CARGO_METADATA_BUFFER });
     const metadata = JSON.parse(stdout) as CargoMetadata;
     for (const owner of metadata.packages) {
       for (const dependency of owner.dependencies) {
@@ -164,7 +165,7 @@ async function cargoObservations(
   }
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("cargo", ["metadata", ...(locked ? ["--locked"] : ["--offline"]), "--format-version", "1"], { cwd: metadataCwd }));
+    ({ stdout } = await execFileAsync("cargo", ["metadata", ...(locked ? ["--locked"] : ["--offline"]), "--format-version", "1"], { cwd: metadataCwd, maxBuffer: CARGO_METADATA_BUFFER }));
   } finally {
     if (cleanup) await rm(cleanup, { recursive: true, force: true });
   }
@@ -338,7 +339,7 @@ async function verifyApplied(
   }
   const cargoPackages = releasePackages.filter(({ id }) => id.startsWith("cargo:"));
   if (cargoPackages.length > 0) {
-    const { stdout } = await execFileAsync("cargo", ["metadata", "--locked", "--offline", "--format-version", "1"], { cwd });
+    const { stdout } = await execFileAsync("cargo", ["metadata", "--locked", "--offline", "--format-version", "1"], { cwd, maxBuffer: CARGO_METADATA_BUFFER });
     const metadata = JSON.parse(stdout) as CargoMetadata;
     for (const item of cargoPackages) {
       if (!metadata.packages.some((pkg) => pkg.name === item.id.slice(6) && pkg.version === item.nextVersion)) {
