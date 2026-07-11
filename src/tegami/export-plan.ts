@@ -340,8 +340,6 @@ async function verifyApplied(
       ? /^version\s*=\s*"([^"]+)"/mu.exec(manifest)?.[1]
       : (JSON.parse(manifest) as { version?: string }).version;
     if (version !== item.nextVersion) fail(`applied manifest version for ${item.id} does not match the plan`);
-    const changelog = await lstat(join(pkg.path, "CHANGELOG.md"));
-    if (!changelog.isFile() || changelog.isSymbolicLink()) fail(`Tegami changelog for ${item.id} was not safely generated`);
   }
   const cargoPackages = releasePackages.filter(({ id }) => id.startsWith("cargo:"));
   if (cargoPackages.length > 0) {
@@ -385,20 +383,28 @@ function buildPlan(
   return plan;
 }
 
-function expectedGeneratedPaths(
+async function expectedGeneratedPaths(
   options: ExportReleasePlanOptions,
   releasePackages: ReleasePackage[],
   packages: ReadonlyMap<string, WorkspacePackage>,
-): string[] {
+): Promise<string[]> {
   const { cwd } = options;
   const paths = new Set<string>([".tegami/publish-lock.yaml"]);
   for (const item of releasePackages) {
     const pkg = packages.get(sourceId(options, item.id));
     if (!pkg) fail(`generated package ${item.id} was not captured`);
     paths.add(relative(cwd, join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json")));
-    paths.add(relative(cwd, join(pkg.path, "CHANGELOG.md")));
+    const changelog = join(pkg.path, "CHANGELOG.md");
+    try {
+      const status = await lstat(changelog);
+      if (!status.isFile() || status.isSymbolicLink()) fail(`unsafe Tegami changelog for ${item.id}`);
+      paths.add(relative(cwd, changelog));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     paths.add(pkg.manager === "cargo" ? "Cargo.lock" : "pnpm-lock.yaml");
   }
+  if (![...paths].some((path) => path.endsWith("CHANGELOG.md"))) fail("Tegami generated no package changelog");
   return [...paths].sort();
 }
 
@@ -417,7 +423,7 @@ async function verifyGeneratedFiles(
   packages: ReadonlyMap<string, WorkspacePackage>,
 ): Promise<void> {
   const { cwd } = options;
-  const expected = expectedGeneratedPaths(options, plan.packages, packages);
+  const expected = await expectedGeneratedPaths(options, plan.packages, packages);
   if (expected.join("\n") !== plan.generatedFiles.map(({ path }) => path).join("\n")) {
     fail("generated file set does not match the plan");
   }
@@ -514,7 +520,7 @@ export async function exportReleasePlan(options: ExportReleasePlanOptions): Prom
   try {
     await draft.apply();
     await verifyApplied(options, releasePackages, captured);
-    const generatedFiles = await collectGeneratedFiles(options.cwd, expectedGeneratedPaths(options, releasePackages, captured));
+    const generatedFiles = await collectGeneratedFiles(options.cwd, await expectedGeneratedPaths(options, releasePackages, captured));
     const plan = buildPlan(options, releasePackages, generatedFiles);
     const bytes = Buffer.concat([Buffer.from(JSON.stringify(plan, null, 2)), Buffer.from("\n")]);
     await atomicWrite(path, bytes);
