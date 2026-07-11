@@ -189,10 +189,17 @@ function packageEcosystem(packageId, path) {
         return "cargo";
     if (/^npm:.+/u.test(result))
         return "npm";
-    fail(path, "must use a cargo: or npm: package ID");
+    if (/^artifact:.+/u.test(result))
+        return "artifact";
+    fail(path, "must use a cargo:, npm:, or artifact: component ID");
 }
 function registryIntegrity(value, ecosystem, path) {
     const result = string(value, path);
+    if (ecosystem === "artifact") {
+        if (!/^sha256:[0-9a-f]{64}$/u.test(result))
+            fail(path, "must be a canonical artifact SHA-256 digest");
+        return result;
+    }
     if (ecosystem === "cargo") {
         if (!/^[0-9a-f]{64}$/u.test(result))
             fail(path, "must be a crates.io lowercase SHA-256 checksum");

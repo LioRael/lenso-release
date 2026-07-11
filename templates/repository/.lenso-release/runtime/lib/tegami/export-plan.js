@@ -16,6 +16,15 @@ const SUPPORTED_BUMPS = new Set(["patch", "minor", "major"]);
 function fail(message) {
     throw new TypeError(`cannot export Tegami release plan: ${message}`);
 }
+function sourceId(options, planId) {
+    return options.aliases?.[planId] ?? planId;
+}
+function planId(options, workspaceId) {
+    const matches = Object.entries(options.aliases ?? {}).filter(([, source]) => source === workspaceId);
+    if (matches.length > 1)
+        fail(`workspace package ${workspaceId} has ambiguous component aliases`);
+    return matches[0]?.[0] ?? workspaceId;
+}
 function record(value, context) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         fail(`${context} must be an object`);
@@ -316,12 +325,13 @@ async function restoreSnapshot(cwd, snapshot) {
         }
     }
 }
-async function verifyApplied(cwd, releasePackages, packages) {
+async function verifyApplied(options, releasePackages, packages) {
+    const { cwd } = options;
     const lock = await lstat(join(cwd, ".tegami/publish-lock.yaml"));
     if (!lock.isFile() || lock.isSymbolicLink())
         fail("Tegami publish lock was not safely generated");
     for (const item of releasePackages) {
-        const pkg = packages.get(item.id);
+        const pkg = packages.get(sourceId(options, item.id));
         if (!pkg)
             fail(`applied package ${item.id} was not captured`);
         const manifest = await readFile(join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json"), "utf8");
@@ -366,10 +376,11 @@ function buildPlan(options, releasePackages, generatedFiles) {
     assertReleasePlan(plan);
     return plan;
 }
-function expectedGeneratedPaths(cwd, releasePackages, packages) {
+function expectedGeneratedPaths(options, releasePackages, packages) {
+    const { cwd } = options;
     const paths = new Set([".tegami/publish-lock.yaml"]);
     for (const item of releasePackages) {
-        const pkg = packages.get(item.id);
+        const pkg = packages.get(sourceId(options, item.id));
         if (!pkg)
             fail(`generated package ${item.id} was not captured`);
         paths.add(relative(cwd, join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json")));
@@ -384,8 +395,9 @@ async function collectGeneratedFiles(cwd, paths) {
         sha256: sha256(await safeRead(cwd, join(cwd, path))),
     })));
 }
-async function verifyGeneratedFiles(cwd, plan, packages) {
-    const expected = expectedGeneratedPaths(cwd, plan.packages, packages);
+async function verifyGeneratedFiles(options, plan, packages) {
+    const { cwd } = options;
+    const expected = expectedGeneratedPaths(options, plan.packages, packages);
     if (expected.join("\n") !== plan.generatedFiles.map(({ path }) => path).join("\n")) {
         fail("generated file set does not match the plan");
     }
@@ -424,20 +436,22 @@ async function verifyExisting(options, plan, packages) {
     const observations = new Map();
     const planned = new Map(plan.packages.map((item) => [item.id, item.nextVersion]));
     for (const item of plan.packages) {
-        const pkg = packages.get(item.id);
+        const pkg = packages.get(sourceId(options, item.id));
         const metadata = options.components[item.id];
         if (!pkg || !metadata || pkg.version !== item.nextVersion || metadata.releaseGroup !== item.releaseGroup || metadata.userFacing !== item.userFacing) {
             fail("persisted plan does not match current workspace");
         }
-        observations.set(item.id, await observeDependencies(options.cwd, pkg, options.components, planned, false));
+        observations.set(item.id, item.id.startsWith("artifact:")
+            ? []
+            : await observeDependencies(options.cwd, pkg, options.components, planned, false));
     }
     const rebuiltPackages = buildPackages(options, plan.packages.map((item) => ({ ...item, metadata: options.components[item.id] })), observations);
     const rebuilt = buildPlan(options, rebuiltPackages, plan.generatedFiles);
     if (!canonicalBytes(rebuilt).equals(canonicalBytes(plan))) {
         fail("persisted plan does not match current workspace");
     }
-    await verifyApplied(options.cwd, plan.packages, packages);
-    await verifyGeneratedFiles(options.cwd, plan, packages);
+    await verifyApplied(options, plan.packages, packages);
+    await verifyGeneratedFiles(options, plan, packages);
 }
 export async function exportReleasePlan(options) {
     const path = await assertSafePlanPath(options.cwd);
@@ -454,14 +468,15 @@ export async function exportReleasePlan(options) {
         const nextVersion = packageDraft.bumpVersion(pkg);
         if (nextVersion === pkg.version)
             return [];
-        const metadata = options.components[id];
+        const componentId = planId(options, id);
+        const metadata = options.components[componentId];
         if (!metadata)
-            return fail(`missing component registry metadata for ${id}`);
+            return fail(`missing component registry metadata for ${componentId}`);
         if (!packageDraft.type || !SUPPORTED_BUMPS.has(packageDraft.type))
             return fail(`${id} has unsupported bump ${String(packageDraft.type)}`);
         if (!nextVersion)
             return fail(`${id} has no exact next version`);
-        return [{ id, previousVersion: pkg.version, nextVersion, bump: packageDraft.type, metadata }];
+        return [{ id: componentId, previousVersion: pkg.version, nextVersion, bump: packageDraft.type, metadata }];
     });
     if (pending.length === 0) {
         const existing = await readExisting(path);
@@ -472,14 +487,20 @@ export async function exportReleasePlan(options) {
     }
     const observations = new Map();
     const planned = new Map(pending.map((item) => [item.id, item.nextVersion]));
-    for (const item of pending)
-        observations.set(item.id, await observeDependencies(options.cwd, captured.get(item.id), options.components, planned));
+    for (const item of pending) {
+        const pkg = captured.get(sourceId(options, item.id));
+        if (!pkg)
+            fail(`Tegami package ${sourceId(options, item.id)} was not captured`);
+        observations.set(item.id, item.id.startsWith("artifact:")
+            ? []
+            : await observeDependencies(options.cwd, pkg, options.components, planned));
+    }
     const releasePackages = buildPackages(options, pending, observations);
     const snapshot = await snapshotWorkspace(options.cwd, captured.values());
     try {
         await draft.apply();
-        await verifyApplied(options.cwd, releasePackages, captured);
-        const generatedFiles = await collectGeneratedFiles(options.cwd, expectedGeneratedPaths(options.cwd, releasePackages, captured));
+        await verifyApplied(options, releasePackages, captured);
+        const generatedFiles = await collectGeneratedFiles(options.cwd, expectedGeneratedPaths(options, releasePackages, captured));
         const plan = buildPlan(options, releasePackages, generatedFiles);
         const bytes = Buffer.concat([Buffer.from(JSON.stringify(plan, null, 2)), Buffer.from("\n")]);
         await atomicWrite(path, bytes);

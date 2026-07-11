@@ -12,7 +12,7 @@ import { verifyPublisherContract } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 const execFile = promisify(execFileCallback);
 const OID = /^[0-9a-f]{40}$/u;
-const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
+const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 function fail(message) { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes) { return sha256(bytes); }
@@ -198,11 +198,12 @@ export async function consumePreflightProof(environment) {
             fail("sealed artifact is not an isolated regular file");
         if (item.id.startsWith("npm:"))
             await execFile("npm", ["publish", destination, "--dry-run", "--ignore-scripts"], { cwd: environment.cwd });
-        else
+        else if (item.id.startsWith("cargo:"))
             await execFile("cargo", ["publish", "--dry-run", "--locked", "-p", item.id.slice(6)], { cwd: environment.cwd });
-        const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length);
-        const cargoMetadata = item.id.startsWith("cargo:") ? await cargoWireMetadataFromCrate(destination, name, item.version) : null;
-        artifacts.push({ id: item.id, name, version: item.version, kind: item.id.startsWith("npm:") ? "npm" : "cargo", path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino, mode: 0o400, cargoMetadata, cargoMetadataSha256: cargoMetadata ? sha256(cargoMetadata) : null });
+        const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
+        const kind = item.id.startsWith("npm:") ? "npm" : item.id.startsWith("cargo:") ? "cargo" : "artifact";
+        const cargoMetadata = kind === "cargo" ? await cargoWireMetadataFromCrate(destination, name, item.version) : null;
+        artifacts.push({ id: item.id, name, version: item.version, kind, path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino, mode: 0o400, cargoMetadata, cargoMetadataSha256: cargoMetadata ? sha256(cargoMetadata) : null });
     }
     const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL;
     if (!endpoint)
@@ -331,6 +332,26 @@ async function cargoObservation(name, version) {
         fail("crates registry observation incomplete");
     return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
 }
+async function artifactObservation(name, version, environment) {
+    const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+    const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
+    const release = await fetch(`${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`, { headers, redirect: "error" });
+    if (release.status === 404)
+        return { exists: false };
+    if (!release.ok)
+        fail(`hosted artifact release observation ${release.status}`);
+    const body = await release.json();
+    if (body.draft !== true || !body.created_at)
+        fail("hosted artifact release must remain a verified draft");
+    const asset = body.assets?.find(({ name: assetName }) => assetName === `${name}.tar.gz`);
+    if (!asset?.url || !asset.browser_download_url)
+        fail("hosted artifact release asset is missing");
+    const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+    if (!download.ok)
+        fail(`hosted artifact download ${download.status}`);
+    const bytes = new Uint8Array(await download.arrayBuffer());
+    return { exists: true, bytes, integrity: hash(bytes), url: asset.browser_download_url, publishedAt: body.created_at };
+}
 async function packedArtifact(cwd, item) {
     if (item.id.startsWith("npm:")) {
         if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN)
@@ -352,21 +373,61 @@ async function packedArtifact(cwd, item) {
             fail("npm archive manifest identity mismatch");
         return { path, bytes };
     }
+    if (item.id.startsWith("artifact:")) {
+        const config = parseJson(await safeRead(cwd, ".lenso-release/config.json"), "repository config");
+        const artifact = config.artifacts?.[item.id];
+        if (!artifact)
+            fail(`hosted artifact configuration is missing: ${item.id}`);
+        safeRelative(artifact.path);
+        const path = join(cwd, artifact.path);
+        const bytes = await safeRead(cwd, artifact.path);
+        const manifest = JSON.parse((await execFile("tar", ["-xOf", path, "./manifest.json"])).stdout);
+        if (manifest.name !== item.id.slice("artifact:".length) || manifest.version !== item.version)
+            fail("hosted artifact manifest identity mismatch");
+        return { path, bytes };
+    }
     const name = item.id.slice(6);
     await execFile("cargo", ["package", "--locked", "-p", name], { cwd });
     const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
     return { path, bytes: await readFile(path) };
 }
-async function publishOnce(cwd, item, artifact) {
+async function publishOnce(environment, item, artifact) {
     if (item.id.startsWith("npm:")) {
-        await execFile("npm", ["publish", artifact.path, "--provenance", "--access", "public", "--ignore-scripts"], { cwd });
+        await execFile("npm", ["publish", artifact.path, "--provenance", "--access", "public", "--ignore-scripts"], { cwd: environment.cwd });
     }
-    else {
+    else if (item.id.startsWith("cargo:")) {
         if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN)
             fail("official crates.io token is required without fallback");
         if (!artifact.cargoMetadata)
             fail("signed Cargo upload metadata missing");
         await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata);
+    }
+    else {
+        const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+        const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+        const created = await fetch(`${api}/repos/${environment.repository}/releases`, {
+            method: "POST", headers, redirect: "error",
+            body: JSON.stringify({ tag_name: `v${item.version}`, target_commitish: environment.releaseCommit, name: `Lenso Runtime Console ${item.version}`, draft: true, prerelease: false }),
+        });
+        if (!created.ok)
+            fail(`draft hosted artifact release creation ${created.status}`);
+        const release = await created.json();
+        const uploadBase = release.upload_url?.replace(/\{.*$/u, "");
+        if (!uploadBase)
+            fail("draft hosted artifact upload URL is missing");
+        const assetName = `${item.id.slice("artifact:".length)}.tar.gz`;
+        const upload = async (name, bytes, contentType) => fetch(`${uploadBase}?name=${encodeURIComponent(name)}`, {
+            method: "POST", redirect: "error",
+            headers: { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": contentType, "content-length": String(bytes.length) },
+            body: Buffer.from(bytes),
+        });
+        const archive = await upload(assetName, artifact.bytes, "application/gzip");
+        if (!archive.ok)
+            fail(`draft hosted artifact upload ${archive.status}`);
+        const checksum = Buffer.from(`${hash(artifact.bytes).slice("sha256:".length)}  ${assetName}\n`);
+        const digest = await upload(`${assetName}.sha256`, checksum, "text/plain");
+        if (!digest.ok)
+            fail(`draft hosted checksum upload ${digest.status}`);
     }
 }
 export async function uploadCargoArtifact(item, bytes, upload) {
@@ -406,8 +467,8 @@ async function createAttestation(artifactPath, artifactBytes, environment) {
     }
 }
 function receiptFor(plan, item, observation, provenanceUrl, environment) {
-    const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length);
-    const artifactName = `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
+    const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
+    const artifactName = item.id.startsWith("artifact:") ? `${componentName}.tar.gz` : `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
     const identity = {
         schema: "lenso.component-receipt.v1",
         planId: plan.planId, packageId: item.id, version: item.version,
@@ -453,7 +514,10 @@ export async function publishSelected(environment) {
     const receipts = [];
     for (const item of environment.packages) {
         const name = item.id.slice(item.id.indexOf(":") + 1);
-        let observed = item.id.startsWith("npm:") ? await npmObservation(name, item.version) : await cargoObservation(name, item.version);
+        const observe = () => item.id.startsWith("npm:")
+            ? npmObservation(name, item.version)
+            : item.id.startsWith("cargo:") ? cargoObservation(name, item.version) : artifactObservation(name, item.version, environment);
+        let observed = await observe();
         if (observed.exists) {
             const recovered = await readExistingReceipt(item, environment);
             if (recovered) {
@@ -468,8 +532,8 @@ export async function publishSelected(environment) {
         if (!artifact)
             fail("sealed artifact is missing");
         if (!observed.exists) {
-            await publishOnce(environment.cwd, item, artifact);
-            observed = item.id.startsWith("npm:") ? await npmObservation(name, item.version) : await cargoObservation(name, item.version);
+            await publishOnce(environment, item, artifact);
+            observed = await observe();
             if (!observed.exists)
                 fail("published package is not registry-visible");
             if (hash(observed.bytes) !== hash(artifact.bytes))
@@ -485,7 +549,7 @@ export async function publishSelected(environment) {
     return receipts;
 }
 async function createImmutableTag(receipt, environment) {
-    const name = receipt.packageId.startsWith("npm:@lenso/") ? receipt.packageId.slice("npm:@lenso/".length) : receipt.packageId.slice("cargo:".length);
+    const name = receipt.packageId.startsWith("npm:@lenso/") ? receipt.packageId.slice("npm:@lenso/".length) : receipt.packageId.slice(receipt.packageId.indexOf(":") + 1);
     const tag = `${name}@${receipt.version}`;
     const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
     const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
@@ -511,7 +575,7 @@ async function createImmutableTag(receipt, environment) {
         fail(`tag ref creation ${ref.status}`);
 }
 async function readExistingReceipt(item, environment) {
-    const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length);
+    const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
     const tag = `${name}@${item.version}`;
     const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
     const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
@@ -540,9 +604,11 @@ export async function createPlan(cwd, repository, sourceCommit) {
     const config = parseJson(await safeRead(cwd, ".lenso-release/config.json"), "repository config");
     if (config.schema !== "lenso.repository-config.v1" || config.repository !== repository)
         fail("repository config mismatch");
+    if (config.aliases && Object.entries(config.aliases).some(([target, source]) => !/^artifact:[a-z0-9-]+$/u.test(target) || !/^npm:@lenso\/[a-z0-9-]+$/u.test(source)))
+        fail("repository component alias is invalid");
     const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
     const components = Object.fromEntries(Object.values(registry.packages).filter(({ repository: owner }) => owner === repository).map(({ id, releaseGroup, userFacing }) => [id, { releaseGroup, userFacing }]));
-    return exportReleasePlan({ cwd, repository, sourceCommit, components, publisher: {
+    return exportReleasePlan({ cwd, repository, sourceCommit, components, aliases: config.aliases, publisher: {
             workflow: ".github/workflows/publish.yml", workflowSha256: hash(await safeRead(cwd, ".github/workflows/publish.yml")),
             sharedRevision: manifest.sourceRevision, sharedBundleSha256: hash(bytes), runner: "ubuntu-24.04", node: "24.18.0", npm: "11.7.0", rust: "1.92.0",
         } });
