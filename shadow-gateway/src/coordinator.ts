@@ -49,6 +49,32 @@ async function requireInstallation(request: Request, repository: string): Promis
   return token;
 }
 
+async function githubContent(token: string, path: string): Promise<ObjectValue> {
+  const response = await fetch(`https://api.github.com/repos/LioRael/lenso-release/contents/${path}?ref=release-state`, {
+    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "lenso-release-coordinator", "x-github-api-version": "2022-11-28" },
+  });
+  if (!response.ok) throw new Error(`authoritative release state unavailable: ${response.status}`);
+  const body = await response.json() as { content?: string; encoding?: string };
+  if (body.encoding !== "base64" || !body.content) throw new Error("authoritative release state encoding invalid");
+  return object(JSON.parse(atob(body.content.replaceAll("\n", ""))), "authoritative release state");
+}
+
+async function requireAuthoritativeBinding(token: string, binding: ObjectValue): Promise<void> {
+  const repository = string(binding.repository, "binding.repository");
+  const planId = string(binding.planId, "binding.planId");
+  const eventId = string(binding.eventId, "binding.eventId");
+  const encodedRepository = encodeURIComponent(repository);
+  const state = await githubContent(token, `plans/${encodeURIComponent(encodedRepository)}/${planId.slice(7)}.json`);
+  const executionRef = object(state.executionRef, "state.executionRef");
+  const outbox = Array.isArray(state.outbox) ? state.outbox.map((entry) => object(entry, "state.outbox")) : [];
+  const dispatch = outbox.find((entry) => entry.eventId === eventId);
+  const inputs = dispatch ? object(dispatch.inputs, "dispatch.inputs") : {};
+  if (state.repository !== repository || state.planId !== planId || state.planSha256 !== binding.planSha256 || state.releaseCommit !== binding.releaseCommit || state.status !== "publishing" || executionRef.name !== binding.ref || executionRef.tip !== binding.releaseCommit || !dispatch || dispatch.status !== "dispatched" || dispatch.nonce !== binding.nonce || dispatch.ref !== binding.ref || dispatch.workflow !== ".github/workflows/publish.yml" || inputs.event_id !== eventId || inputs.nonce !== binding.nonce || inputs.plan_id !== planId || inputs.plan_sha256 !== binding.planSha256 || inputs.release_commit !== binding.releaseCommit)
+    throw new Error("preflight binding is not authorized by active release state");
+  if (canonical(dispatch.packages as Json) !== canonical(binding.packages as Json)) throw new Error("preflight package selection is not authorized by release outbox");
+  if (typeof inputs.packages_json !== "string" || canonical(JSON.parse(inputs.packages_json) as Json) !== canonical(binding.packages as Json)) throw new Error("preflight dispatch inputs do not authorize package selection");
+}
+
 async function dispatch(request: Request, eventType: "lenso-plan-ready" | "lenso-publish-receipt"): Promise<Response> {
   const event = object(await request.json(), "release event");
   if (event.eventType !== eventType || event.schema !== "lenso.release-event.v1") throw new Error("release event type mismatch");
@@ -74,17 +100,19 @@ async function issuePreflight(request: Request, env: CoordinatorEnv): Promise<Re
   if (body.schema !== "lenso.publisher-preflight.v1") throw new Error("preflight schema mismatch");
   const binding = object(body.binding, "binding");
   const repository = string(binding.repository, "binding.repository");
-  await requireInstallation(request, repository);
+  const githubToken = await requireInstallation(request, repository);
   const bindingDigest = string(body.bindingDigest, "bindingDigest");
   if (bindingDigest !== await canonicalSha256(binding as Json)) throw new Error("preflight binding digest mismatch");
+  await requireAuthoritativeBinding(githubToken, binding);
   const eventId = string(binding.eventId, "binding.eventId");
   const now = new Date();
   const proofId = await canonicalSha256({ eventId, bindingDigest } as Json);
   const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
   const issuedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + 4 * 60_000).toISOString();
-  await env.DB.prepare("INSERT INTO preflight_proofs (proof_id, event_id, repository, binding_digest, token, issued_at, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL) ON CONFLICT(proof_id) DO NOTHING")
-    .bind(proofId, eventId, repository, bindingDigest, token, issuedAt, expiresAt).run();
+  const bindingJson = canonical(binding as Json);
+  await env.DB.prepare("INSERT INTO preflight_proofs (proof_id, event_id, repository, binding_digest, token, issued_at, expires_at, consumed_at, binding_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8) ON CONFLICT(proof_id) DO UPDATE SET token=excluded.token, issued_at=excluded.issued_at, expires_at=excluded.expires_at, binding_json=excluded.binding_json WHERE preflight_proofs.consumed_at IS NULL AND preflight_proofs.expires_at <= ?9")
+    .bind(proofId, eventId, repository, bindingDigest, token, issuedAt, expiresAt, bindingJson, now.toISOString()).run();
   const row = await env.DB.prepare("SELECT token, issued_at, expires_at FROM preflight_proofs WHERE proof_id=?1 AND event_id=?2 AND binding_digest=?3").bind(proofId, eventId, bindingDigest).first() as { token: string; issued_at: string; expires_at: string } | null;
   if (!row) throw new Error("preflight proof conflict");
   return Response.json({ schema: "lenso.publisher-preflight-proof.v1", proofId, bindingDigest, token: row.token, issuedAt: row.issued_at, expiresAt: row.expires_at });
@@ -98,11 +126,32 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
   if (!Array.isArray(artifacts) || artifacts.length === 0) throw new Error("sealed artifacts are required");
   const eventId = string(facts.eventId, "facts.eventId");
   const proofId = string(proof.proofId, "proof.proofId");
-  const row = await env.DB.prepare("SELECT repository, event_id, binding_digest, token, expires_at, consumed_at FROM preflight_proofs WHERE proof_id=?1").bind(proofId).first() as { repository: string; event_id: string; binding_digest: string; token: string; expires_at: string; consumed_at: string | null } | null;
+  const row = await env.DB.prepare("SELECT repository, event_id, binding_digest, token, expires_at, consumed_at, binding_json FROM preflight_proofs WHERE proof_id=?1").bind(proofId).first() as { repository: string; event_id: string; binding_digest: string; token: string; expires_at: string; consumed_at: string | null; binding_json: string | null } | null;
   if (!row || row.event_id !== eventId || row.binding_digest !== proof.bindingDigest || row.token !== proof.token || row.consumed_at || Date.parse(row.expires_at) <= Date.now()) throw new Error("preflight proof is invalid, expired, or consumed");
   await requireInstallation(request, row.repository);
+  if (!row.binding_json) throw new Error("preflight proof binding is missing");
+  const binding = object(JSON.parse(row.binding_json), "stored binding");
+  for (const key of ["eventId", "nonce", "planId", "releaseCommit", "ref"])
+    if (facts[key] !== binding[key]) throw new Error("preflight consumption binding mismatch");
+  const selected = Array.isArray(binding.packages) ? binding.packages.map((item) => object(item, "binding package")) : [];
+  if (artifacts.length !== selected.length) throw new Error("artifact authorization selection mismatch");
+  for (const [index, value] of artifacts.entries()) {
+    const artifact = object(value, "artifact");
+    const pkg = selected[index];
+    const id = string(artifact.id, "artifact.id");
+    const version = string(artifact.version, "artifact.version");
+    const name = id.startsWith("npm:@lenso/") ? id.slice(11) : id.slice(id.indexOf(":") + 1);
+    const kind = id.startsWith("npm:") ? "npm" : id.startsWith("cargo:") ? "cargo" : "artifact";
+    if (!pkg || pkg.id !== id || pkg.version !== version || artifact.name !== name || artifact.kind !== kind || typeof artifact.path !== "string" || !artifact.path.startsWith(`.lenso-release/preflight-artifacts/${proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(String(artifact.sha256)) || !Number.isSafeInteger(artifact.size) || Number(artifact.size) <= 0 || !Number.isSafeInteger(artifact.ino) || Number(artifact.ino) <= 0 || artifact.mode !== 256)
+      throw new Error("invalid canonical artifact authorization");
+    const cargoMetadata = artifact.cargoMetadata;
+    const cargoDigest = artifact.cargoMetadataSha256;
+    if (kind === "cargo" ? !cargoMetadata || cargoDigest !== await canonicalSha256(cargoMetadata as Json) : cargoMetadata !== null || cargoDigest !== null)
+      throw new Error("Cargo upload metadata binding mismatch");
+  }
   const consumedAt = new Date().toISOString();
-  const result = await env.DB.prepare("UPDATE preflight_proofs SET consumed_at=?2 WHERE proof_id=?1 AND consumed_at IS NULL").bind(proofId, consumedAt).run();
+  const result = await env.DB.prepare("UPDATE preflight_proofs SET consumed_at=?2 WHERE proof_id=?1 AND consumed_at IS NULL AND token=?3 AND binding_digest=?4 AND binding_json=?5 AND expires_at>?2")
+    .bind(proofId, consumedAt, row.token, row.binding_digest, row.binding_json).run();
   if (result.meta.changes !== 1) throw new Error("preflight proof was already consumed");
   const authorization = {
     schema: "lenso.publisher-authorization.v1", bindingDigest: row.binding_digest,
