@@ -143,6 +143,16 @@ packages:
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
+  - id: cargo:lenso-module-auth-phone
+    repository: LioRael/lenso-auth-module
+    registry: crates-io
+    releaseGroup: modules
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
   - id: cargo:lenso-module-audit-log
     repository: LioRael/lenso-audit-log-module
     registry: crates-io
