@@ -557,6 +557,7 @@ export async function createCoordinatorHandlers(
             correlationId: pkg.requestEventId,
             receipt: {
               schema: "lenso.component-receipt.v1",
+              environment: "production",
               receiptId: zero,
               planId: state.planId,
               packageId: pkg.id,

@@ -69,6 +69,7 @@ it("rejects unsafe, duplicate, and unsorted generated file paths", () => {
 
 const receipt = {
   schema: "lenso.component-receipt.v1",
+  environment: "production",
   receiptId: sha("d"),
   planId: plan.planId,
   packageId: "cargo:lenso-contracts",

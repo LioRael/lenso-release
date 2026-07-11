@@ -72,6 +72,7 @@ export type ReleaseEventV1 =
 
 export type ComponentReceiptV1 = {
   schema: "lenso.component-receipt.v1";
+  environment: "shadow" | "production";
   receiptId: Sha256;
   planId: Sha256;
   packageId: RegistryPackageId;

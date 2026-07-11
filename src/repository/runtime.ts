@@ -130,6 +130,7 @@ async function verifyReviewedComponents(cwd: string, plan: ReleasePlanV1): Promi
 }
 
 export async function preflight(environment: RuntimeEnvironment): Promise<ReleasePlanV1> {
+  if (process.env.LENSO_RELEASE_MODE !== "shadow" && process.env.LENSO_RELEASE_MODE !== "production") fail("LENSO_RELEASE_MODE must be shadow or production");
   if (!/^sha256:[0-9a-f]{64}$/u.test(environment.eventId) || !/^[0-9a-f-]{16,64}$/u.test(environment.nonce)) fail("invalid event ID or nonce");
   if (!OID.test(environment.releaseCommit) || environment.githubSha !== environment.releaseCommit) fail("github.sha/release commit mismatch");
   const planBytes = await safeRead(environment.cwd, ".lenso-release/plan.json");
@@ -435,7 +436,7 @@ function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Re
   const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
   const artifactName = item.id.startsWith("artifact:") ? `${componentName}.tar.gz` : `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
   const identity = {
-    schema: "lenso.component-receipt.v1" as const,
+    schema: "lenso.component-receipt.v1" as const, environment: process.env.LENSO_RELEASE_MODE as "shadow" | "production",
     planId: plan.planId, packageId: item.id as ComponentReceiptV1["packageId"], version: item.version,
     repository: plan.repository, sourceCommit: environment.releaseCommit,
     packedSha256: hash(observation.bytes), registryIntegrity: observation.integrity, registryUrl: observation.url,

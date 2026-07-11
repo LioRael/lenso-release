@@ -374,9 +374,10 @@ export function assertComponentReceipt(value: unknown): asserts value is Compone
   const receipt = record(value, "componentReceipt", [
     "schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit",
     "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject",
-    "workflowUrl", "tagUrl", "publishedAt",
+    "workflowUrl", "tagUrl", "publishedAt", "environment",
   ]);
   literal(receipt.schema, "componentReceipt.schema", "lenso.component-receipt.v1");
+  if (receipt.environment !== undefined && receipt.environment !== "shadow" && receipt.environment !== "production") fail("componentReceipt.environment", "must be shadow or production");
   sha256(receipt.receiptId, "componentReceipt.receiptId");
   sha256(receipt.planId, "componentReceipt.planId");
   string(receipt.packageId, "componentReceipt.packageId");

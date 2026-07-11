@@ -15,6 +15,8 @@ import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical
 import { executionRef } from "../../src/publisher/contract.js";
 import { consumePreflightProof, createPreflightProof, preflight, publishSelected } from "../../src/repository/runtime.js";
 
+process.env.LENSO_RELEASE_MODE = "production";
+
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
 const template = join(root, "templates/repository");
@@ -145,6 +147,7 @@ describe("publisher preflight execution gate", () => {
     const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "redacted", eventId: `sha256:${"e".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
     try {
       await expect(preflight(environment)).resolves.toMatchObject({ planId: plan.planId });
+      process.env.LENSO_RELEASE_MODE = "disabled"; await expect(preflight(environment)).rejects.toThrow("LENSO_RELEASE_MODE must be shadow or production"); process.env.LENSO_RELEASE_MODE = "production";
       await writeFile(join(fixture.cwd, ".lenso-release/config.json"), `${JSON.stringify({ schema: "lenso.repository-config.v1", repository: plan.repository, fixedGroups: { "lenso-cli": ["npm:@lenso/runtime-console-api", "cargo:lenso-cli"] } })}\n`);
       await expect(preflight(environment)).rejects.toThrow("fixed group lenso-cli must publish atomically");
       await writeFile(join(fixture.cwd, ".lenso-release/config.json"), `${JSON.stringify({ schema: "lenso.repository-config.v1", repository: plan.repository })}\n`);
