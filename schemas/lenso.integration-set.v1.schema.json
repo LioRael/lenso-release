@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lenso.dev/schemas/lenso.integration-set.v1.schema.json",
+  "title": "Lenso integration set",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "integrationSetId", "baseSystemVersion", "repositories"],
+  "properties": {
+    "schema": { "const": "lenso.integration-set.v1" },
+    "integrationSetId": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "baseSystemVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "repositories": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+    }
+  }
+}
