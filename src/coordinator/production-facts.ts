@@ -17,6 +17,7 @@ import {
 } from "./dispatch.js";
 import type { GitStateStore, StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
+import { observeGithubArtifact } from "../registry/github.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -149,6 +150,19 @@ export async function createCoordinatorHandlers(
   const now = () => new Date();
   const request = input.request ?? fetch;
   const provenanceVerifier = input.provenanceVerifier ?? new GhAttestationVerifier();
+  const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
+    if (id.startsWith("artifact:")) {
+      const component = registry.packages[id];
+      if (!component || component.registry !== "github-release") return false;
+      const token = await input.tokens.tokenFor(component.repository, { contents: "read", metadata: "read" });
+      const observation = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { fetch: request, token });
+      return "version" in observation && observation.version === version;
+    }
+    const url = id.startsWith("cargo:")
+      ? `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}/${encodeURIComponent(version)}`;
+    try { await checkedExternal(request, url); return true; } catch { return false; }
+  };
   const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
     assertGithubApi(url);
     const response = await request(url, { redirect: "error", headers: headers(token) });
@@ -205,10 +219,7 @@ export async function createCoordinatorHandlers(
           for (const pkg of plan.packages)
             for (const dep of pkg.dependencies)
               if (!selectedIds.has(dep.id)) {
-                const url = dep.id.startsWith("cargo:")
-                  ? `https://crates.io/api/v1/crates/${dep.id.slice(6)}/${dep.resolvedVersion}`
-                  : `https://registry.npmjs.org/${encodeURIComponent(dep.id.slice(4))}/${dep.resolvedVersion}`;
-                try { await checkedExternal(request, url); } catch { externalDependenciesVisible = false; }
+                if (!await dependencyVisible(dep.id, dep.resolvedVersion)) externalDependenciesVisible = false;
               }
           const branch = await githubJson(
             `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}/protection`,
@@ -476,11 +487,8 @@ export async function createCoordinatorHandlers(
             if (!pkg) return false;
             for (const dep of pkg.dependencies) {
               const version = dep.resolvedVersion;
-              const url = dep.id.startsWith("cargo:")
-                ? `https://crates.io/api/v1/crates/${encodeURIComponent(dep.id.slice(6))}/${encodeURIComponent(version)}`
-                : `https://registry.npmjs.org/${encodeURIComponent(dep.id.slice(4))}/${encodeURIComponent(version)}`;
               if (!selected.has(dep.id) || dep.source === "plan") {
-                try { await checkedExternal(request, url); } catch { return false; }
+                if (!await dependencyVisible(dep.id, version)) return false;
               }
             }
           }
