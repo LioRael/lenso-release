@@ -331,7 +331,7 @@ async function restoreSnapshot(cwd, snapshot) {
             }
         }
         else {
-            const handle = await open(path, constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW);
+            const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
             try {
                 await handle.writeFile(content);
                 await handle.sync();
