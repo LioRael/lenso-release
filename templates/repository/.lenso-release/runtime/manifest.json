@@ -1,6 +1,6 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "9e3611c331fe33d24ad5f34d9759b9b3423625ff",
+  "sourceRevision": "4f770c3e7291c18c68f27701a69e0a0d8449c26f",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
@@ -64,7 +64,7 @@
     },
     {
       "path": ".lenso-release/runtime/lib/tegami/export-plan.js",
-      "sha256": "sha256:b19738a4d3ba1f0b271dd47808f29b8c3389f4a4dfca6c480ad8f9974379ae81"
+      "sha256": "sha256:ae0373639b4e07a1f7823591eb36900ad83ed2a01945ebda890048a44a22b608"
     },
     {
       "path": ".lenso-release/runtime/node_modules/@clack/core/LICENSE",

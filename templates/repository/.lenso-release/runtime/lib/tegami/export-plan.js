@@ -14,6 +14,7 @@ import { refreshCargoLock } from "./cargo-lock-plugin.js";
 import { repairCargoWorkspace } from "./cargo-workspace-plugin.js";
 const execFileAsync = promisify(execFile);
 const CARGO_METADATA_BUFFER = 64 * 1024 * 1024;
+const RELEASE_GROUP_ORDER = ["foundation", "modules", "console", "host", "distribution"];
 const SUPPORTED_BUMPS = new Set(["patch", "minor", "major"]);
 function fail(message) {
     throw new TypeError(`cannot export Tegami release plan: ${message}`);
@@ -379,7 +380,12 @@ function buildPackages(options, pending, observations) {
             resolvedVersion: planned.get(dependency.id) ?? dependency.resolvedVersion,
             source: planned.has(dependency.id) ? "plan" : "registry",
         })),
-    })).sort((left, right) => left.id.localeCompare(right.id));
+    })).sort((left, right) => {
+        const leftGroup = RELEASE_GROUP_ORDER.indexOf(left.releaseGroup);
+        const rightGroup = RELEASE_GROUP_ORDER.indexOf(right.releaseGroup);
+        const groupOrder = (leftGroup === -1 ? RELEASE_GROUP_ORDER.length : leftGroup) - (rightGroup === -1 ? RELEASE_GROUP_ORDER.length : rightGroup);
+        return groupOrder || left.id.localeCompare(right.id);
+    });
 }
 function buildPlan(options, releasePackages, generatedFiles) {
     const identity = {
