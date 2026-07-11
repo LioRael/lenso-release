@@ -515,6 +515,18 @@ export async function uploadCargoArtifact(item, bytes, upload) {
         fail(`crates exact archive upload ${response.status}`);
 }
 async function createAttestation(artifactPath, artifactBytes, environment) {
+    if (process.env.LENSO_RELEASE_MODE === "shadow") {
+        const endpoint = process.env.LENSO_SHADOW_ATTESTATION_URL;
+        if (!endpoint)
+            fail("shadow attestation adapter is required");
+        const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json" }, body: JSON.stringify({ repository: environment.repository, releaseCommit: environment.releaseCommit, artifactSha256: hash(artifactBytes), artifactName: basename(artifactPath) }) });
+        if (!response.ok)
+            fail(`shadow attestation adapter ${response.status}`);
+        const result = await response.json();
+        if (!result.url || !result.url.startsWith("https://"))
+            fail("shadow attestation URL is invalid");
+        return result.url;
+    }
     let cleanup;
     if (!artifactPath) {
         cleanup = await mkdtemp(join(tmpdir(), "lenso-recovery-"));
