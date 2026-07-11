@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { createPlan, createPreflightProof, publishSelected, type RuntimeEnvironment } from "./runtime.js";
+import { consumePreflightProof, createPlan, createPreflightProof, publishSelected, type RuntimeEnvironment } from "./runtime.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -31,9 +31,11 @@ if (command === "plan") {
   process.stdout.write(`${plan.planId}\n`);
 } else if (command === "preflight") {
   const proof = await createPreflightProof(environment()); process.stdout.write(`${proof.proofId}\n`);
+} else if (command === "consume-preflight") {
+  const marker = await consumePreflightProof(environment()); process.stdout.write(`${marker.seal}\n`);
 } else if (command === "publish") {
   const receipts = await publishSelected(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
 } else {
-  throw new Error("usage: runtime plan|preflight|publish");
+  throw new Error("usage: runtime plan|preflight|consume-preflight|publish");
 }

@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { createPreflightProof, preflight, publishSelected } from "../../src/repository/runtime.js";
+import { consumePreflightProof, createPreflightProof, preflight, publishSelected } from "../../src/repository/runtime.js";
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
@@ -29,6 +29,19 @@ afterEach(async () => {
 });
 async function temp(): Promise<string> { const path = await mkdtemp(join(tmpdir(), "lenso-template-test-")); temporary.push(path); return path; }
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+async function assertVendorLicenses(modules: string): Promise<void> {
+  const packages: string[] = [];
+  for (const entry of await readdir(modules, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith("@")) {
+      for (const child of await readdir(join(modules, entry.name), { withFileTypes: true })) if (child.isDirectory()) packages.push(join(modules, entry.name, child.name));
+    } else { packages.push(join(modules, entry.name)); }
+  }
+  for (const directory of packages) {
+    const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { name?: string; license?: string };
+    if (!metadata.name || !metadata.license || !(await readdir(directory)).some((name) => /^(?:LICENSE|COPYING|NOTICE)(?:\.|$)/iu.test(name))) throw new Error(`missing vendored license: ${directory}`);
+  }
+}
 
 describe("repository template workflow contracts", () => {
   it("pins every action, exposes exactly six non-secret inputs, and never provisions an npm token", async () => {
@@ -39,6 +52,7 @@ describe("repository template workflow contracts", () => {
     expect(source).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN|registry-url/u);
     expect(source).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
     expect(source.indexOf("cli.js preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
+    expect(source.indexOf("cli.js consume-preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
     expect(workflow.permissions).toEqual({});
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
@@ -65,17 +79,10 @@ describe("repository template workflow contracts", () => {
   });
 
   it("retains license evidence for every vendored runtime package and contains no credential material", async () => {
-    const modules = join(template, ".lenso-release/runtime/node_modules"); const packages: string[] = [];
-    for (const entry of await readdir(modules, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith("@")) for (const child of await readdir(join(modules, entry.name), { withFileTypes: true })) if (child.isDirectory()) packages.push(join(modules, entry.name, child.name));
-      else packages.push(join(modules, entry.name));
-    }
-    for (const directory of packages) {
-      const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { name?: string; license?: string };
-      expect(metadata.name).toBeTruthy(); expect(metadata.license).toBeTruthy();
-      expect((await readdir(directory)).some((name) => /^(?:LICENSE|COPYING|NOTICE)(?:\.|$)/iu.test(name))).toBe(true);
-    }
+    const modules = join(template, ".lenso-release/runtime/node_modules");
+    await expect(assertVendorLicenses(modules)).resolves.toBeUndefined();
+    const broken = await temp(); const packageDirectory = join(broken, "unscoped"); await mkdir(packageDirectory); await writeFile(join(packageDirectory, "package.json"), JSON.stringify({ name: "unscoped", license: "MIT" }));
+    await expect(assertVendorLicenses(broken)).rejects.toThrow("missing vendored license");
     const manifest = await readFile(join(template, ".lenso-release/runtime/manifest.json"), "utf8");
     expect(manifest).not.toMatch(/BEGIN (?:RSA |EC )?PRIVATE KEY|ghp_[A-Za-z0-9]{20}|npm_[A-Za-z0-9]{20}/u);
   });
@@ -150,7 +157,7 @@ describe("publisher preflight execution gate", () => {
       publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest(workflow), sharedRevision: fixture.manifest.sourceRevision, sharedBundleSha256: digest(manifestBytes), runner: "ubuntu-24.04", node: process.version.slice(1), npm: "11.7.0", rust: "1.92.0" }, generatedFiles: [{ path: "generated.txt", sha256: digest(Buffer.from("generated\n")) }],
       packages: [{ id: "npm:@lenso/runtime-console-api", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "console", userFacing: true, dependencies: [] }] };
     const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as unknown as JsonValue) as ReleasePlanV1["planId"] }; const planBytes = Buffer.from(`${JSON.stringify(plan, null, 2)}\n`); await writeFile(join(fixture.cwd, ".lenso-release/plan.json"), planBytes);
-    const requests: { method?: string; url?: string; body: string }[] = []; const archive = Buffer.from("reviewed archive"); let base = "";
+    const requests: { method?: string; url?: string; body: string }[] = []; const archiveSource = join(fixture.cwd, "archive-source"); await mkdir(join(archiveSource, "package"), { recursive: true }); await writeFile(join(archiveSource, "package/package.json"), JSON.stringify({ name: "@lenso/runtime-console-api", version: "0.1.1" })); const packedSource = join(fixture.cwd, "runtime-console-api-0.1.1.tgz"); await execute("tar", ["-czf", packedSource, "package"], { cwd: archiveSource }); const archive = await readFile(packedSource); let base = "";
     const server = createServer((request, response) => { let body = ""; request.on("data", (chunk) => { body += chunk; }); request.on("end", () => { requests.push({ method: request.method, url: request.url, body }); response.setHeader("content-type", "application/json");
       if (request.url === "/artifact.tgz") { response.setHeader("content-type", "application/octet-stream"); response.end(archive); }
       else if (request.url?.startsWith("/registry/")) response.end(JSON.stringify({ date: "2026-07-11T00:00:00.000Z", dist: { integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`, tarball: "https://registry.npmjs.org/@lenso/runtime-console-api/-/runtime-console-api-0.1.1.tgz" } }));
@@ -164,7 +171,8 @@ describe("publisher preflight execution gate", () => {
       else { response.statusCode = 404; response.end("{}"); } }); });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); if (!address || typeof address === "string") throw new Error("server missing"); base = `http://127.0.0.1:${address.port}`;
     const bin = join(fixture.cwd, "fake-bin"); await mkdir(bin); const npmLog = join(fixture.cwd, "npm.log");
-    await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$*" >> '${npmLog}'\necho 11.7.0\n`); await chmod(join(bin, "npm"), 0o755);
+    const sri = `sha512-${createHash("sha512").update(archive).digest("base64")}`; const shasum = createHash("sha1").update(archive).digest("hex");
+    await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$*" >> '${npmLog}'\nif test "$1" = "--version"; then echo 11.7.0; elif test "$1" = "pack"; then cp '${packedSource}' runtime-console-api-0.1.1.tgz; printf '%s\\n' '[{"filename":"runtime-console-api-0.1.1.tgz","name":"@lenso/runtime-console-api","version":"0.1.1","integrity":"${sri}","shasum":"${shasum}"}]'; else exit 0; fi\n`); await chmod(join(bin, "npm"), 0o755);
     await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.92.0 (x)'\n"); await chmod(join(bin, "rustc"), 0o755);
     await writeFile(join(bin, "gh"), "#!/bin/sh\necho 'https://github.com/LioRael/lenso-runtime-console/attestations/1'\n"); await chmod(join(bin, "gh"), 0o755);
     const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, proxy: process.env.LENSO_TEST_ARTIFACT_PROXY_URL, github: process.env.LENSO_GITHUB_API_URL, preflight: process.env.LENSO_COORDINATOR_PREFLIGHT_URL, consume: process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID };
@@ -173,10 +181,10 @@ describe("publisher preflight execution gate", () => {
     try {
       await createPreflightProof(environment);
       const proofPath = join(fixture.cwd, ".lenso-release/preflight-proof.json"); const tampered = JSON.parse(await readFile(proofPath, "utf8")); tampered.bindingDigest = `sha256:${"f".repeat(64)}`; await writeFile(proofPath, JSON.stringify(tampered));
-      await expect(publishSelected(environment)).rejects.toThrow(/does not bind/u); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(0);
-      await createPreflightProof(environment); const first = await publishSelected(environment);
-      expect(first[0]?.receiptId).toMatch(/^sha256:/u); expect(await readFile(npmLog, "utf8")).not.toContain("publish");
-      await expect(publishSelected(environment)).rejects.toThrow(/preflight proof/u);
+      await expect(consumePreflightProof(environment)).rejects.toThrow(/does not bind/u); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(0);
+      await createPreflightProof(environment); await consumePreflightProof(environment); const first = await publishSelected(environment);
+      expect(first[0]?.receiptId).toMatch(/^sha256:/u); expect((await readFile(npmLog, "utf8")).split("\n").filter((line) => line.startsWith("publish")).every((line) => line.includes("--dry-run"))).toBe(true);
+      await expect(publishSelected(environment)).rejects.toThrow(/sealed marker/u);
       expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(1);
     } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_PREFLIGHT_URL: saved.preflight, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: saved.consume, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
   });
