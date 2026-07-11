@@ -31,3 +31,6 @@ jobs:
           LENSO_EVENT_ACTOR: ${{ github.actor }}
           LENSO_COORDINATOR_FACTS_MODULE: file://${{ github.workspace }}/dist/src/coordinator/production-facts.js
           LENSO_COORDINATOR_MODE: ${{ vars.LENSO_COORDINATOR_MODE }}
+          LENSO_SHADOW_NPM_REGISTRY_URL: ${{ vars.LENSO_SHADOW_NPM_REGISTRY_URL }}
+          LENSO_SHADOW_CRATES_API_URL: ${{ vars.LENSO_SHADOW_CRATES_API_URL }}
+          LENSO_SHADOW_GITHUB_API_URL: ${{ vars.LENSO_SHADOW_GITHUB_API_URL }}
