@@ -49,15 +49,30 @@ export function executionRef(planId: string): string {
   return `release-execution/${match[1]}`;
 }
 
-function equalPackages(actual: readonly EventPackage[], expected: readonly EventPackage[], context: string): void {
+function legalPackageSubset(actual: readonly EventPackage[], plan: ReleasePlanV1, context: string): void {
   const keys = actual.map(({ id, version }) => `${id}\0${version}`);
+  if (actual.length === 0) throw new Error(`${context} package selection mismatch: must not be empty`);
   if (new Set(actual.map(({ id }) => id)).size !== actual.length) {
     throw new Error(`${context} package selection contains duplicates`);
   }
-  const expectedKeys = expected.map(({ id, version }) => `${id}\0${version}`);
-  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+  const expected = new Set(plan.packages.map(({ id, nextVersion }) => `${id}\0${nextVersion}`));
+  if (keys.some((key) => !expected.has(key))) {
     throw new Error(`${context} package selection mismatch`);
   }
+  const order = new Map(plan.packages.map(({ id }, index) => [id, index]));
+  if (actual.some(({ id }, index) => index > 0 && order.get(id)! <= order.get(actual[index - 1]!.id)!)) throw new Error(`${context} package selection mismatch: must preserve plan order`);
+  const packages = new Map(plan.packages.map((item) => [item.id, item]));
+  const memo = new Map<string, number>();
+  const phase = (id: string, visiting = new Set<string>()): number => {
+    const found = memo.get(id); if (found !== undefined) return found;
+    if (visiting.has(id)) throw new Error(`${context} plan dependency cycle`); visiting.add(id);
+    const item = packages.get(id); if (!item) throw new Error(`${context} package selection mismatch`);
+    const local = item.dependencies.filter(({ source, id: dependency }) => source === "plan" && packages.has(dependency));
+    const result = local.length === 0 ? 0 : 1 + Math.max(...local.map(({ id: dependency }) => phase(dependency, new Set(visiting))));
+    memo.set(id, result); return result;
+  };
+  const phases = new Set(actual.map(({ id }) => phase(id)));
+  if (phases.size !== 1) throw new Error(`${context} package selection crosses dependency phases`);
 }
 
 function assertObservedOid(value: string, name: string): void {
@@ -69,7 +84,6 @@ export function verifyPublisherContract(planValue: unknown, observed: ObservedPu
   const plan = planValue;
   assertObservedOid(observed.sourceCommit, "publisher source commit");
   assertObservedOid(observed.releaseCommit, "publisher release commit");
-  const expectedPackages = plan.packages.map(({ id, nextVersion: version }) => ({ id, version }));
   const checks: readonly [unknown, unknown, string][] = [
     [observed.workflowPath, plan.publisher.workflow, "publisher workflow path mismatch"],
     [observed.workflowSha256, plan.publisher.workflowSha256, "publisher workflow digest mismatch"],
@@ -91,7 +105,7 @@ export function verifyPublisherContract(planValue: unknown, observed: ObservedPu
   for (const [actual, expected, message] of checks) if (actual !== expected) throw new Error(message);
   if (observed.releaseCommit === observed.sourceCommit) throw new Error("publisher release commit must be distinct from source commit");
   if (!observed.releaseCommitContainsSourceCommit) throw new Error("release commit does not contain source commit");
-  equalPackages(observed.packages, expectedPackages, "publisher");
+  legalPackageSubset(observed.packages, plan, "publisher");
 }
 
 function expectedPlanUrl(plan: ReleasePlanV1, releaseCommit: string, path: string): string {
@@ -147,7 +161,7 @@ export async function assertPublishRequest(
   if (issuedAt < current - policy.maxAgeMs) throw new Error("publish request is stale");
   if (issuedAt > current + policy.maxFutureSkewMs) throw new Error("publish request is from the future");
 
-  equalPackages(event.packages, plan.packages.map(({ id, nextVersion: version }) => ({ id, version })), "publish request");
+  legalPackageSubset(event.packages, plan, "publish request");
 
   // This is deliberately last. Implementations must use an atomic insert-if-absent.
   if (!await policy.nonceConsumer.consume(event.nonce, event.eventId)) {

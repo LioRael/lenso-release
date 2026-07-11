@@ -27,7 +27,7 @@ export class StateConflictError extends Error {}
 const REPOSITORY =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/u;
 const OID = /^[0-9a-f]{40}$/u;
-const PACKAGE_KEY = /^package:(?:cargo|npm):[^:]+:.+$/u;
+const PACKAGE_KEY = /^package:(?:cargo|npm|artifact):[^:]+:.+$/u;
 
 export function planDigestHex(planId: string): string {
   const match = /^sha256:([0-9a-f]{64})$/u.exec(planId);
@@ -225,7 +225,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     );
     const key = `${item.id}:${item.version}`;
     if (
-      !/^(?:cargo|npm):/u.test(String(item.id)) ||
+      !/^(?:cargo|npm|artifact):/u.test(String(item.id)) ||
       !SEMVER.test(String(item.version)) ||
       !Number.isSafeInteger(item.phase) ||
       Number(item.phase) < 0 ||
@@ -281,7 +281,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
       entry.workflow.length === 0 ||
       !Array.isArray(entry.packages) ||
       Object.keys(entry.inputs).sort().join(",") !==
-        "event,packages,plan_id,plan_sha256,release_commit,source_repository"
+        "event_id,nonce,packages_json,plan_id,plan_sha256,release_commit"
     )
       throw new TypeError("outbox invalid");
     const expectedPackages = packages
@@ -292,8 +292,9 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
       entry.inputs.plan_id !== state.planId ||
       entry.inputs.plan_sha256 !== state.planSha256 ||
       entry.inputs.release_commit !== state.releaseCommit ||
-      entry.inputs.source_repository !== "LioRael/lenso-release" ||
-      entry.inputs.packages !== JSON.stringify(entry.packages)
+      entry.inputs.event_id !== entry.eventId ||
+      entry.inputs.nonce !== entry.nonce ||
+      entry.inputs.packages_json !== JSON.stringify(entry.packages)
     )
       throw new TypeError("outbox plan binding invalid");
     if ((entry.status === "dispatched") !== (typeof entry.runUrl === "string"))

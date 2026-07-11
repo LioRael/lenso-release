@@ -16,8 +16,11 @@ import type { Bump, PublisherContract, ReleasePackage, ReleasePlanV1, Sha256 } f
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 import { capturePackages } from "./capture-plugin.js";
 import { refreshCargoLock } from "./cargo-lock-plugin.js";
+import { repairCargoWorkspace } from "./cargo-workspace-plugin.js";
 
 const execFileAsync = promisify(execFile);
+const CARGO_METADATA_BUFFER = 64 * 1024 * 1024;
+const RELEASE_GROUP_ORDER = ["foundation", "modules", "console", "host", "distribution"] as const;
 
 export type ReleaseComponentMetadata = { releaseGroup: string; userFacing: boolean };
 export type ExportReleasePlanOptions = {
@@ -26,6 +29,9 @@ export type ExportReleasePlanOptions = {
   sourceCommit: string;
   publisher: PublisherContract;
   components: Readonly<Record<string, ReleaseComponentMetadata>>;
+  /** Maps a reviewed plan component ID to the Tegami workspace package that owns its version. */
+  aliases?: Readonly<Record<string, string>>;
+  ignore?: readonly string[];
 };
 
 type DependencyObservation = { id: string; requirement: string; resolvedVersion: string };
@@ -34,6 +40,16 @@ const SUPPORTED_BUMPS = new Set<Bump>(["patch", "minor", "major"]);
 
 function fail(message: string): never {
   throw new TypeError(`cannot export Tegami release plan: ${message}`);
+}
+
+function sourceId(options: ExportReleasePlanOptions, planId: string): string {
+  return options.aliases?.[planId] ?? planId;
+}
+
+function planId(options: ExportReleasePlanOptions, workspaceId: string): string {
+  const matches = Object.entries(options.aliases ?? {}).filter(([, source]) => source === workspaceId);
+  if (matches.length > 1) fail(`workspace package ${workspaceId} has ambiguous component aliases`);
+  return matches[0]?.[0] ?? workspaceId;
 }
 
 function record(value: unknown, context: string): Record<string, unknown> {
@@ -57,7 +73,7 @@ async function npmObservations(
   cwd: string, pkg: WorkspacePackage, components: ExportReleasePlanOptions["components"], planned: ReadonlyMap<string, string>,
 ): Promise<DependencyObservation[]> {
   const manifest = record(JSON.parse(await readFile(join(pkg.path, "package.json"), "utf8")), `${pkg.id} manifest`);
-  const hasDependencies = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+  const hasDependencies = ["dependencies", "peerDependencies", "optionalDependencies"]
     .some((field) => manifest[field] !== undefined && Object.keys(record(manifest[field], `${pkg.id} ${field}`)).length > 0);
   if (!hasDependencies) return [];
   const lock = record(parseYaml(await readFile(join(cwd, "pnpm-lock.yaml"), "utf8")), "pnpm lock");
@@ -65,17 +81,23 @@ async function npmObservations(
   const importerKey = relative(cwd, pkg.path).replaceAll("\\", "/") || ".";
   const importer = record(importers[importerKey], `pnpm importer ${importerKey}`);
   const result: DependencyObservation[] = [];
-  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+  for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
     const rawDependencies = manifest[field];
     if (rawDependencies === undefined) continue;
     const manifestDependencies = record(rawDependencies, `${pkg.id} ${field}`);
-    const lockedDependencies = importer[field] === undefined ? {} : record(importer[field], `pnpm importer ${importerKey}.${field}`);
+    const lockedField = importer[field] ?? (field === "peerDependencies" ? importer.dependencies : undefined);
+    const lockedDependencies = lockedField === undefined ? {} : record(lockedField, `pnpm importer ${importerKey}.${field}`);
     for (const [alias, rawRequirement] of Object.entries(manifestDependencies)) {
       if (typeof rawRequirement !== "string") fail(`${pkg.id} dependency ${alias} requirement must be a string`);
       const aliasMatch = /^npm:((?:@[^/]+\/)?[^@]+)@(.+)$/u.exec(rawRequirement);
       const name = aliasMatch?.[1] ?? alias;
       const id = `npm:${name}`;
-      assertKnown(id, components, pkg.id);
+      const tracked = Object.hasOwn(components, id);
+      if (!tracked && name.startsWith("@")) assertKnown(id, components, pkg.id);
+      if (!tracked) {
+        normalizeRequirement(aliasMatch?.[2] ?? rawRequirement, id);
+        continue;
+      }
       const localVersion = planned.get(id);
       const manifestRequirement = aliasMatch?.[2] ?? rawRequirement;
       const workspaceRequirement = manifestRequirement.startsWith("workspace:") ? manifestRequirement.slice(10) : undefined;
@@ -93,7 +115,7 @@ async function npmObservations(
       if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(resolvedVersion)) {
         fail(`pnpm lock resolution for ${id} is not an exact version`);
       }
-      result.push({ id, requirement, resolvedVersion });
+      if (tracked) result.push({ id, requirement, resolvedVersion });
     }
   }
   return result.sort((left, right) => left.id.localeCompare(right.id));
@@ -102,7 +124,7 @@ async function npmObservations(
 type CargoMetadata = {
   packages: Array<{
     id: string; name: string; version: string; manifest_path: string;
-    dependencies: Array<{ name: string; rename?: string | null; req: string; source?: string | null; path?: string | null }>;
+    dependencies: Array<{ name: string; rename?: string | null; req: string; source?: string | null; path?: string | null; kind?: string | null; optional?: boolean }>;
   }>;
   resolve: { nodes: Array<{ id: string; deps: Array<{ name: string; pkg: string }> }> } | null;
 };
@@ -119,7 +141,7 @@ async function assertSupportedCargoSources(cwd: string): Promise<void> {
   const temp = await mkdtemp(join(tmpdir(), "lenso-cargo-source-check-"));
   try {
     await cp(cwd, temp, { recursive: true, filter: (source) => !source.includes(`${join(cwd, ".git")}`) });
-    const { stdout } = await execFileAsync("cargo", ["metadata", "--no-deps", "--offline", "--format-version", "1"], { cwd: temp });
+    const { stdout } = await execFileAsync("cargo", ["metadata", "--no-deps", "--offline", "--format-version", "1"], { cwd: temp, maxBuffer: CARGO_METADATA_BUFFER });
     const metadata = JSON.parse(stdout) as CargoMetadata;
     for (const owner of metadata.packages) {
       for (const dependency of owner.dependencies) {
@@ -146,7 +168,7 @@ async function cargoObservations(
   }
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("cargo", ["metadata", ...(locked ? ["--locked"] : ["--offline"]), "--format-version", "1"], { cwd: metadataCwd }));
+    ({ stdout } = await execFileAsync("cargo", ["metadata", ...(locked ? ["--locked"] : ["--offline"]), "--format-version", "1"], { cwd: metadataCwd, maxBuffer: CARGO_METADATA_BUFFER }));
   } finally {
     if (cleanup) await rm(cleanup, { recursive: true, force: true });
   }
@@ -157,13 +179,18 @@ async function cargoObservations(
   if (!owner) fail(`cargo metadata omitted ${pkg.id}`);
   const node = metadata.resolve?.nodes.find((item) => item.id === owner.id);
   if (!node) fail(`cargo metadata has no resolved node for ${pkg.id}`);
-  return owner.dependencies.map((dependency) => {
+  return owner.dependencies.flatMap((dependency) => {
+    if (dependency.kind && dependency.kind !== "normal") return [];
     const id = `cargo:${dependency.name}`;
-    assertKnown(id, components, pkg.id);
+    if (!components[id]) {
+      if (dependency.path || !dependency.source) fail(`${id} is a workspace dependency without component registry metadata`);
+      if (!isCratesIoSource(dependency.source)) fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
+      return [];
+    }
     const localVersion = planned.get(id);
-    if ((dependency.path || !dependency.source) && !localVersion) fail(`${id} is a workspace dependency absent from the plan`);
     if (dependency.source && !isCratesIoSource(dependency.source)) fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
-    const matches = node.deps.filter((entry) => entry.name === (dependency.rename ?? dependency.name));
+    const matches = node.deps.filter((entry) => metadata.packages.some((candidate) => candidate.id === entry.pkg && candidate.name === dependency.name));
+    if (matches.length === 0 && dependency.optional) return [];
     if (matches.length !== 1) fail(`ambiguous cargo lock resolution for ${id}`);
     const resolved = metadata.packages.find((item) => item.id === matches[0]!.pkg);
     if (!resolved) fail(`cargo lock observation for ${id} is missing`);
@@ -252,7 +279,7 @@ async function safeRead(cwd: string, path: string): Promise<Buffer> {
 }
 
 async function snapshotWorkspace(cwd: string, packages: Iterable<WorkspacePackage>): Promise<Snapshot> {
-  const paths = new Set<string>([join(cwd, "Cargo.lock"), join(cwd, "pnpm-lock.yaml"), join(cwd, ".tegami/publish-lock.yaml")]);
+  const paths = new Set<string>([join(cwd, "Cargo.toml"), join(cwd, "Cargo.lock"), join(cwd, "pnpm-lock.yaml"), join(cwd, ".tegami/publish-lock.yaml")]);
   for (const pkg of packages) {
     paths.add(join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json"));
     paths.add(join(pkg.path, "CHANGELOG.md"));
@@ -293,29 +320,32 @@ async function restoreSnapshot(cwd: string, snapshot: Snapshot): Promise<void> {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     } else {
-      const handle = await open(path, constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW);
+      const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
       try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
     }
   }
 }
 
-async function verifyApplied(cwd: string, releasePackages: ReleasePackage[], packages: ReadonlyMap<string, WorkspacePackage>): Promise<void> {
+async function verifyApplied(
+  options: ExportReleasePlanOptions,
+  releasePackages: ReleasePackage[],
+  packages: ReadonlyMap<string, WorkspacePackage>,
+): Promise<void> {
+  const { cwd } = options;
   const lock = await lstat(join(cwd, ".tegami/publish-lock.yaml"));
   if (!lock.isFile() || lock.isSymbolicLink()) fail("Tegami publish lock was not safely generated");
   for (const item of releasePackages) {
-    const pkg = packages.get(item.id);
+    const pkg = packages.get(sourceId(options, item.id));
     if (!pkg) fail(`applied package ${item.id} was not captured`);
     const manifest = await readFile(join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json"), "utf8");
     const version = pkg.manager === "cargo"
       ? /^version\s*=\s*"([^"]+)"/mu.exec(manifest)?.[1]
       : (JSON.parse(manifest) as { version?: string }).version;
     if (version !== item.nextVersion) fail(`applied manifest version for ${item.id} does not match the plan`);
-    const changelog = await lstat(join(pkg.path, "CHANGELOG.md"));
-    if (!changelog.isFile() || changelog.isSymbolicLink()) fail(`Tegami changelog for ${item.id} was not safely generated`);
   }
   const cargoPackages = releasePackages.filter(({ id }) => id.startsWith("cargo:"));
   if (cargoPackages.length > 0) {
-    const { stdout } = await execFileAsync("cargo", ["metadata", "--locked", "--offline", "--format-version", "1"], { cwd });
+    const { stdout } = await execFileAsync("cargo", ["metadata", "--locked", "--offline", "--format-version", "1"], { cwd, maxBuffer: CARGO_METADATA_BUFFER });
     const metadata = JSON.parse(stdout) as CargoMetadata;
     for (const item of cargoPackages) {
       if (!metadata.packages.some((pkg) => pkg.name === item.id.slice(6) && pkg.version === item.nextVersion)) {
@@ -339,7 +369,12 @@ function buildPackages(
       resolvedVersion: planned.get(dependency.id) ?? dependency.resolvedVersion,
       source: planned.has(dependency.id) ? "plan" as const : "registry" as const,
     })),
-  })).sort((left, right) => left.id.localeCompare(right.id));
+  })).sort((left, right) => {
+    const leftGroup = RELEASE_GROUP_ORDER.indexOf(left.releaseGroup as typeof RELEASE_GROUP_ORDER[number]);
+    const rightGroup = RELEASE_GROUP_ORDER.indexOf(right.releaseGroup as typeof RELEASE_GROUP_ORDER[number]);
+    const groupOrder = (leftGroup === -1 ? RELEASE_GROUP_ORDER.length : leftGroup) - (rightGroup === -1 ? RELEASE_GROUP_ORDER.length : rightGroup);
+    return groupOrder || left.id.localeCompare(right.id);
+  });
 }
 
 function buildPlan(
@@ -355,17 +390,28 @@ function buildPlan(
   return plan;
 }
 
-function expectedGeneratedPaths(
-  cwd: string, releasePackages: ReleasePackage[], packages: ReadonlyMap<string, WorkspacePackage>,
-): string[] {
+async function expectedGeneratedPaths(
+  options: ExportReleasePlanOptions,
+  releasePackages: ReleasePackage[],
+  packages: ReadonlyMap<string, WorkspacePackage>,
+): Promise<string[]> {
+  const { cwd } = options;
   const paths = new Set<string>([".tegami/publish-lock.yaml"]);
   for (const item of releasePackages) {
-    const pkg = packages.get(item.id);
+    const pkg = packages.get(sourceId(options, item.id));
     if (!pkg) fail(`generated package ${item.id} was not captured`);
     paths.add(relative(cwd, join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json")));
-    paths.add(relative(cwd, join(pkg.path, "CHANGELOG.md")));
+    const changelog = join(pkg.path, "CHANGELOG.md");
+    try {
+      const status = await lstat(changelog);
+      if (!status.isFile() || status.isSymbolicLink()) fail(`unsafe Tegami changelog for ${item.id}`);
+      paths.add(relative(cwd, changelog));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     paths.add(pkg.manager === "cargo" ? "Cargo.lock" : "pnpm-lock.yaml");
   }
+  if (![...paths].some((path) => path.endsWith("CHANGELOG.md"))) fail("Tegami generated no package changelog");
   return [...paths].sort();
 }
 
@@ -379,9 +425,12 @@ async function collectGeneratedFiles(
 }
 
 async function verifyGeneratedFiles(
-  cwd: string, plan: ReleasePlanV1, packages: ReadonlyMap<string, WorkspacePackage>,
+  options: ExportReleasePlanOptions,
+  plan: ReleasePlanV1,
+  packages: ReadonlyMap<string, WorkspacePackage>,
 ): Promise<void> {
-  const expected = expectedGeneratedPaths(cwd, plan.packages, packages);
+  const { cwd } = options;
+  const expected = await expectedGeneratedPaths(options, plan.packages, packages);
   if (expected.join("\n") !== plan.generatedFiles.map(({ path }) => path).join("\n")) {
     fail("generated file set does not match the plan");
   }
@@ -418,39 +467,48 @@ async function verifyExisting(
   const observations = new Map<string, DependencyObservation[]>();
   const planned = new Map(plan.packages.map((item) => [item.id, item.nextVersion]));
   for (const item of plan.packages) {
-    const pkg = packages.get(item.id);
+    const pkg = packages.get(sourceId(options, item.id));
     const metadata = options.components[item.id];
     if (!pkg || !metadata || pkg.version !== item.nextVersion || metadata.releaseGroup !== item.releaseGroup || metadata.userFacing !== item.userFacing) {
       fail("persisted plan does not match current workspace");
     }
-    observations.set(item.id, await observeDependencies(options.cwd, pkg, options.components, planned, false));
+    observations.set(item.id, item.id.startsWith("artifact:")
+      ? []
+      : await observeDependencies(options.cwd, pkg, options.components, planned, false));
   }
   const rebuiltPackages = buildPackages(options, plan.packages.map((item) => ({ ...item, metadata: options.components[item.id]! })), observations);
   const rebuilt = buildPlan(options, rebuiltPackages, plan.generatedFiles);
   if (!canonicalBytes(rebuilt as unknown as JsonValue).equals(canonicalBytes(plan as unknown as JsonValue))) {
     fail("persisted plan does not match current workspace");
   }
-  await verifyApplied(options.cwd, plan.packages, packages);
-  await verifyGeneratedFiles(options.cwd, plan, packages);
+  await verifyApplied(options, plan.packages, packages);
+  await verifyGeneratedFiles(options, plan, packages);
 }
 
 export async function exportReleasePlan(options: ExportReleasePlanOptions): Promise<ReleasePlanV1> {
   const path = await assertSafePlanPath(options.cwd);
   await assertSupportedCargoSources(options.cwd);
   const captured = new Map<string, WorkspacePackage>();
-  const project = tegami({ cwd: options.cwd, plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
+  const ignored = new Set(options.ignore ?? []);
+  const project = tegami({ cwd: options.cwd, ignore: [...ignored], plugins: [cargo({
+    bumpDep: ({ dependent, kind }) => ignored.has(dependent.id) || ignored.has(dependent.name)
+      ? false
+      : kind === "dependencies" ? "patch" : false,
+  }), repairCargoWorkspace(), refreshCargoLock(), capturePackages(captured)] });
   const draft = await project.draft();
   const pending = [...draft.getPackageDrafts()].flatMap(([id, packageDraft]) => {
     const pkg = captured.get(id);
     if (!pkg) return fail(`Tegami package ${id} was not captured`);
+    if (options.ignore?.some((entry) => entry === id || entry === pkg.name)) return [];
     if (!pkg.version) return fail(`${id} has no exact previous version`);
     const nextVersion = packageDraft.bumpVersion(pkg);
     if (nextVersion === pkg.version) return [];
-    const metadata = options.components[id];
-    if (!metadata) return fail(`missing component registry metadata for ${id}`);
+    const componentId = planId(options, id);
+    const metadata = options.components[componentId];
+    if (!metadata) return fail(`missing component registry metadata for ${componentId}`);
     if (!packageDraft.type || !SUPPORTED_BUMPS.has(packageDraft.type as Bump)) return fail(`${id} has unsupported bump ${String(packageDraft.type)}`);
     if (!nextVersion) return fail(`${id} has no exact next version`);
-    return [{ id, previousVersion: pkg.version, nextVersion, bump: packageDraft.type as Bump, metadata }];
+    return [{ id: componentId, previousVersion: pkg.version, nextVersion, bump: packageDraft.type as Bump, metadata }];
   });
 
   if (pending.length === 0) {
@@ -462,13 +520,19 @@ export async function exportReleasePlan(options: ExportReleasePlanOptions): Prom
 
   const observations = new Map<string, DependencyObservation[]>();
   const planned = new Map(pending.map((item) => [item.id, item.nextVersion]));
-  for (const item of pending) observations.set(item.id, await observeDependencies(options.cwd, captured.get(item.id)!, options.components, planned));
+  for (const item of pending) {
+    const pkg = captured.get(sourceId(options, item.id));
+    if (!pkg) fail(`Tegami package ${sourceId(options, item.id)} was not captured`);
+    observations.set(item.id, item.id.startsWith("artifact:")
+      ? []
+      : await observeDependencies(options.cwd, pkg, options.components, planned));
+  }
   const releasePackages = buildPackages(options, pending, observations);
   const snapshot = await snapshotWorkspace(options.cwd, captured.values());
   try {
     await draft.apply();
-    await verifyApplied(options.cwd, releasePackages, captured);
-    const generatedFiles = await collectGeneratedFiles(options.cwd, expectedGeneratedPaths(options.cwd, releasePackages, captured));
+    await verifyApplied(options, releasePackages, captured);
+    const generatedFiles = await collectGeneratedFiles(options.cwd, await expectedGeneratedPaths(options, releasePackages, captured));
     const plan = buildPlan(options, releasePackages, generatedFiles);
     const bytes = Buffer.concat([Buffer.from(JSON.stringify(plan, null, 2)), Buffer.from("\n")]);
     await atomicWrite(path, bytes);

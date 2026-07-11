@@ -7,9 +7,10 @@
     { "if": { "properties": { "packageId": { "type": "string", "pattern": "^cargo:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^[0-9a-f]{64}$" } } } },
     { "if": { "properties": { "packageId": { "type": "string", "pattern": "^npm:" } }, "required": ["packageId"] }, "then": { "properties": { "registryIntegrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" } } } }
   ],
-  "required": ["schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
+  "required": ["schema", "environment", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit", "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject", "workflowUrl", "tagUrl", "publishedAt"],
   "properties": {
     "schema": { "const": "lenso.component-receipt.v1" },
+    "environment": { "enum": ["shadow", "production"] },
     "receiptId": { "$ref": "#/$defs/sha256" },
     "planId": { "$ref": "#/$defs/sha256" },
     "packageId": { "type": "string", "pattern": "^(?:cargo|npm):.+$" },

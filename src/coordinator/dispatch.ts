@@ -16,12 +16,12 @@ import {
 } from "./state.js";
 
 export const PUBLISH_INPUT_FIELDS = [
-  "event",
+  "event_id",
   "plan_id",
   "plan_sha256",
   "release_commit",
-  "packages",
-  "source_repository",
+  "packages_json",
+  "nonce",
 ] as const;
 export type DispatchCommand = {
   repository: string;
@@ -88,7 +88,7 @@ export function publishRequest(
     sourceRepository: "LioRael/lenso-release",
     expectedAppId: appId,
     planId: plan.planId,
-    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso/release-plan.json`,
+    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso-release/plan.json`,
     planSha256,
     releaseCommit,
     packages: packages.map(({ id, version }) => ({ id, version })),
@@ -104,12 +104,12 @@ export function dispatchCommand(
     workflow: plan.publisher.workflow,
     ref: executionRef(plan.planId),
     inputs: {
-      event: JSON.stringify(event),
+      event_id: event.eventId,
       plan_id: plan.planId,
       plan_sha256: event.planSha256,
       release_commit: event.releaseCommit,
-      packages: JSON.stringify(event.packages),
-      source_repository: event.sourceRepository,
+      packages_json: JSON.stringify(event.packages),
+      nonce: event.nonce,
     },
   };
 }

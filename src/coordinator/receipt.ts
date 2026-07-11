@@ -23,7 +23,9 @@ function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { ev
   const outbox = state.outbox.find(({ eventId }) => eventId === event.correlationId);
   if (!outbox || !outbox.packages.some(({ id, version }) => id === receipt.packageId && version === receipt.version)) throw new Error("workflow package contradiction");
   if (run.url !== receipt.workflowUrl || run.repository !== state.repository || run.ref !== state.executionRef.name || run.sha !== state.releaseCommit || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
-  if (!observed.tag.annotated || !observed.tag.immutable || observed.tag.targetSha !== state.releaseCommit || observed.tag.url !== receipt.tagUrl || !equal(observed.tag.receipt, receipt)) throw new Error("annotated tag contradiction");
+  const tagReceipt = observed.tag.receipt;
+  const tagContainsReceipt = equal(tagReceipt, receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(candidate, receipt)));
+  if (!observed.tag.annotated || !observed.tag.immutable || observed.tag.targetSha !== state.releaseCommit || observed.tag.url !== receipt.tagUrl || !tagContainsReceipt) throw new Error("annotated tag contradiction");
 }
 async function block(deps: ReceiptDependencies, path: string, eventId: Sha256, reason: string): Promise<StoredPlanState> {
   let result!: PlanStateV1;
@@ -77,7 +79,7 @@ export async function recoverLostReceipt(repository: string, planId: string, pac
   const context: ReceiptObservationContext = { repository, releaseCommit: state.releaseCommit, eventId: requestId, executionRef: state.executionRef.name, workflow: outbox.workflow, packages: outbox.packages };
   const observed = await deps.observer.observe(context, packageId, version); if (!observed) return null;
   if (observed.workflow.repository !== repository || observed.workflow.ref !== state.executionRef.name || observed.workflow.sha !== state.releaseCommit || observed.workflow.runName !== `lenso-publish-requested:${requestId}` || observed.workflow.workflowPath !== outbox.workflow) return null;
-  const identity = { schema: "lenso.component-receipt.v1" as const, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
+  const identity = { schema: "lenso.component-receipt.v1" as const, environment: "production" as const, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
   let receipt = observed.tag.receipt as ComponentReceiptV1 | null;
   if (receipt === null) {
     receipt = { ...identity, receiptId: sha256(identity as never) as Sha256 };

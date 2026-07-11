@@ -7,7 +7,7 @@ import { assertReconciliationReport } from "../contracts/validate.js";
 import { loadComponents } from "../config/components.js";
 import { observeCrateVersion } from "../registry/crates.js";
 import { observeNpmVersion } from "../registry/npm.js";
-import { observeGithubTag } from "../registry/github.js";
+import { observeGithubArtifact, observeGithubTag } from "../registry/github.js";
 import { compatibleDigests, isCanonicalNpmIntegrity, isRfc3339, SEMVER } from "../registry/validation.js";
 
 type Failure = { failure: string; detail: string };
@@ -311,11 +311,12 @@ async function liveSnapshot(): Promise<ReconciliationSnapshot> {
     source[id] = observedSource;
     const version = observationVersion(observedSource);
     const component = componentRegistry.packages[id]!;
-    if (!component.publishable || id.startsWith("artifact:") || id.startsWith("catalog:")) registry[id] = { notApplicable: true };
+    if (!component.publishable || id.startsWith("catalog:")) registry[id] = { notApplicable: true };
+    else if (id.startsWith("artifact:") && version) registry[id] = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { token: process.env.GITHUB_TOKEN });
     else if (id.startsWith("npm:") && version) registry[id] = await observeNpmVersion(id.slice(4), version);
     else if (id.startsWith("cargo:") && version) registry[id] = await observeCrateVersion(id.slice(6), version);
     else registry[id] = { failure: "unavailable", detail: "required registry observation could not be performed" };
-    if ((id.startsWith("npm:") || id.startsWith("cargo:")) && version && component.publishable) {
+    if ((id.startsWith("npm:") || id.startsWith("cargo:") || id.startsWith("artifact:")) && version && component.publishable) {
       const packageName = id.slice(id.indexOf(":") + 1);
       const tagName = (id === "cargo:lenso-cli" || id === "npm:@lenso/cli") ? `lenso-cli@${version}` : `${packageName}@${version}`;
       tag[id] = await observeGithubTag(component.repository, tagName, id, version, { token: process.env.GITHUB_TOKEN });
