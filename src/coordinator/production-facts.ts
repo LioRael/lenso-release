@@ -315,6 +315,11 @@ export async function createCoordinatorHandlers(
           );
           const tip = String((observed.object as Record<string, unknown>).sha);
           if (shadow) return { tip, protected: true };
+          const branch = await githubJson(
+            `${api}/branches/${encodeURIComponent(ref)}`,
+            sourceToken,
+          );
+          if (branch.protected === true) return { tip, protected: true };
           const protectionUrl = `${api}/branches/${encodeURIComponent(ref)}/protection`;
           const existingProtection = await request(protectionUrl, {
             redirect: "error",
