@@ -309,7 +309,7 @@ export async function createCoordinatorHandlers(
               required_status_checks: null,
               enforce_admins: true,
               required_pull_request_reviews: null,
-              restrictions: { users: [], teams: [], apps: [] },
+              restrictions: null,
               allow_force_pushes: false,
               allow_deletions: false,
             }),
