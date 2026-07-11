@@ -477,10 +477,10 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
       : item.id.startsWith("cargo:") ? cargoObservation(name, item.version) : artifactObservation(name, item.version, environment);
     let observed = await observe();
     if (observed.exists) {
-      const recovered = await readExistingReceipt(item, environment);
+      const recovered = await readExistingReceipt(item, environment, fixedGroup);
       if (recovered) {
         if (recovered.planId !== plan.planId || recovered.sourceCommit !== environment.releaseCommit || recovered.packedSha256 !== hash(observed.bytes!) || recovered.registryIntegrity !== observed.integrity || recovered.registryUrl !== observed.url || recovered.publishedAt !== observed.publishedAt) fail("existing receipt contradicts authoritative registry state");
-        await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
+        if (!fixedGroup) await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
       }
     }
     const artifact = artifacts.get(`${item.id}\0${item.version}`); if (!artifact) fail("sealed artifact is missing");
@@ -494,10 +494,13 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
     const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment, fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
     assertComponentReceipt(receipt);
     if (!fixedGroup) await createImmutableTag(receipt, environment);
-    await dispatchReceipt(receipt, environment);
+    if (!fixedGroup) await dispatchReceipt(receipt, environment);
     receipts.push(receipt);
   }
-  if (fixedGroup) await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
+  if (fixedGroup) {
+    await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
+    for (const receipt of receipts) await dispatchReceipt(receipt, environment);
+  }
   return receipts;
 }
 async function createFixedGroupRelease(
@@ -569,9 +572,9 @@ async function createImmutableTag(receipt: ComponentReceiptV1, environment: Runt
   const ref = await fetch(`${api}/repos/${environment.repository}/git/refs`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }) });
   if (!ref.ok) fail(`tag ref creation ${ref.status}`);
 }
-async function readExistingReceipt(item: PublishSelection, environment: RuntimeEnvironment): Promise<ComponentReceiptV1 | null> {
+async function readExistingReceipt(item: PublishSelection, environment: RuntimeEnvironment, fixedGroup?: { name: string; version: string }): Promise<ComponentReceiptV1 | null> {
   const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
-  const tag = `${name}@${item.version}`; const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const tag = fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : `${name}@${item.version}`; const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
   const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
   const ref = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers, redirect: "error" });
   if (ref.status === 404) return null; if (!ref.ok) fail(`tag observation ${ref.status}`);
@@ -579,7 +582,13 @@ async function readExistingReceipt(item: PublishSelection, environment: RuntimeE
   const object = await fetch(`${api}/repos/${environment.repository}/git/tags/${refBody.object.sha}`, { headers, redirect: "error" }); if (!object.ok) fail(`annotated tag observation ${object.status}`);
   const tagBody = await object.json() as { object?: { sha?: string }; message?: string };
   if (tagBody.object?.sha !== environment.releaseCommit || typeof tagBody.message !== "string") fail("annotated tag target contradiction");
-  const receipt = parseJson<unknown>(Buffer.from(tagBody.message), "tag receipt"); assertComponentReceipt(receipt);
+  const tagReceipt = parseJson<unknown>(Buffer.from(tagBody.message), "tag receipt");
+  const receipt = fixedGroup && tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt)
+    ? (tagReceipt as { schema?: string; receipts?: unknown[] }).schema === "lenso.fixed-group-receipt.v1"
+      ? (tagReceipt as { receipts?: unknown[] }).receipts?.find((candidate) => candidate && typeof candidate === "object" && (candidate as { packageId?: string; version?: string }).packageId === item.id && (candidate as { version?: string }).version === item.version)
+      : undefined
+    : tagReceipt;
+  assertComponentReceipt(receipt);
   if (receipt.packageId !== item.id || receipt.version !== item.version || receipt.repository !== environment.repository) fail("annotated tag receipt identity contradiction");
   return receipt;
 }
