@@ -39,7 +39,7 @@ else if (command === "preflight") {
 }
 else if (command === "consume-preflight") {
     const marker = await consumePreflightProof(environment());
-    process.stdout.write(`${marker.seal}\n`);
+    process.stdout.write(`${marker.signature}\n`);
 }
 else if (command === "publish") {
     const receipts = await publishSelected(environment());
