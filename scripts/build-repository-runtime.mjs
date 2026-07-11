@@ -33,6 +33,7 @@ async function vendor(name, from = join(root, "package.json")) {
       if (pkg.name === name) {
         const destination = join(output, "node_modules", name); await mkdir(dirname(destination), { recursive: true });
         await cp(await realpath(directory), destination, { recursive: true, dereference: true, filter: (source) => !/^(?:CHANGELOG|README|SECURITY)(?:\.|$)/iu.test(source.split("/").at(-1) ?? "") });
+        if (name === "@rainbowatcher/toml-edit-js") await cp(join(root, "scripts/vendor-licenses/rainbowatcher-toml-edit-js.LICENSE"), join(destination, "LICENSE"));
         for (const dependency of Object.keys(pkg.dependencies ?? {}).sort()) await vendor(dependency, packageFile);
         return;
       }
