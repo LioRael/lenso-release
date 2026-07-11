@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
@@ -12,6 +12,7 @@ import type { ComponentReceiptV1, ReleasePlanV1, Sha256 } from "../contracts/typ
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
+import type { AuthorizedArtifact, PublishAuthorization } from "../publisher/preflight-authority.js";
 
 const execFile = promisify(execFileCallback);
 const OID = /^[0-9a-f]{40}$/u;
@@ -55,8 +56,7 @@ type PreflightProof = {
   expiresAt: string;
   token: string;
 };
-type ArtifactBinding = { id: string; version: string; path: string; sha256: Sha256; size: number; ino: number };
-type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; proofId: Sha256; bindingDigest: Sha256; token: string; artifacts: ArtifactBinding[]; seal: Sha256 };
+type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; authorization: PublishAuthorization; signature: string };
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
@@ -180,40 +180,56 @@ export async function consumePreflightProof(environment: RuntimeEnvironment): Pr
   const proof = parseJson<PreflightProof>(proofBytes, "preflight proof");
   if (proof.schema !== "lenso.publisher-preflight-proof.v1" || proof.bindingDigest !== digest || Date.parse(proof.expiresAt) <= Date.now()) fail("preflight proof is stale or does not bind this execution");
   const artifactDirectory = join(environment.cwd, ".lenso-release/preflight-artifacts", proof.proofId.slice(7)); await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
-  const artifacts: ArtifactBinding[] = [];
+  const artifacts: AuthorizedArtifact[] = [];
   for (const item of environment.packages) {
     const packed = await packedArtifact(environment.cwd, item); const destination = join(artifactDirectory, basename(packed.path));
     await copyFile(packed.path, destination, constants.COPYFILE_EXCL); await chmod(destination, 0o400); const info = await stat(destination);
     if (!info.isFile() || info.nlink !== 1) fail("sealed artifact is not an isolated regular file");
     if (item.id.startsWith("npm:")) await execFile("npm", ["publish", destination, "--dry-run", "--ignore-scripts"], { cwd: environment.cwd });
     else await execFile("cargo", ["publish", "--dry-run", "--locked", "-p", item.id.slice(6)], { cwd: environment.cwd });
-    artifacts.push({ id: item.id, version: item.version, path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino });
+    const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice("cargo:".length); const cargoMetadata = item.id.startsWith("cargo:") ? await cargoWireMetadataFromCrate(destination, name, item.version) : null;
+    artifacts.push({ id: item.id, name, version: item.version, kind: item.id.startsWith("npm:") ? "npm" : "cargo", path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino, mode: 0o400, cargoMetadata, cargoMetadataSha256: cargoMetadata ? sha256(cargoMetadata) as Sha256 : null });
   }
   const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL; if (!endpoint) fail("coordinator proof consumption endpoint is required");
-  const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": proof.proofId }, body: JSON.stringify({ proof, eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, releaseCommit: environment.releaseCommit, ref: environment.refName }) });
+  const facts = { eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, releaseCommit: environment.releaseCommit, ref: environment.refName };
+  const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": proof.proofId }, body: JSON.stringify({ proof, facts, artifacts }) });
   if (!response.ok) fail(`coordinator preflight proof consumption ${response.status}`);
-  const confirmation = await response.json() as { accepted?: boolean; eventId?: string; proofId?: string };
-  if (confirmation.accepted !== true || confirmation.eventId !== environment.eventId || confirmation.proofId !== proof.proofId) fail("coordinator preflight proof was not atomically consumed");
-  const markerIdentity = { schema: "lenso.publisher-sealed-marker.v1" as const, proofId: proof.proofId, bindingDigest: digest, token: proof.token, artifacts };
-  const marker: SealedMarker = { ...markerIdentity, seal: sha256(markerIdentity as unknown as JsonValue) as Sha256 };
+  const confirmation = await response.json() as { accepted?: boolean; eventId?: string; proofId?: string; authorization?: PublishAuthorization; signature?: string };
+  if (confirmation.accepted !== true || confirmation.eventId !== environment.eventId || confirmation.proofId !== proof.proofId || !confirmation.authorization || typeof confirmation.signature !== "string") fail("coordinator preflight proof was not atomically consumed");
+  verifyAuthorization(confirmation.authorization, confirmation.signature, digest, environment, artifacts);
+  const marker: SealedMarker = { schema: "lenso.publisher-sealed-marker.v1", authorization: confirmation.authorization, signature: confirmation.signature };
   await writeSealedMarker(environment.cwd, marker); await rm(join(environment.cwd, ".lenso-release/preflight-proof.json"), { force: true }); return marker;
 }
 async function writeSealedMarker(cwd: string, marker: SealedMarker): Promise<void> {
   const path = join(cwd, ".lenso-release/preflight-marker.json"); const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
   try { await handle.writeFile(Buffer.concat([canonicalBytes(marker as unknown as JsonValue), Buffer.from("\n")])); await handle.sync(); } finally { await handle.close(); }
 }
-async function consumeSealedMarker(environment: RuntimeEnvironment): Promise<{ plan: ReleasePlanV1; artifacts: Map<string, { path: string; bytes: Buffer }> }> {
+async function consumeSealedMarker(environment: RuntimeEnvironment): Promise<{ plan: ReleasePlanV1; artifacts: Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }> }> {
   const { plan, digest } = await gateBinding(environment); const path = join(environment.cwd, ".lenso-release/preflight-marker.json");
   let bytes: Buffer; try { bytes = await safeRead(environment.cwd, ".lenso-release/preflight-marker.json"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") fail("sealed marker is missing or already consumed"); throw error; }
-  const marker = parseJson<SealedMarker>(bytes, "sealed marker"); const { seal, ...identity } = marker;
-  if (marker.schema !== "lenso.publisher-sealed-marker.v1" || marker.bindingDigest !== digest || seal !== sha256(identity as unknown as JsonValue)) fail("sealed marker binding is invalid");
-  const artifacts = new Map<string, { path: string; bytes: Buffer }>();
-  for (const binding of marker.artifacts) {
+  const marker = parseJson<SealedMarker>(bytes, "sealed marker"); if (marker.schema !== "lenso.publisher-sealed-marker.v1") fail("sealed marker binding is invalid");
+  verifyAuthorization(marker.authorization, marker.signature, digest, environment, marker.authorization.artifacts);
+  const artifacts = new Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }>();
+  for (const binding of marker.authorization.artifacts) {
     const artifactBytes = await safeRead(environment.cwd, binding.path); const info = await stat(join(environment.cwd, binding.path));
     if (info.ino !== binding.ino || info.size !== binding.size || info.mode % 0o1000 !== 0o400 || info.nlink !== 1 || hash(artifactBytes) !== binding.sha256) fail("sealed artifact changed after OIDC authorization");
-    artifacts.set(`${binding.id}\0${binding.version}`, { path: join(environment.cwd, binding.path), bytes: artifactBytes });
+    artifacts.set(`${binding.id}\0${binding.version}`, { path: join(environment.cwd, binding.path), bytes: artifactBytes, cargoMetadata: binding.cargoMetadata });
   }
   if (artifacts.size !== environment.packages.length) fail("sealed artifact selection mismatch"); await rm(path, { force: true }); return { plan, artifacts };
+}
+function verifyAuthorization(authorization: PublishAuthorization, signature: string, digest: Sha256, environment: RuntimeEnvironment, artifacts: AuthorizedArtifact[]): void {
+  const publicKey = process.env.LENSO_PREFLIGHT_AUTHORITY_PUBLIC_KEY; if (!publicKey) fail("preflight authority public key is required");
+  if (authorization.schema !== "lenso.publisher-authorization.v1" || authorization.bindingDigest !== digest || authorization.eventId !== environment.eventId || authorization.nonce !== environment.nonce || authorization.planId !== environment.planId || authorization.releaseCommit !== environment.releaseCommit || authorization.ref !== environment.refName || Date.parse(authorization.expiresAt) <= Date.now() || !canonicalBytes(authorization.artifacts as unknown as JsonValue).equals(canonicalBytes(artifacts as unknown as JsonValue)) || !verifySignature(null, canonicalBytes(authorization as unknown as JsonValue), createPublicKey(publicKey), Buffer.from(signature, "base64url"))) fail("server publish authorization signature is invalid");
+}
+async function cargoWireMetadataFromCrate(cratePath: string, name: string, version: string): Promise<JsonValue> {
+  const directory = await mkdtemp(join(tmpdir(), "lenso-crate-metadata-")); try {
+    await execFile("tar", ["-xzf", cratePath, "-C", directory]); const roots = await readdir(directory); if (roots.length !== 1 || roots[0] !== `${name}-${version}`) fail("Cargo archive root identity mismatch");
+    const manifest = join(directory, roots[0], "Cargo.toml"); const metadata = JSON.parse((await execFile("cargo", ["metadata", "--manifest-path", manifest, "--no-deps", "--format-version", "1"])).stdout) as { packages?: Array<Record<string, unknown>> };
+    const pkg = metadata.packages?.find((entry) => entry.name === name && entry.version === version); if (!pkg) fail("Cargo sealed manifest identity mismatch"); return cargoWireMetadata(pkg, name, version);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+function cargoWireMetadata(pkg: Record<string, unknown>, name: string, version: string): JsonValue {
+  return { name, vers: version, deps: pkg.dependencies as JsonValue ?? [], features: pkg.features as JsonValue ?? {}, authors: pkg.authors as JsonValue ?? [], description: pkg.description as JsonValue ?? null, documentation: pkg.documentation as JsonValue ?? null, homepage: pkg.homepage as JsonValue ?? null, readme: pkg.readme as JsonValue ?? null, keywords: pkg.keywords as JsonValue ?? [], categories: pkg.categories as JsonValue ?? [], license: pkg.license as JsonValue ?? null, license_file: pkg.license_file as JsonValue ?? null, repository: pkg.repository as JsonValue ?? null, badges: {}, links: pkg.links as JsonValue ?? null, rust_version: pkg.rust_version as JsonValue ?? null };
 }
 
 async function requestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: Record<string, unknown> }> {
@@ -271,19 +287,16 @@ async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ pa
   const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
   return { path, bytes: await readFile(path) };
 }
-async function publishOnce(cwd: string, item: PublishSelection, artifact: { path: string; bytes: Buffer }): Promise<void> {
+async function publishOnce(cwd: string, item: PublishSelection, artifact: { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }): Promise<void> {
   if (item.id.startsWith("npm:")) {
     await execFile("npm", ["publish", artifact.path, "--provenance", "--access", "public", "--ignore-scripts"], { cwd });
   } else {
     if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN) fail("official crates.io token is required without fallback");
-    await uploadCargoArtifact(cwd, item, artifact.bytes);
+    if (!artifact.cargoMetadata) fail("signed Cargo upload metadata missing"); await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata);
   }
 }
-async function uploadCargoArtifact(cwd: string, item: PublishSelection, bytes: Buffer): Promise<void> {
-  const metadata = JSON.parse((await execFile("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { cwd })).stdout) as { packages?: Array<Record<string, unknown>> };
-  const name = item.id.slice(6); const pkg = metadata.packages?.find((entry) => entry.name === name && entry.version === item.version); if (!pkg) fail("Cargo archive metadata identity mismatch");
-  const upload = { name, vers: item.version, deps: pkg.dependencies ?? [], features: pkg.features ?? {}, authors: pkg.authors ?? [], description: pkg.description ?? null, documentation: pkg.documentation ?? null, homepage: pkg.homepage ?? null, readme: pkg.readme ?? null, keywords: pkg.keywords ?? [], categories: pkg.categories ?? [], license: pkg.license ?? null, license_file: pkg.license_file ?? null, repository: pkg.repository ?? null, badges: {}, links: pkg.links ?? null, rust_version: pkg.rust_version ?? null };
-  const json = Buffer.from(JSON.stringify(upload)); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
+export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
+  const json = canonicalBytes(upload); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
   const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]); const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
   const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length) }, body });
   if (!response.ok) fail(`crates exact archive upload ${response.status}`);

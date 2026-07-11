@@ -32,7 +32,7 @@ if (command === "plan") {
 } else if (command === "preflight") {
   const proof = await createPreflightProof(environment()); process.stdout.write(`${proof.proofId}\n`);
 } else if (command === "consume-preflight") {
-  const marker = await consumePreflightProof(environment()); process.stdout.write(`${marker.seal}\n`);
+  const marker = await consumePreflightProof(environment()); process.stdout.write(`${marker.signature}\n`);
 } else if (command === "publish") {
   const receipts = await publishSelected(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
