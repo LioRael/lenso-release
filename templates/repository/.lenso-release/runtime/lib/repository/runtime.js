@@ -661,7 +661,7 @@ export async function createPlan(cwd, repository, sourceCommit) {
         fail("repository config mismatch");
     if (config.aliases && Object.entries(config.aliases).some(([target, source]) => !/^artifact:[a-z0-9-]+$/u.test(target) || !/^npm:@lenso\/[a-z0-9-]+$/u.test(source)))
         fail("repository component alias is invalid");
-    if (config.ignore && (!Array.isArray(config.ignore) || config.ignore.some((name) => !/^(?:npm:)?@lenso\/[a-z0-9-]+$/u.test(name))))
+    if (config.ignore && (!Array.isArray(config.ignore) || config.ignore.some((name) => !/^(?:(?:cargo:)?[a-z0-9]+(?:-[a-z0-9]+)*|(?:npm:)?@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*)$/u.test(name))))
         fail("repository ignore list is invalid");
     const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
     const components = Object.fromEntries(Object.values(registry.packages).filter(({ repository: owner }) => owner === repository).map(({ id, releaseGroup, userFacing }) => [id, { releaseGroup, userFacing }]));
