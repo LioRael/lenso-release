@@ -80,7 +80,7 @@ async function verifyReviewedComponents(cwd, plan) {
         if (!component || component.repository !== plan.repository || !component.publishable || component.releaseGroup !== item.releaseGroup || component.userFacing !== item.userFacing)
             fail(`unreviewed component metadata: ${item.id}`);
         const allowed = new Set(component.dependencies);
-        if (item.dependencies.some(({ id }) => !allowed.has(id) && registry.packages[id]?.repository !== plan.repository))
+        if (item.dependencies.some(({ id }) => !allowed.has(id)))
             fail(`unreviewed dependency edge: ${item.id}`);
     }
 }
