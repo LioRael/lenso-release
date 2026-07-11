@@ -488,7 +488,12 @@ export async function exportReleasePlan(options: ExportReleasePlanOptions): Prom
   const path = await assertSafePlanPath(options.cwd);
   await assertSupportedCargoSources(options.cwd);
   const captured = new Map<string, WorkspacePackage>();
-  const project = tegami({ cwd: options.cwd, ignore: [...(options.ignore ?? [])], plugins: [cargo(), repairCargoWorkspace(), refreshCargoLock(), capturePackages(captured)] });
+  const ignored = new Set(options.ignore ?? []);
+  const project = tegami({ cwd: options.cwd, ignore: [...ignored], plugins: [cargo({
+    bumpDep: ({ dependent, kind }) => ignored.has(dependent.id) || ignored.has(dependent.name)
+      ? false
+      : kind === "dependencies" ? "patch" : false,
+  }), repairCargoWorkspace(), refreshCargoLock(), capturePackages(captured)] });
   const draft = await project.draft();
   const pending = [...draft.getPackageDrafts()].flatMap(([id, packageDraft]) => {
     const pkg = captured.get(id);
