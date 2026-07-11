@@ -156,9 +156,9 @@ export async function createCoordinatorHandlers(
     new URL("../../config/components.yaml", import.meta.url).pathname,
   );
   const planPath =
-    input.env.LENSO_RELEASE_PLAN_PATH ?? ".lenso/release-plan.json";
+    input.env.LENSO_RELEASE_PLAN_PATH ?? ".lenso-release/plan.json";
   const bundlePath =
-    input.env.LENSO_SHARED_BUNDLE_PATH ?? "publisher/bundle.json";
+    input.env.LENSO_SHARED_BUNDLE_PATH ?? ".lenso-release/runtime/manifest.json";
   const observedActor = input.env.LENSO_EVENT_ACTOR;
   if (!observedActor) throw new TypeError("LENSO_EVENT_ACTOR is required");
   const now = () => new Date();
@@ -227,8 +227,7 @@ export async function createCoordinatorHandlers(
             sourceToken,
           );
           const workflowBytes = await githubBytes(event.sourceRepository, plan.publisher.workflow, event.releaseCommit, sourceToken);
-          const coordinatorToken = await input.tokens.tokenFor("LioRael/lenso-release", { contents: "read", metadata: "read" });
-          const bundleBytes = await githubBytes("LioRael/lenso-release", bundlePath, plan.publisher.sharedRevision, coordinatorToken);
+          const bundleBytes = await githubBytes(event.sourceRepository, bundlePath, event.releaseCommit, sourceToken);
           let generatedFilesValid = true;
           for (const file of plan.generatedFiles) {
             const bytes = await githubBytes(event.sourceRepository, file.path, event.releaseCommit, sourceToken);
