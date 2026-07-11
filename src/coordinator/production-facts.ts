@@ -348,7 +348,9 @@ export async function createCoordinatorHandlers(
         async observe(context: ReceiptObservationContext, packageId: string, packageVersion: string): Promise<ReceiptObservation | null> {
           if (!context.packages.some(({ id, version }) => id === packageId && version === packageVersion)) throw new Error("package is not selected by stored outbox");
           const repository = context.repository;
-          const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
+          const token = await input.tokens.tokenFor(repository, shadow
+            ? { contents: "write", actions: "read", metadata: "read" }
+            : { contents: "write", actions: "read", attestations: "read", metadata: "read" });
           const githubApi = `https://api.github.com/repos/${repository}`;
           const tagApi = shadow ? `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}` : githubApi;
           const packageName = packageId.startsWith("cargo:")
