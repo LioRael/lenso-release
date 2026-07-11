@@ -176,12 +176,16 @@ export async function createCoordinatorHandlers(
       const observation = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { fetch: request, token });
       return "version" in observation && observation.version === version;
     }
+    const productionUrl = id.startsWith("cargo:")
+      ? `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}`;
     const url = id.startsWith("cargo:")
-      ? `${shadow ? input.env.LENSO_SHADOW_CRATES_API_URL : "https://crates.io"}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
-      : `${shadow ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL : "https://registry.npmjs.org"}/${encodeURIComponent(id.slice(4))}`;
+      ? `${input.env.LENSO_SHADOW_CRATES_API_URL}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      : `${input.env.LENSO_SHADOW_NPM_REGISTRY_URL}/${encodeURIComponent(id.slice(4))}`;
     try {
-      const response = shadow ? await request(url, { redirect: "error" }) : await checkedExternal(request, url);
-      return response.ok;
+      if (!shadow) return (await checkedExternal(request, productionUrl)).ok;
+      if ((await request(url, { redirect: "error" })).ok) return true;
+      return (await checkedExternal(request, productionUrl)).ok;
     } catch { return false; }
   };
   const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
