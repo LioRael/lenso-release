@@ -151,7 +151,7 @@ describe("publisher preflight execution gate", () => {
     } finally { process.env.PATH = oldPath; process.env.RUNNER_IMAGE = oldRunner; }
   });
 
-  it("recovers an already-published npm archive, dispatches a deterministic receipt, and waits for verified cleanup", async () => {
+  it("recovers an already-published npm archive and enqueues a deterministic receipt", async () => {
     const fixture = await repositoryFixture();
     const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
     const identity = { schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-runtime-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
@@ -167,7 +167,7 @@ describe("publisher preflight execution gate", () => {
       else if (request.url?.endsWith("/git/refs")) response.end("{}");
       else if (request.url === "/preflight") { const bindingDigest = JSON.parse(body).bindingDigest; const issuedAt = new Date().toISOString(); response.end(JSON.stringify({ schema: "lenso.publisher-preflight-proof.v1", proofId: `sha256:${"a".repeat(64)}`, bindingDigest, issuedAt, expiresAt: new Date(Date.now() + 120_000).toISOString(), token: "signed-proof-token-signed-proof-token" })); }
       else if (request.url === "/consume") { const value = JSON.parse(body); const authorization = { schema: "lenso.publisher-authorization.v1", proofId: value.proof.proofId, bindingDigest: value.proof.bindingDigest, eventId: value.facts.eventId, nonce: value.facts.nonce, planId: value.facts.planId, releaseCommit: value.facts.releaseCommit, ref: value.facts.ref, expiresAt: value.proof.expiresAt, artifacts: value.artifacts }; const signature = sign(null, canonicalBytes(authorization), privateKey).toString("base64url"); response.end(JSON.stringify({ accepted: true, eventId: value.facts.eventId, proofId: value.proof.proofId, authorization, signature })); }
-      else if (request.url === "/receipt") { const receiptId = JSON.parse(body).receipt.receiptId; response.end(JSON.stringify({ receiptId, planStatus: "verified" })); }
+      else if (request.url === "/receipt") { response.statusCode = 202; response.end(JSON.stringify({ queued: true })); }
       else if (request.url === "/cleanup") { response.end(JSON.stringify({ accepted: true, planId: plan.planId })); }
       else { response.statusCode = 404; response.end("{}"); } }); });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); if (!address || typeof address === "string") throw new Error("server missing"); base = `http://127.0.0.1:${address.port}`;
@@ -189,7 +189,7 @@ describe("publisher preflight execution gate", () => {
       await createPreflightProof(environment); await consumePreflightProof(environment); const first = await publishSelected(environment);
       expect(first[0]?.receiptId).toMatch(/^sha256:/u); expect((await readFile(npmLog, "utf8")).split("\n").filter((line) => line.startsWith("publish")).every((line) => line.includes("--dry-run"))).toBe(true);
       await expect(publishSelected(environment)).rejects.toThrow(/sealed marker/u);
-      expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(3); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(1);
+      expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(3); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(0);
     } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_PREFLIGHT_URL: saved.preflight, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: saved.consume, LENSO_PREFLIGHT_AUTHORITY_PUBLIC_KEY: saved.publicKey, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app, LENSO_ATTESTATION_TOKEN: saved.attestation })) value === undefined ? delete process.env[key] : process.env[key] = value; }
   });
 });

@@ -27,7 +27,7 @@ export class StateConflictError extends Error {}
 const REPOSITORY =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/u;
 const OID = /^[0-9a-f]{40}$/u;
-const PACKAGE_KEY = /^package:(?:cargo|npm):[^:]+:.+$/u;
+const PACKAGE_KEY = /^package:(?:cargo|npm|artifact):[^:]+:.+$/u;
 
 export function planDigestHex(planId: string): string {
   const match = /^sha256:([0-9a-f]{64})$/u.exec(planId);
@@ -225,7 +225,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     );
     const key = `${item.id}:${item.version}`;
     if (
-      !/^(?:cargo|npm):/u.test(String(item.id)) ||
+      !/^(?:cargo|npm|artifact):/u.test(String(item.id)) ||
       !SEMVER.test(String(item.version)) ||
       !Number.isSafeInteger(item.phase) ||
       Number(item.phase) < 0 ||

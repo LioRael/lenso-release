@@ -370,9 +370,7 @@ export async function createCoordinatorHandlers(
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
           if (runUrl !== expected.workflowUrl || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          const completed = workflow.status === "completed" && workflow.conclusion === "success";
-          const receiptStepInProgress = workflow.status === "in_progress" && (workflow.conclusion === null || workflow.conclusion === undefined);
-          if (!completed && !receiptStepInProgress) return null;
+          if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
