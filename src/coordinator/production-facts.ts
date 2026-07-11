@@ -363,10 +363,15 @@ export async function createCoordinatorHandlers(
           let registryUrl: string;
           let publishedAt: string;
           if (packageId.startsWith("cargo:")) {
-            const metadataUrl = `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}`;
-            const metadata = await (await checkedExternal(request, metadataUrl)).json() as Record<string, unknown>;
+            const base = shadow ? input.env.LENSO_SHADOW_CRATES_API_URL : "https://crates.io";
+            const metadataUrl = `${base}/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}`;
+            const metadataResponse = shadow ? await request(metadataUrl, { redirect: "error" }) : await checkedExternal(request, metadataUrl);
+            if (!metadataResponse.ok) return null;
+            const metadata = await metadataResponse.json() as Record<string, unknown>;
             const version = metadata.version as Record<string, unknown>;
-            const artifact = await checkedExternal(request, `https://crates.io/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}/download`);
+            const artifactUrl = `${base}/api/v1/crates/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}/download`;
+            const artifact = shadow ? await request(artifactUrl, { redirect: "error" }) : await checkedExternal(request, artifactUrl);
+            if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
