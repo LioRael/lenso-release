@@ -56,7 +56,7 @@ packages:
     releaseGroup: foundation
     userFacing: true
     publishable: true
-    dependencies: []
+    dependencies: [cargo:lenso-contracts]
   - id: cargo:lenso-module-story
     repository: LioRael/lenso
     registry: crates-io
@@ -241,7 +241,11 @@ packages:
     releaseGroup: host
     userFacing: true
     publishable: true
-    dependencies: []
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+      - cargo:lenso-service
   - id: cargo:lenso-platform-admin
     repository: LioRael/lenso
     registry: crates-io
@@ -263,34 +267,56 @@ packages:
       - cargo:lenso-module-auth-oauth
       - cargo:lenso-module-auth-oidc
       - cargo:lenso-module-auth-password
+      - cargo:lenso-module-auth-phone
+      - cargo:lenso-module-story
+      - cargo:lenso-platform-admin-data
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+      - cargo:lenso-platform-module-remote
+      - cargo:lenso-platform-runtime
   - id: cargo:lenso-migrate
     repository: LioRael/lenso
     registry: crates-io
     releaseGroup: host
     userFacing: true
     publishable: true
-    dependencies: []
+    dependencies:
+      - cargo:lenso-bootstrap
+      - cargo:lenso-platform-core
   - id: cargo:lenso-worker
     repository: LioRael/lenso
     registry: crates-io
     releaseGroup: host
     userFacing: true
     publishable: true
-    dependencies: []
+    dependencies:
+      - cargo:lenso-bootstrap
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-runtime
   - id: cargo:lenso-api
     repository: LioRael/lenso
     registry: crates-io
     releaseGroup: host
     userFacing: true
     publishable: true
-    dependencies: []
+    dependencies:
+      - cargo:lenso-bootstrap
+      - cargo:lenso-platform-admin
+      - cargo:lenso-platform-admin-data
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module-remote
+      - cargo:lenso-platform-runtime
   - id: cargo:lenso
     repository: LioRael/lenso
     registry: crates-io
     releaseGroup: host
     userFacing: true
     publishable: true
-    dependencies: [cargo:lenso-module-organization]
+    dependencies:
+      - cargo:lenso-contracts
+      - cargo:lenso-module-organization
   - id: cargo:lenso-operator
     repository: LioRael/lenso
     registry: crates-io
