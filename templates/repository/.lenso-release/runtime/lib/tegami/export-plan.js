@@ -11,6 +11,7 @@ import { assertReleasePlan } from "../contracts/validate.js";
 import { canonicalBytes, sha256 } from "../core/canonical.js";
 import { capturePackages } from "./capture-plugin.js";
 import { refreshCargoLock } from "./cargo-lock-plugin.js";
+import { repairCargoWorkspace } from "./cargo-workspace-plugin.js";
 const execFileAsync = promisify(execFile);
 const CARGO_METADATA_BUFFER = 64 * 1024 * 1024;
 const SUPPORTED_BUMPS = new Set(["patch", "minor", "major"]);
@@ -278,7 +279,7 @@ async function safeRead(cwd, path) {
     }
 }
 async function snapshotWorkspace(cwd, packages) {
-    const paths = new Set([join(cwd, "Cargo.lock"), join(cwd, "pnpm-lock.yaml"), join(cwd, ".tegami/publish-lock.yaml")]);
+    const paths = new Set([join(cwd, "Cargo.toml"), join(cwd, "Cargo.lock"), join(cwd, "pnpm-lock.yaml"), join(cwd, ".tegami/publish-lock.yaml")]);
     for (const pkg of packages) {
         paths.add(join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json"));
         paths.add(join(pkg.path, "CHANGELOG.md"));
@@ -473,7 +474,7 @@ export async function exportReleasePlan(options) {
     const path = await assertSafePlanPath(options.cwd);
     await assertSupportedCargoSources(options.cwd);
     const captured = new Map();
-    const project = tegami({ cwd: options.cwd, ignore: [...(options.ignore ?? [])], plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
+    const project = tegami({ cwd: options.cwd, ignore: [...(options.ignore ?? [])], plugins: [cargo(), repairCargoWorkspace(), refreshCargoLock(), capturePackages(captured)] });
     const draft = await project.draft();
     const pending = [...draft.getPackageDrafts()].flatMap(([id, packageDraft]) => {
         const pkg = captured.get(id);
