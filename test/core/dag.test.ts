@@ -374,6 +374,21 @@ describe("component release graph", () => {
     ]);
   });
 
+  it("publishes Auth foundations before providers that consume them", async () => {
+    const registry = await loadComponents(new URL("../../config/components.yaml", import.meta.url).pathname);
+    expect(topologicalPhases(registry, [
+      "cargo:lenso-module-auth-phone",
+      "cargo:lenso-module-auth-github",
+      "cargo:lenso-module-auth-oauth",
+      "cargo:lenso-module-auth-password",
+      "cargo:lenso-module-auth",
+    ])).toEqual([
+      ["cargo:lenso-module-auth"],
+      ["cargo:lenso-module-auth-oauth", "cargo:lenso-module-auth-password"],
+      ["cargo:lenso-module-auth-github", "cargo:lenso-module-auth-phone"],
+    ]);
+  });
+
   it("schedules the explicit reviewed inventory without a cycle", async () => {
     const registry = await loadComponents("config/components.yaml");
     const selected = Object.keys(expectedInventory);
