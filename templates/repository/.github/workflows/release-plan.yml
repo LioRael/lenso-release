@@ -40,8 +40,8 @@ jobs:
         run: |
           corepack enable
           npm install --global npm@11.7.0
-          rustup toolchain install 1.92.0 --profile minimal
-          rustup default 1.92.0
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
       - name: Emit ready event for an approved merged plan
         if: ${{ hashFiles('.lenso-release/plan.json') != '' }}
         env:

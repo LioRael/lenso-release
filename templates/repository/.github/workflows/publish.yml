@@ -44,8 +44,8 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
           npm install --global npm@11.7.0
-          rustup toolchain install 1.92.0 --profile minimal
-          rustup default 1.92.0
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
       - name: Complete fail-closed preflight before any registry OIDC
         env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
