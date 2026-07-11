@@ -290,11 +290,31 @@ async function artifactObservation(name: string, version: string, environment: R
   const bytes = new Uint8Array(await download.arrayBuffer());
   return { exists: true, bytes, integrity: hash(bytes), url: asset.browser_download_url, publishedAt: body.created_at };
 }
+async function npmWorkspaceDirectory(cwd: string, name: string): Promise<string> {
+  const matches: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if ([".git", ".lenso-release", "dist", "node_modules", "target"].includes(entry.name)) continue;
+        await visit(join(directory, entry.name));
+      } else if (entry.name === "package.json") {
+        const path = join(directory, entry.name);
+        const manifest = parseJson<{ name?: string }>(await readFile(path), "npm workspace manifest");
+        if (manifest.name === name) matches.push(directory);
+      }
+    }
+  };
+  await visit(cwd);
+  if (matches.length !== 1) fail(`npm workspace package is missing or ambiguous: ${name}`);
+  return matches[0]!;
+}
 async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ path: string; bytes: Buffer }> {
   if (item.id.startsWith("npm:")) {
     if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) fail("npm token fallback is forbidden");
     const name = item.id.slice(4);
-    const { stdout } = await execFile("npm", ["pack", "--json", "--ignore-scripts"], { cwd });
+    const packageDirectory = await npmWorkspaceDirectory(cwd, name);
+    const { stdout } = await execFile("npm", ["pack", packageDirectory, "--json", "--ignore-scripts"], { cwd });
     const result = JSON.parse(stdout) as Array<{ filename: string; name: string; version: string; integrity: string; shasum: string }>;
     const packed = result[0];
     if (result.length !== 1 || !packed || packed.name !== name || packed.version !== item.version || basename(packed.filename) !== packed.filename || !/^[a-z0-9][a-z0-9._-]*\.tgz$/u.test(packed.filename) || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(packed.integrity) || !/^[0-9a-f]{40}$/u.test(packed.shasum)) fail("npm archive identity mismatch");
