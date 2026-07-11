@@ -46,12 +46,13 @@ async function assertVendorLicenses(modules: string): Promise<void> {
 }
 
 describe("repository template workflow contracts", () => {
-  it("pins every action, exposes exactly six non-secret inputs, and never provisions an npm token", async () => {
+  it("pins every action, exposes exactly six non-secret inputs, and keeps npm auth shadow-scoped", async () => {
     const source = await readFile(join(template, ".github/workflows/publish.yml"), "utf8");
     const workflow = parse(source) as Record<string, any>;
     const inputs = workflow.on.workflow_dispatch.inputs;
     expect(Object.keys(inputs)).toEqual(["event_id", "plan_id", "plan_sha256", "release_commit", "packages_json", "nonce"]);
-    expect(source).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN|registry-url/u);
+    expect(source).not.toMatch(/secrets\.NPM_TOKEN|registry-url/u);
+    expect(source).toContain("NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}");
     expect(source).toContain("LENSO_ATTESTATION_TOKEN: ${{ github.token }}");
     expect(source).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
     expect(source.indexOf("cli.js preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));

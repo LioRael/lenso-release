@@ -1,0 +1,5 @@
+{
+  "schema": "lenso.release-mode.v1",
+  "mode": "shadow",
+  "allowedModes": ["shadow"]
+}
