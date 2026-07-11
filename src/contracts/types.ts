@@ -1,6 +1,6 @@
 export type Sha256 = `sha256:${string}`;
 export type GitOid = string;
-export type RegistryPackageId = `cargo:${string}` | `npm:${string}`;
+export type RegistryPackageId = `cargo:${string}` | `npm:${string}` | `artifact:${string}`;
 
 export type PackageDependency = {
   id: string;

@@ -313,7 +313,9 @@ export async function createCoordinatorHandlers(
           const repository = context.repository;
           const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
           const githubApi = `https://api.github.com/repos/${repository}`;
-          const packageName = packageId.startsWith("cargo:") ? packageId.slice(6) : packageId.slice("npm:@lenso/".length);
+          const packageName = packageId.startsWith("cargo:")
+            ? packageId.slice(6)
+            : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length) : packageId.slice("artifact:".length);
           const tagName = `${packageName}@${packageVersion}`;
           const expectedTagUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tagName)}`;
           let packedBytes: Uint8Array;
@@ -329,7 +331,7 @@ export async function createCoordinatorHandlers(
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
             registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
-          } else {
+          } else if (packageId.startsWith("npm:")) {
             const name = `@lenso/${packageName}`;
             const packumentUrl = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
             const packument = await (await checkedExternal(request, packumentUrl)).json() as Record<string, unknown>;
@@ -343,6 +345,18 @@ export async function createCoordinatorHandlers(
             nativeIntegrity = String(dist.integrity);
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
+          } else {
+            const release = await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+            if (release.draft !== true || typeof release.created_at !== "string") return null;
+            const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
+            const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
+            if (!asset?.url || !asset.browser_download_url) return null;
+            const artifact = await request(String(asset.url), { redirect: "error", headers: { ...headers(token), accept: "application/octet-stream" } });
+            if (!artifact.ok) return null;
+            packedBytes = new Uint8Array(await artifact.arrayBuffer());
+            nativeIntegrity = sha256(packedBytes);
+            publishedAt = String(release.created_at);
+            registryUrl = String(asset.browser_download_url);
           }
           const packedDigest = sha256(packedBytes);
           const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
@@ -352,7 +366,9 @@ export async function createCoordinatorHandlers(
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
           if (runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          const subjectName = packageId.startsWith("cargo:") ? `${packageName}-${packageVersion}.crate` : `${packageName}-${packageVersion}.tgz`;
+          const subjectName = packageId.startsWith("cargo:")
+            ? `${packageName}-${packageVersion}.crate`
+            : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
           const subject = await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
           if (!subject) return null;
           const rulesetList = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown;

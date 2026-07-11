@@ -101,6 +101,17 @@ const npmReceipt = {
     digest: receipt.packedSha256,
   },
 };
+const artifactReceipt = {
+  ...receipt,
+  receiptId: sha("a"),
+  packageId: "artifact:lenso-runtime-console",
+  registryIntegrity: sha("e"),
+  registryUrl: "https://github.com/LioRael/lenso-runtime-console/releases/download/v0.1.2/lenso-runtime-console.tar.gz",
+  provenanceSubject: {
+    name: "lenso-runtime-console-0.1.2.tar.gz",
+    digest: sha("e"),
+  },
+};
 
 const release = {
   schema: "lenso.system-release.v1",
@@ -406,6 +417,8 @@ describe("public release contracts", () => {
     expect(() => assertComponentReceipt({ ...receipt, registryIntegrity: npmIntegrity })).toThrow();
     expect(() => assertComponentReceipt(npmReceipt)).not.toThrow();
     expect(() => assertComponentReceipt({ ...npmReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
+    expect(() => assertComponentReceipt(artifactReceipt)).not.toThrow();
+    expect(() => assertComponentReceipt({ ...artifactReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
     expect(() => assertSystemRelease({
       ...release,
       packages: [{ ...release.packages[0], registryIntegrity: npmIntegrity }],
