@@ -1,6 +1,6 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "697de176648b487f2d2521e61c8c7c8a776c9fad",
+  "sourceRevision": "380c9da02cf39134c0476de71ea88b680cff9c7d",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
@@ -93,6 +93,10 @@
     {
       "path": ".lenso-release/runtime/node_modules/@clack/prompts/package.json",
       "sha256": "sha256:854225dff3dfe3f7d3727ffaf3d3cd63eb86c8a295cb3ee562a2b155d9c305f4"
+    },
+    {
+      "path": ".lenso-release/runtime/node_modules/@rainbowatcher/toml-edit-js/LICENSE",
+      "sha256": "sha256:250f45fb9c30ab3b21442b547ca0952407a882949000239fd8c8ebd4bace8b24"
     },
     {
       "path": ".lenso-release/runtime/node_modules/@rainbowatcher/toml-edit-js/index.js",
