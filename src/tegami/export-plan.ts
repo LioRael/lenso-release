@@ -121,7 +121,7 @@ async function npmObservations(
 type CargoMetadata = {
   packages: Array<{
     id: string; name: string; version: string; manifest_path: string;
-    dependencies: Array<{ name: string; rename?: string | null; req: string; source?: string | null; path?: string | null }>;
+    dependencies: Array<{ name: string; rename?: string | null; req: string; source?: string | null; path?: string | null; kind?: string | null; optional?: boolean }>;
   }>;
   resolve: { nodes: Array<{ id: string; deps: Array<{ name: string; pkg: string }> }> } | null;
 };
@@ -177,6 +177,7 @@ async function cargoObservations(
   const node = metadata.resolve?.nodes.find((item) => item.id === owner.id);
   if (!node) fail(`cargo metadata has no resolved node for ${pkg.id}`);
   return owner.dependencies.flatMap((dependency) => {
+    if (dependency.kind && dependency.kind !== "normal") return [];
     const id = `cargo:${dependency.name}`;
     if (!components[id]) {
       if (dependency.path || !dependency.source) fail(`${id} is a workspace dependency without component registry metadata`);
@@ -186,6 +187,7 @@ async function cargoObservations(
     const localVersion = planned.get(id);
     if (dependency.source && !isCratesIoSource(dependency.source)) fail(`${id} has unsupported Cargo dependency source ${dependency.source}`);
     const matches = node.deps.filter((entry) => metadata.packages.some((candidate) => candidate.id === entry.pkg && candidate.name === dependency.name));
+    if (matches.length === 0 && dependency.optional) return [];
     if (matches.length !== 1) fail(`ambiguous cargo lock resolution for ${id}`);
     const resolved = metadata.packages.find((item) => item.id === matches[0]!.pkg);
     if (!resolved) fail(`cargo lock observation for ${id} is missing`);
