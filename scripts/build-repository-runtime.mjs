@@ -16,7 +16,7 @@ await mkdir(join(output, "lib"), { recursive: true });
 const modules = [
   "config/components.js", "contracts/types.js", "contracts/events.js", "contracts/validate.js", "core/canonical.js", "core/dag.js",
   "publisher/contract.js", "registry/validation.js", "repository/runtime.js", "repository/cli.js", "repository/ready-event.js",
-  "tegami/capture-plugin.js", "tegami/cargo-lock-plugin.js", "tegami/export-plan.js",
+  "tegami/capture-plugin.js", "tegami/cargo-lock-plugin.js", "tegami/cargo-workspace-plugin.js", "tegami/export-plan.js",
 ];
 for (const path of modules) {
   await mkdir(join(output, "lib", path, ".."), { recursive: true });
