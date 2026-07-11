@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdtemp, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -31,7 +31,7 @@ type RegistryObservation = {
   url?: string;
   publishedAt?: string;
 };
-type RuntimeEnvironment = {
+export type RuntimeEnvironment = {
   cwd: string;
   repository: string;
   releaseCommit: string;
@@ -42,9 +42,18 @@ type RuntimeEnvironment = {
   runUrl: string;
   githubToken: string;
   eventId: string;
+  nonce: string;
   planId: string;
   planSha256: string;
   packages: PublishSelection[];
+};
+type PreflightProof = {
+  schema: "lenso.publisher-preflight-proof.v1";
+  proofId: Sha256;
+  bindingDigest: Sha256;
+  issuedAt: string;
+  expiresAt: string;
+  token: string;
 };
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
@@ -99,6 +108,7 @@ async function verifyReviewedComponents(cwd: string, plan: ReleasePlanV1): Promi
 }
 
 export async function preflight(environment: RuntimeEnvironment): Promise<ReleasePlanV1> {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(environment.eventId) || !/^[0-9a-f-]{16,64}$/u.test(environment.nonce)) fail("invalid event ID or nonce");
   if (!OID.test(environment.releaseCommit) || environment.githubSha !== environment.releaseCommit) fail("github.sha/release commit mismatch");
   const planBytes = await safeRead(environment.cwd, ".lenso-release/plan.json");
   if (hash(planBytes) !== environment.planSha256) fail("plan byte digest mismatch");
@@ -132,6 +142,47 @@ export async function preflight(environment: RuntimeEnvironment): Promise<Releas
   for (const generated of plan.generatedFiles) if (hash(await safeRead(environment.cwd, generated.path)) !== generated.sha256) fail(`generated file mismatch: ${generated.path}`);
   await verifyReviewedComponents(environment.cwd, plan);
   return plan;
+}
+
+async function gateBinding(environment: RuntimeEnvironment): Promise<{ plan: ReleasePlanV1; binding: Record<string, JsonValue>; digest: Sha256 }> {
+  const plan = await preflight(environment);
+  const generated = await Promise.all(plan.generatedFiles.map(async ({ path }) => ({ path, sha256: hash(await safeRead(environment.cwd, path)) })));
+  const binding: Record<string, JsonValue> = {
+    eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, planSha256: environment.planSha256,
+    repository: environment.repository, releaseCommit: environment.releaseCommit, ref: environment.refName,
+    workflowSha256: hash(await safeRead(environment.cwd, environment.workflowPath)),
+    runtimeManifestSha256: hash(await safeRead(environment.cwd, ".lenso-release/runtime/manifest.json")),
+    packages: environment.packages as unknown as JsonValue, generated: generated as unknown as JsonValue,
+  };
+  return { plan, binding, digest: sha256(binding) as Sha256 };
+}
+async function writeProof(cwd: string, proof: PreflightProof): Promise<void> {
+  const directory = join(cwd, ".lenso-release"); await mkdir(directory, { recursive: false }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+  const target = join(directory, "preflight-proof.json"); const temporary = join(directory, `.preflight-proof-${crypto.randomUUID()}.tmp`);
+  const handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  try { await handle.writeFile(Buffer.concat([canonicalBytes(proof as unknown as JsonValue), Buffer.from("\n")])); await handle.sync(); } finally { await handle.close(); }
+  await rename(temporary, target);
+}
+export async function createPreflightProof(environment: RuntimeEnvironment): Promise<PreflightProof> {
+  const { binding, digest } = await gateBinding(environment); const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_URL;
+  if (!endpoint) fail("coordinator preflight endpoint is required");
+  const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": environment.eventId }, body: JSON.stringify({ schema: "lenso.publisher-preflight.v1", binding, bindingDigest: digest }) });
+  if (!response.ok) fail(`coordinator preflight confirmation ${response.status}`);
+  const proof = await response.json() as PreflightProof; const now = Date.now(); const issued = Date.parse(proof.issuedAt); const expires = Date.parse(proof.expiresAt);
+  if (proof.schema !== "lenso.publisher-preflight-proof.v1" || !/^sha256:[0-9a-f]{64}$/u.test(proof.proofId) || proof.bindingDigest !== digest || typeof proof.token !== "string" || proof.token.length < 32 || !Number.isFinite(issued) || !Number.isFinite(expires) || issued < now - 30_000 || issued > now + 30_000 || expires <= now || expires > now + 300_000) fail("invalid coordinator preflight proof");
+  await writeProof(environment.cwd, proof); return proof;
+}
+async function consumePreflightProof(environment: RuntimeEnvironment): Promise<ReleasePlanV1> {
+  const { plan, digest } = await gateBinding(environment);
+  let proofBytes: Buffer; try { proofBytes = await safeRead(environment.cwd, ".lenso-release/preflight-proof.json"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") fail("preflight proof is missing or already consumed"); throw error; }
+  const proof = parseJson<PreflightProof>(proofBytes, "preflight proof");
+  if (proof.schema !== "lenso.publisher-preflight-proof.v1" || proof.bindingDigest !== digest || Date.parse(proof.expiresAt) <= Date.now()) fail("preflight proof is stale or does not bind this execution");
+  const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL; if (!endpoint) fail("coordinator proof consumption endpoint is required");
+  const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": proof.proofId }, body: JSON.stringify({ proof, eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, releaseCommit: environment.releaseCommit, ref: environment.refName }) });
+  if (!response.ok) fail(`coordinator preflight proof consumption ${response.status}`);
+  const confirmation = await response.json() as { accepted?: boolean; eventId?: string; proofId?: string };
+  if (confirmation.accepted !== true || confirmation.eventId !== environment.eventId || confirmation.proofId !== proof.proofId) fail("coordinator preflight proof was not atomically consumed");
+  await rm(join(environment.cwd, ".lenso-release/preflight-proof.json"), { force: true }); return plan;
 }
 
 async function requestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: Record<string, unknown> }> {
@@ -252,7 +303,7 @@ async function dispatchReceipt(receipt: ComponentReceiptV1, environment: Runtime
 }
 
 export async function publishSelected(environment: RuntimeEnvironment): Promise<ComponentReceiptV1[]> {
-  const plan = await preflight(environment); // This is deliberately before packaging and any OIDC-consuming publish command.
+  const plan = await consumePreflightProof(environment);
   const receipts: ComponentReceiptV1[] = [];
   for (const item of environment.packages) {
     const name = item.id.slice(item.id.indexOf(":") + 1);

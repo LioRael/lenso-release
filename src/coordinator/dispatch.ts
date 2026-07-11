@@ -88,7 +88,7 @@ export function publishRequest(
     sourceRepository: "LioRael/lenso-release",
     expectedAppId: appId,
     planId: plan.planId,
-    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso/release-plan.json`,
+    planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso-release/plan.json`,
     planSha256,
     releaseCommit,
     packages: packages.map(({ id, version }) => ({ id, version })),

@@ -102,6 +102,18 @@ function consumer(result = true): NonceConsumer {
 }
 
 describe("publisher execution contract", () => {
+  it("accepts one dependency phase at a time and rejects cross-phase dispatch", () => {
+    const identity = { ...planIdentity, packages: [
+      { ...planIdentity.packages[0], id: "cargo:lenso-contracts", nextVersion: "1.0.0", dependencies: [] },
+      { ...planIdentity.packages[0], id: "cargo:lenso-platform-core", nextVersion: "1.0.0", dependencies: [{ id: "cargo:lenso-contracts", requirement: "=1.0.0", resolvedVersion: "1.0.0", source: "plan" as const }] },
+    ] };
+    const phased = { ...identity, planId: sha256(identity as JsonValue) } as ReleasePlanV1;
+    const base = environment({ planId: phased.planId, executionRef: executionRef(phased.planId), packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }] });
+    expect(() => verifyPublisherContract(phased, base)).not.toThrow();
+    expect(() => verifyPublisherContract(phased, { ...base, packages: [{ id: "cargo:lenso-platform-core", version: "1.0.0" }] })).not.toThrow();
+    expect(() => verifyPublisherContract(phased, { ...base, packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }, { id: "cargo:lenso-platform-core", version: "1.0.0" }] })).toThrow("crosses dependency phases");
+    expect(() => verifyPublisherContract(phased, { ...base, packages: [] })).toThrow("must not be empty");
+  });
   it("creates a valid immutable execution branch and rejects non-exact digests", () => {
     expect(executionRef(`sha256:${"a".repeat(64)}`)).toBe(`release-execution/${"a".repeat(64)}`);
     for (const invalid of [`sha256:${"A".repeat(64)}`, `sha256:${"a".repeat(63)}`, `sha256:${"a".repeat(65)}`, `${"a".repeat(64)}`]) {

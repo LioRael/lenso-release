@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { preflight, publishSelected } from "../../src/repository/runtime.js";
+import { createPreflightProof, preflight, publishSelected } from "../../src/repository/runtime.js";
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
@@ -38,6 +38,7 @@ describe("repository template workflow contracts", () => {
     expect(Object.keys(inputs)).toEqual(["event_id", "plan_id", "plan_sha256", "release_commit", "packages_json", "nonce"]);
     expect(source).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN|registry-url/u);
     expect(source).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
+    expect(source.indexOf("cli.js preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
     expect(workflow.permissions).toEqual({});
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
@@ -61,6 +62,22 @@ describe("repository template workflow contracts", () => {
     const bin = await temp(); await writeFile(join(bin, "node"), "#!/bin/sh\nexit 42\n"); await chmod(join(bin, "node"), 0o755);
     await expect(execute("sh", [join(template, "scripts/publish-cargo.sh")], { cwd: template, env: { PATH: `${bin}:${process.env.PATH}`, CARGO_REGISTRY_TOKEN: "short-lived" } })).rejects.toMatchObject({ code: 42 });
     await expect(lstat(join(template, ".lenso-release/runtime/node_modules/tegami/package.json"))).resolves.toMatchObject({});
+  });
+
+  it("retains license evidence for every vendored runtime package and contains no credential material", async () => {
+    const modules = join(template, ".lenso-release/runtime/node_modules"); const packages: string[] = [];
+    for (const entry of await readdir(modules, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith("@")) for (const child of await readdir(join(modules, entry.name), { withFileTypes: true })) if (child.isDirectory()) packages.push(join(modules, entry.name, child.name));
+      else packages.push(join(modules, entry.name));
+    }
+    for (const directory of packages) {
+      const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { name?: string; license?: string };
+      expect(metadata.name).toBeTruthy(); expect(metadata.license).toBeTruthy();
+      expect((await readdir(directory)).some((name) => /^(?:LICENSE|COPYING|NOTICE)(?:\.|$)/iu.test(name))).toBe(true);
+    }
+    const manifest = await readFile(join(template, ".lenso-release/runtime/manifest.json"), "utf8");
+    expect(manifest).not.toMatch(/BEGIN (?:RSA |EC )?PRIVATE KEY|ghp_[A-Za-z0-9]{20}|npm_[A-Za-z0-9]{20}/u);
   });
 });
 
@@ -117,7 +134,7 @@ describe("publisher preflight execution gate", () => {
     const bin = join(fixture.cwd, "fake-bin"); await mkdir(bin);
     for (const [name, body] of [["npm", "#!/bin/sh\necho 11.7.0\n"], ["rustc", "#!/bin/sh\necho 'rustc 1.92.0 (x)'\n"]] as const) { await writeFile(join(bin, name), body); await chmod(join(bin, name), 0o755); }
     const oldPath = process.env.PATH; const oldRunner = process.env.RUNNER_IMAGE; process.env.PATH = `${bin}:${oldPath}`; process.env.RUNNER_IMAGE = "ubuntu-24.04";
-    const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "redacted", eventId: `sha256:${"e".repeat(64)}`, planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
+    const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "redacted", eventId: `sha256:${"e".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
     try {
       await expect(preflight(environment)).resolves.toMatchObject({ planId: plan.planId });
       await writeFile(join(fixture.cwd, "generated.txt"), "tampered\n"); await expect(preflight(environment)).rejects.toThrow("generated file mismatch");
@@ -140,6 +157,8 @@ describe("publisher preflight execution gate", () => {
       else if (request.url?.includes("/git/ref/tags/")) { response.statusCode = 404; response.end("{}"); }
       else if (request.url?.endsWith("/git/tags")) response.end(JSON.stringify({ sha: "a".repeat(40) }));
       else if (request.url?.endsWith("/git/refs")) response.end("{}");
+      else if (request.url === "/preflight") { const bindingDigest = JSON.parse(body).bindingDigest; const issuedAt = new Date().toISOString(); response.end(JSON.stringify({ schema: "lenso.publisher-preflight-proof.v1", proofId: `sha256:${"a".repeat(64)}`, bindingDigest, issuedAt, expiresAt: new Date(Date.now() + 120_000).toISOString(), token: "signed-proof-token-signed-proof-token" })); }
+      else if (request.url === "/consume") response.end(JSON.stringify({ accepted: true, eventId: `sha256:${"e".repeat(64)}`, proofId: `sha256:${"a".repeat(64)}` }));
       else if (request.url === "/receipt") { const receiptId = JSON.parse(body).receipt.receiptId; response.end(JSON.stringify({ receiptId, planStatus: "verified" })); }
       else if (request.url === "/cleanup") { response.end(JSON.stringify({ accepted: true, planId: plan.planId })); }
       else { response.statusCode = 404; response.end("{}"); } }); });
@@ -148,13 +167,17 @@ describe("publisher preflight execution gate", () => {
     await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$*" >> '${npmLog}'\necho 11.7.0\n`); await chmod(join(bin, "npm"), 0o755);
     await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.92.0 (x)'\n"); await chmod(join(bin, "rustc"), 0o755);
     await writeFile(join(bin, "gh"), "#!/bin/sh\necho 'https://github.com/LioRael/lenso-runtime-console/attestations/1'\n"); await chmod(join(bin, "gh"), 0o755);
-    const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, proxy: process.env.LENSO_TEST_ARTIFACT_PROXY_URL, github: process.env.LENSO_GITHUB_API_URL, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID };
-    Object.assign(process.env, { PATH: `${bin}:${saved.PATH}`, RUNNER_IMAGE: "ubuntu-24.04", LENSO_NPM_REGISTRY_URL: `${base}/registry`, LENSO_TEST_ARTIFACT_PROXY_URL: `${base}/artifact.tgz`, LENSO_GITHUB_API_URL: base, LENSO_COORDINATOR_RECEIPT_URL: `${base}/receipt`, LENSO_COORDINATOR_CLEANUP_URL: `${base}/cleanup`, LENSO_APP_ID: "123" });
-    const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "app-token", eventId: `sha256:${"e".repeat(64)}`, planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
+    const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, proxy: process.env.LENSO_TEST_ARTIFACT_PROXY_URL, github: process.env.LENSO_GITHUB_API_URL, preflight: process.env.LENSO_COORDINATOR_PREFLIGHT_URL, consume: process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID };
+    Object.assign(process.env, { PATH: `${bin}:${saved.PATH}`, RUNNER_IMAGE: "ubuntu-24.04", LENSO_NPM_REGISTRY_URL: `${base}/registry`, LENSO_TEST_ARTIFACT_PROXY_URL: `${base}/artifact.tgz`, LENSO_GITHUB_API_URL: base, LENSO_COORDINATOR_PREFLIGHT_URL: `${base}/preflight`, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: `${base}/consume`, LENSO_COORDINATOR_RECEIPT_URL: `${base}/receipt`, LENSO_COORDINATOR_CLEANUP_URL: `${base}/cleanup`, LENSO_APP_ID: "123" });
+    const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "app-token", eventId: `sha256:${"e".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
     try {
-      const first = await publishSelected(environment); const second = await publishSelected(environment);
-      expect(first[0]?.receiptId).toBe(second[0]?.receiptId); expect(await readFile(npmLog, "utf8")).not.toContain("publish");
-      expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(2);
-    } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
+      await createPreflightProof(environment);
+      const proofPath = join(fixture.cwd, ".lenso-release/preflight-proof.json"); const tampered = JSON.parse(await readFile(proofPath, "utf8")); tampered.bindingDigest = `sha256:${"f".repeat(64)}`; await writeFile(proofPath, JSON.stringify(tampered));
+      await expect(publishSelected(environment)).rejects.toThrow(/does not bind/u); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(0);
+      await createPreflightProof(environment); const first = await publishSelected(environment);
+      expect(first[0]?.receiptId).toMatch(/^sha256:/u); expect(await readFile(npmLog, "utf8")).not.toContain("publish");
+      await expect(publishSelected(environment)).rejects.toThrow(/preflight proof/u);
+      expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(1);
+    } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_PREFLIGHT_URL: saved.preflight, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: saved.consume, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
   });
 });

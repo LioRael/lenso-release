@@ -41,16 +41,21 @@ jobs:
           npm install --global npm@11.7.0
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
+      - name: Complete fail-closed preflight before any registry OIDC
+        env:
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_COORDINATOR_PREFLIGHT_URL: ${{ vars.LENSO_COORDINATOR_PREFLIGHT_URL }}
+          RUNNER_IMAGE: ubuntu-24.04
+        run: node .lenso-release/runtime/lib/repository/cli.js preflight
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
         if: contains(inputs.packages_json, 'cargo:')
         id: crates-auth
-      - name: Verify exact execution ref before publishing
-        env:
-          INPUT_PLAN_ID: ${{ inputs.plan_id }}
-        run: |
-          PLAN_HASH="${INPUT_PLAN_ID#sha256:}"
-          test "$GITHUB_REF_NAME" = "release-execution/$PLAN_HASH"
-          test "$GITHUB_SHA" = "${{ inputs.release_commit }}"
       - name: Publish and confirm receipts
         env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
@@ -64,5 +69,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_COORDINATOR_CLEANUP_URL: ${{ vars.LENSO_COORDINATOR_CLEANUP_URL }}
+          LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: ${{ vars.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL }}
           RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js publish
