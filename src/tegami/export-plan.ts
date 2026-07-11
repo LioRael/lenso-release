@@ -70,7 +70,7 @@ async function npmObservations(
   cwd: string, pkg: WorkspacePackage, components: ExportReleasePlanOptions["components"], planned: ReadonlyMap<string, string>,
 ): Promise<DependencyObservation[]> {
   const manifest = record(JSON.parse(await readFile(join(pkg.path, "package.json"), "utf8")), `${pkg.id} manifest`);
-  const hasDependencies = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+  const hasDependencies = ["dependencies", "peerDependencies", "optionalDependencies"]
     .some((field) => manifest[field] !== undefined && Object.keys(record(manifest[field], `${pkg.id} ${field}`)).length > 0);
   if (!hasDependencies) return [];
   const lock = record(parseYaml(await readFile(join(cwd, "pnpm-lock.yaml"), "utf8")), "pnpm lock");
@@ -78,7 +78,7 @@ async function npmObservations(
   const importerKey = relative(cwd, pkg.path).replaceAll("\\", "/") || ".";
   const importer = record(importers[importerKey], `pnpm importer ${importerKey}`);
   const result: DependencyObservation[] = [];
-  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+  for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
     const rawDependencies = manifest[field];
     if (rawDependencies === undefined) continue;
     const manifestDependencies = record(rawDependencies, `${pkg.id} ${field}`);
@@ -89,7 +89,7 @@ async function npmObservations(
       const name = aliasMatch?.[1] ?? alias;
       const id = `npm:${name}`;
       const tracked = Object.hasOwn(components, id);
-      if (!tracked && name.startsWith("@lenso/")) assertKnown(id, components, pkg.id);
+      if (!tracked && name.startsWith("@")) assertKnown(id, components, pkg.id);
       if (!tracked) {
         normalizeRequirement(aliasMatch?.[2] ?? rawRequirement, id);
         continue;
