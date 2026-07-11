@@ -459,7 +459,9 @@ export async function createCoordinatorHandlers(
               publishedAt,
             },
             provenance: {
-              url: `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`,
+              url: shadow
+                ? expected.provenanceUrl
+                : `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`,
               subject,
             },
             workflow: {
