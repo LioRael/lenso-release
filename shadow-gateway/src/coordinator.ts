@@ -57,9 +57,15 @@ async function dispatch(request: Request, eventType: "lenso-plan-ready" | "lenso
   const response = await fetch("https://api.github.com/repos/LioRael/lenso-release/dispatches", {
     method: "POST",
     headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "content-type": "application/json", "user-agent": "lenso-release-coordinator", "x-github-api-version": "2022-11-28" },
-    body: JSON.stringify({ event_type: eventType, client_payload: event }),
+    body: JSON.stringify({
+      event_type: eventType,
+      client_payload: { event, eventId: event.eventId, planId: event.planId },
+    }),
   });
-  if (!response.ok) throw new Error(`GitHub repository dispatch failed with ${response.status}`);
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    throw new Error(`GitHub repository dispatch failed with ${response.status}: ${detail}`);
+  }
   return Response.json({ accepted: true, eventId: event.eventId }, { status: 202 });
 }
 

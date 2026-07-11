@@ -73,6 +73,12 @@ export async function readEventArgument(
     throw new TypeError("GitHub event must be an object");
   const value = (parsed as Record<string, unknown>)[eventKey];
   if (value === undefined) throw new TypeError("event payload key missing");
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "event" in value
+  ) return (value as Record<string, unknown>).event;
   return value;
 }
 
