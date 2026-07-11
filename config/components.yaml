@@ -82,6 +82,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
@@ -92,6 +93,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-module
   - id: cargo:lenso-module-auth-oauth
@@ -101,6 +103,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-module
   - id: cargo:lenso-module-auth-github
@@ -110,6 +113,8 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
+      - cargo:lenso-module-auth-oauth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
@@ -120,6 +125,8 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
+      - cargo:lenso-module-auth-oauth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
@@ -130,6 +137,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
@@ -140,6 +148,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
@@ -150,6 +159,8 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-module-auth
+      - cargo:lenso-module-auth-password
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module

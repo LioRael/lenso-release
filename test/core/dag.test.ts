@@ -192,33 +192,42 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-anonymous": [
+    "cargo:lenso-module-auth",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
   ],
-  "cargo:lenso-module-auth-device": ["cargo:lenso-platform-core", "cargo:lenso-platform-module"],
-  "cargo:lenso-module-auth-oauth": ["cargo:lenso-platform-core", "cargo:lenso-platform-module"],
+  "cargo:lenso-module-auth-device": ["cargo:lenso-module-auth", "cargo:lenso-platform-core", "cargo:lenso-platform-module"],
+  "cargo:lenso-module-auth-oauth": ["cargo:lenso-module-auth", "cargo:lenso-platform-core", "cargo:lenso-platform-module"],
   "cargo:lenso-module-auth-github": [
+    "cargo:lenso-module-auth",
+    "cargo:lenso-module-auth-oauth",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-google": [
+    "cargo:lenso-module-auth",
+    "cargo:lenso-module-auth-oauth",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-oidc": [
+    "cargo:lenso-module-auth",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-password": [
+    "cargo:lenso-module-auth",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-module-auth-phone": [
+    "cargo:lenso-module-auth",
+    "cargo:lenso-module-auth-password",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module"
@@ -338,7 +347,7 @@ describe("component release graph", () => {
     }
   });
 
-  it("does not copy ordinary same-workspace manifest edges into the control plane", async () => {
+  it("reviews same-workspace publication-order edges in the control plane", async () => {
     const registry = await loadComponents("config/components.yaml");
     const sameRepositoryEdges = Object.values(registry.packages)
       .flatMap((component) =>
@@ -350,6 +359,17 @@ describe("component release graph", () => {
 
     expect(sameRepositoryEdges).toEqual([
       "cargo:lenso-cli -> npm:@lenso/cli",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-anonymous",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-device",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-github",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-google",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-oauth",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-oidc",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-password",
+      "cargo:lenso-module-auth -> cargo:lenso-module-auth-phone",
+      "cargo:lenso-module-auth-oauth -> cargo:lenso-module-auth-github",
+      "cargo:lenso-module-auth-oauth -> cargo:lenso-module-auth-google",
+      "cargo:lenso-module-auth-password -> cargo:lenso-module-auth-phone",
       "npm:@lenso/remote-module-kit -> npm:@lenso/service-kit"
     ]);
   });
