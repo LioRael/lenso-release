@@ -19,6 +19,22 @@ export class GitPreflightStore implements AtomicPreflightStore {
   async read(): Promise<AuthoritySnapshot> { const value = await this.backend.read(this.path); if (!value) return { revision: 0, proofs: {}, nonces: {} }; const snapshot = JSON.parse(Buffer.from(value.bytes).toString("utf8")) as AuthoritySnapshot; if (snapshot.revision !== value.revision) throw new Error("Git preflight revision contradiction"); return snapshot; }
   async compareAndSwap(expectedRevision: number, next: AuthoritySnapshot): Promise<boolean> { return this.backend.compareAndSwap(this.path, expectedRevision, Buffer.concat([canonicalBytes(next as unknown as JsonValue), Buffer.from("\n")])); }
 }
+export class GithubPreflightBackend implements GitPreflightBackend {
+  constructor(private readonly repository: string, private readonly branch: string, private readonly token: string, private readonly request: typeof fetch = fetch) { if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository) || !/^[A-Za-z0-9._/-]+$/u.test(branch) || !token) throw new Error("invalid GitHub preflight backend configuration"); }
+  private url(path: string): string { return `https://api.github.com/repos/${this.repository}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(this.branch)}`; }
+  private headers() { return { accept: "application/vnd.github+json", authorization: `Bearer ${this.token}`, "content-type": "application/json" }; }
+  async read(path: string): Promise<{ revision: number; bytes: Uint8Array } | null> {
+    const response = await this.request(this.url(path), { headers: this.headers(), redirect: "error" }); if (response.status === 404) return null; if (!response.ok) throw new Error(`GitHub preflight state read ${response.status}`);
+    const body = await response.json() as { content?: string; encoding?: string }; if (body.encoding !== "base64" || typeof body.content !== "string") throw new Error("GitHub preflight state response invalid"); const bytes = Buffer.from(body.content.replace(/\s/gu, ""), "base64"); const revision = (JSON.parse(bytes.toString("utf8")) as { revision?: number }).revision; if (!Number.isSafeInteger(revision)) throw new Error("GitHub preflight state revision invalid"); return { revision: revision!, bytes };
+  }
+  async compareAndSwap(path: string, expectedRevision: number, bytes: Uint8Array): Promise<boolean> {
+    const current = await this.request(this.url(path), { headers: this.headers(), redirect: "error" }); let sha: string | undefined;
+    if (current.ok) { const body = await current.json() as { sha?: string; content?: string }; sha = body.sha; const decoded = Buffer.from(String(body.content).replace(/\s/gu, ""), "base64"); if ((JSON.parse(decoded.toString("utf8")) as { revision?: number }).revision !== expectedRevision) return false; }
+    else if (current.status !== 404 || expectedRevision !== 0) return false;
+    const target = this.url(path).replace(/\?ref=.*$/u, ""); const response = await this.request(target, { method: "PUT", headers: this.headers(), redirect: "error", body: JSON.stringify({ message: "chore: atomically update preflight authority state", content: Buffer.from(bytes).toString("base64"), branch: this.branch, ...(sha ? { sha } : {}) }) });
+    if (response.status === 409 || response.status === 422) return false; if (!response.ok) throw new Error(`GitHub preflight state CAS ${response.status}`); return true;
+  }
+}
 async function transact<T>(store: AtomicPreflightStore, update: (snapshot: AuthoritySnapshot) => T): Promise<T> {
   for (let attempt = 0; attempt < 16; attempt += 1) { const current = await store.read(); const next = structuredClone(current); const result = update(next); next.revision = current.revision + 1; if (await store.compareAndSwap(current.revision, next)) return result; }
   throw new Error("preflight authority CAS contention");
