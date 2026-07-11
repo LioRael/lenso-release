@@ -9,8 +9,11 @@
     "build": "tsc -p tsconfig.json",
     "check": "pnpm typecheck && pnpm test",
     "reconcile": "pnpm build && node dist/src/commands/reconcile.js",
+    "shadow:deploy": "wrangler deploy --config shadow-gateway/wrangler.jsonc",
+    "shadow:typecheck": "tsc --noEmit -p shadow-gateway/tsconfig.json",
+    "shadow:types": "wrangler types --config shadow-gateway/wrangler.jsonc shadow-gateway/worker-configuration.d.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && pnpm shadow:typecheck"
   },
   "dependencies": {
     "ajv": "8.20.0",
@@ -19,7 +22,9 @@
   },
   "devDependencies": {
     "@types/node": "26.1.0",
+    "@cloudflare/workers-types": "5.20260711.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.9"
+    "vitest": "4.1.9",
+    "wrangler": "4.110.0"
   }
 }
