@@ -38,6 +38,7 @@ type RepositoryConfig = {
   aliases?: Record<string, string>;
   ignore?: string[];
   artifacts?: Record<string, { path: string }>;
+  fixedGroups?: Record<string, string[]>;
 };
 export type RuntimeEnvironment = {
   cwd: string;
@@ -106,6 +107,18 @@ function exactSelection(plan: ReleasePlanV1, selected: PublishSelection[]): void
     if (!plan.packages.some(({ id, nextVersion }) => id === item.id && nextVersion === item.version)) fail(`package selection is not in plan: ${item.id}`);
   }
 }
+function selectedFixedGroup(config: RepositoryConfig, selected: PublishSelection[]): { name: string; version: string } | undefined {
+  const selectedIds = new Set(selected.map(({ id }) => id));
+  const matching = Object.entries(config.fixedGroups ?? {}).filter(([, members]) => members.some((id) => selectedIds.has(id)));
+  if (matching.length === 0) return undefined;
+  if (matching.length !== 1) fail("package selection spans multiple fixed groups");
+  const [name, members] = matching[0]!;
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) || members.length < 2 || new Set(members).size !== members.length || members.some((id) => !PACKAGE.test(id))) fail("repository fixed group is invalid");
+  if (selected.length !== members.length || members.some((id) => !selectedIds.has(id))) fail(`fixed group ${name} must publish atomically`);
+  const versions = new Set(selected.map(({ version }) => version));
+  if (versions.size !== 1) fail(`fixed group ${name} versions must match`);
+  return { name, version: selected[0]!.version };
+}
 async function verifyReviewedComponents(cwd: string, plan: ReleasePlanV1): Promise<void> {
   const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
   for (const item of plan.packages) {
@@ -125,6 +138,8 @@ export async function preflight(environment: RuntimeEnvironment): Promise<Releas
   assertReleasePlan(plan);
   if (plan.planId !== environment.planId || plan.repository !== environment.repository) fail("plan identity mismatch");
   exactSelection(plan, environment.packages);
+  const config = parseJson<RepositoryConfig>(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+  selectedFixedGroup(config, environment.packages);
   const runtime = await readRuntimeManifest(environment.cwd);
   const workflowBytes = await safeRead(environment.cwd, environment.workflowPath);
   verifyPublisherContract(plan, {
@@ -416,7 +431,7 @@ async function createAttestation(artifactPath: string, artifactBytes: Uint8Array
     return url;
   } finally { if (cleanup) await rm(cleanup, { recursive: true, force: true }); }
 }
-function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment): ComponentReceiptV1 {
+function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment, tagName?: string): ComponentReceiptV1 {
   const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
   const artifactName = item.id.startsWith("artifact:") ? `${componentName}.tar.gz` : `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
   const identity = {
@@ -426,7 +441,7 @@ function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Re
     packedSha256: hash(observation.bytes), registryIntegrity: observation.integrity, registryUrl: observation.url,
     provenanceUrl, provenanceSubject: { name: artifactName, digest: hash(observation.bytes) },
     workflowUrl: environment.runUrl,
-    tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(`${componentName}@${item.version}`)}`,
+    tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(tagName ?? `${componentName}@${item.version}`)}`,
     publishedAt: observation.publishedAt,
   };
   return { ...identity, receiptId: sha256(identity as unknown as JsonValue) as Sha256 };
@@ -442,6 +457,8 @@ async function dispatchReceipt(receipt: ComponentReceiptV1, environment: Runtime
 
 export async function publishSelected(environment: RuntimeEnvironment): Promise<ComponentReceiptV1[]> {
   const { plan, artifacts } = await consumeSealedMarker(environment);
+  const config = parseJson<RepositoryConfig>(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+  const fixedGroup = selectedFixedGroup(config, environment.packages);
   const receipts: ComponentReceiptV1[] = [];
   for (const item of environment.packages) {
     const name = item.id.slice(item.id.indexOf(":") + 1);
@@ -464,13 +481,62 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
       if (hash(observed.bytes!) !== hash(artifact.bytes)) fail("registry archive differs from packed archive");
     }
     const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
-    const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment);
+    const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment, fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
     assertComponentReceipt(receipt);
-    await createImmutableTag(receipt, environment);
+    if (!fixedGroup) await createImmutableTag(receipt, environment);
     await dispatchReceipt(receipt, environment);
     receipts.push(receipt);
   }
+  if (fixedGroup) await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
   return receipts;
+}
+async function createFixedGroupRelease(
+  group: { name: string; version: string }, receipts: ComponentReceiptV1[],
+  artifacts: Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }>, environment: RuntimeEnvironment,
+): Promise<void> {
+  const tag = `${group.name}@${group.version}`;
+  const identity = { schema: "lenso.fixed-group-receipt.v1", group: group.name, version: group.version, receipts };
+  const message = canonicalBytes(identity as unknown as JsonValue).toString("utf8");
+  const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+  const refUrl = `${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`;
+  const existing = await fetch(refUrl, { headers: auth, redirect: "error" });
+  if (existing.status === 404) {
+    const object = await fetch(`${api}/repos/${environment.repository}/git/tags`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ tag, message, object: environment.releaseCommit, type: "commit" }) });
+    if (!object.ok) fail(`fixed-group annotated tag creation ${object.status}`);
+    const { sha } = await object.json() as { sha?: string };
+    const ref = await fetch(`${api}/repos/${environment.repository}/git/refs`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }) });
+    if (!ref.ok) fail(`fixed-group tag ref creation ${ref.status}`);
+  } else if (existing.ok) {
+    const body = await existing.json() as { object?: { sha?: string; type?: string } };
+    if (body.object?.type !== "tag" || !body.object.sha) fail("fixed-group tag is not annotated");
+    const object = await fetch(`${api}/repos/${environment.repository}/git/tags/${body.object.sha}`, { headers: auth, redirect: "error" });
+    if (!object.ok) fail("fixed-group annotated tag is unreadable");
+    const value = await object.json() as { object?: { sha?: string }; message?: string };
+    if (value.object?.sha !== environment.releaseCommit || value.message !== message) fail("fixed-group tag receipt contradiction");
+  } else fail(`fixed-group tag observation ${existing.status}`);
+
+  const releaseUrl = `${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(tag)}`;
+  let response = await fetch(releaseUrl, { headers: auth, redirect: "error" });
+  if (response.status === 404) response = await fetch(`${api}/repos/${environment.repository}/releases`, { method: "POST", headers: auth, redirect: "error", body: JSON.stringify({ tag_name: tag, target_commitish: environment.releaseCommit, name: `Lenso CLI ${group.version}`, draft: false, prerelease: false }) });
+  if (!response.ok) fail(`fixed-group GitHub Release ${response.status}`);
+  const release = await response.json() as { draft?: boolean; tag_name?: string; target_commitish?: string; upload_url?: string; assets?: Array<{ name?: string; url?: string }> };
+  if (release.draft !== false || release.tag_name !== tag || release.target_commitish !== environment.releaseCommit) fail("fixed-group GitHub Release identity mismatch");
+  const uploadBase = release.upload_url?.replace(/\{.*$/u, "");
+  if (!uploadBase) fail("fixed-group GitHub Release upload URL is missing");
+  for (const item of environment.packages) {
+    const artifact = artifacts.get(`${item.id}\0${item.version}`);
+    if (!artifact) fail("fixed-group sealed artifact is missing");
+    const name = basename(artifact.path);
+    const existingAsset = release.assets?.find((asset) => asset.name === name);
+    if (existingAsset?.url) {
+      const downloaded = await fetch(existingAsset.url, { headers: { ...auth, accept: "application/octet-stream" }, redirect: "error" });
+      if (!downloaded.ok || !Buffer.from(await downloaded.arrayBuffer()).equals(artifact.bytes)) fail(`fixed-group Release asset contradiction: ${name}`);
+      continue;
+    }
+    const uploaded = await fetch(`${uploadBase}?name=${encodeURIComponent(name)}`, { method: "POST", headers: { ...auth, "content-type": "application/octet-stream", "content-length": String(artifact.bytes.length) }, redirect: "error", body: artifact.bytes as unknown as BodyInit });
+    if (!uploaded.ok) fail(`fixed-group Release asset upload ${uploaded.status}: ${name}`);
+  }
 }
 async function createImmutableTag(receipt: ComponentReceiptV1, environment: RuntimeEnvironment): Promise<void> {
   const name = receipt.packageId.startsWith("npm:@lenso/") ? receipt.packageId.slice("npm:@lenso/".length) : receipt.packageId.slice(receipt.packageId.indexOf(":") + 1);
@@ -514,6 +580,11 @@ export async function createPlan(cwd: string, repository: string, sourceCommit: 
   if (config.schema !== "lenso.repository-config.v1" || config.repository !== repository) fail("repository config mismatch");
   if (config.aliases && Object.entries(config.aliases).some(([target, source]) => !/^artifact:[a-z0-9-]+$/u.test(target) || !/^npm:@lenso\/[a-z0-9-]+$/u.test(source))) fail("repository component alias is invalid");
   if (config.ignore && (!Array.isArray(config.ignore) || config.ignore.some((name) => !/^(?:(?:cargo:)?[a-z0-9]+(?:-[a-z0-9]+)*|(?:npm:)?@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*)$/u.test(name)))) fail("repository ignore list is invalid");
+  if (config.fixedGroups) {
+    for (const [name, members] of Object.entries(config.fixedGroups)) {
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) || !Array.isArray(members) || members.length < 2 || new Set(members).size !== members.length || members.some((id) => !PACKAGE.test(id))) fail("repository fixed group is invalid");
+    }
+  }
   const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
   const components = Object.fromEntries(Object.values(registry.packages).map(({ id, releaseGroup, userFacing }) => [id, { releaseGroup, userFacing }]));
   return exportReleasePlan({ cwd, repository, sourceCommit, components, aliases: config.aliases, ignore: config.ignore, publisher: {
