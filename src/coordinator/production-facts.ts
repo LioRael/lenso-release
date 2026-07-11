@@ -174,9 +174,12 @@ export async function createCoordinatorHandlers(
       return "version" in observation && observation.version === version;
     }
     const url = id.startsWith("cargo:")
-      ? `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
-      : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}/${encodeURIComponent(version)}`;
-    try { await checkedExternal(request, url); return true; } catch { return false; }
+      ? `${shadow ? input.env.LENSO_SHADOW_CRATES_API_URL : "https://crates.io"}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      : `${shadow ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL : "https://registry.npmjs.org"}/${encodeURIComponent(id.slice(4))}`;
+    try {
+      const response = shadow ? await request(url, { redirect: "error" }) : await checkedExternal(request, url);
+      return response.ok;
+    } catch { return false; }
   };
   const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
     assertGithubApi(url);
@@ -341,6 +344,7 @@ export async function createCoordinatorHandlers(
           const repository = context.repository;
           const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
           const githubApi = `https://api.github.com/repos/${repository}`;
+          const tagApi = shadow ? `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}` : githubApi;
           const packageName = packageId.startsWith("cargo:")
             ? packageId.slice(6)
             : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length) : packageId.slice("artifact:".length);
@@ -361,14 +365,17 @@ export async function createCoordinatorHandlers(
             registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
           } else if (packageId.startsWith("npm:")) {
             const name = `@lenso/${packageName}`;
-            const packumentUrl = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
-            const packument = await (await checkedExternal(request, packumentUrl)).json() as Record<string, unknown>;
+            const packumentUrl = `${shadow ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL : "https://registry.npmjs.org"}/${encodeURIComponent(name)}`;
+            const packumentResponse = shadow ? await request(packumentUrl, { redirect: "error" }) : await checkedExternal(request, packumentUrl);
+            if (!packumentResponse.ok) return null;
+            const packument = await packumentResponse.json() as Record<string, unknown>;
             const versions = packument.versions as Record<string, Record<string, unknown>>;
             const metadata = versions[packageVersion];
             if (!metadata) return null;
             const dist = metadata.dist as Record<string, unknown>;
             const tarball = String(dist.tarball);
-            const artifact = await checkedExternal(request, tarball);
+            const artifact = shadow ? await request(tarball, { redirect: "error" }) : await checkedExternal(request, tarball);
+            if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(dist.integrity);
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
@@ -402,13 +409,19 @@ export async function createCoordinatorHandlers(
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
-          const subject = await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
+          const subject = shadow
+            ? await (async () => {
+                const response = await request(expected.provenanceUrl, { redirect: "error" });
+                if (!response.ok) return null;
+                const value = await response.json() as Record<string, unknown>;
+                return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
+              })()
+            : await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
           if (!subject) return null;
-          const rulesetList = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown;
-          const rulesetDetails = await activeRulesetDetails(rulesetList, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
-          const immutable = tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
-          tagWrite = { githubApi, token, tagName, immutable };
-          const refResponse = await request(`${githubApi}/git/ref/tags/${encodeURIComponent(tagName)}`, { redirect: "error", headers: headers(token) });
+          const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
+          const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
+          tagWrite = { githubApi: tagApi, token, tagName, immutable };
+          const refResponse = await request(`${tagApi}/git/ref/tags/${encodeURIComponent(tagName)}`, { redirect: "error", headers: headers(token) });
           let tagReceipt: unknown | null = null;
           let annotated = false;
           let targetSha: string | null = null;
@@ -416,7 +429,9 @@ export async function createCoordinatorHandlers(
             const ref = await refResponse.json() as Record<string, unknown>;
             const object = ref.object as Record<string, unknown>;
             if (object.type !== "tag") throw new Error("component tag is not annotated");
-            const tag = await githubJson(`${githubApi}/git/tags/${String(object.sha)}`, token);
+            const tagResponse = await request(`${tagApi}/git/tags/${String(object.sha)}`, { redirect: "error", headers: headers(token) });
+            if (!tagResponse.ok) throw new Error(`tag object observation ${tagResponse.status}`);
+            const tag = await tagResponse.json() as Record<string, unknown>;
             annotated = true;
             targetSha = String((tag.object as Record<string, unknown>).sha);
             tagReceipt = JSON.parse(String(tag.message));
