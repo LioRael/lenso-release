@@ -457,7 +457,7 @@ export async function exportReleasePlan(options) {
     const path = await assertSafePlanPath(options.cwd);
     await assertSupportedCargoSources(options.cwd);
     const captured = new Map();
-    const project = tegami({ cwd: options.cwd, plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
+    const project = tegami({ cwd: options.cwd, ignore: [...(options.ignore ?? [])], plugins: [cargo(), refreshCargoLock(), capturePackages(captured)] });
     const draft = await project.draft();
     const pending = [...draft.getPackageDrafts()].flatMap(([id, packageDraft]) => {
         const pkg = captured.get(id);
