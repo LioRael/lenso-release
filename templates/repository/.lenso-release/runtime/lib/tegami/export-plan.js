@@ -64,7 +64,13 @@ async function npmObservations(cwd, pkg, components, planned) {
             const aliasMatch = /^npm:((?:@[^/]+\/)?[^@]+)@(.+)$/u.exec(rawRequirement);
             const name = aliasMatch?.[1] ?? alias;
             const id = `npm:${name}`;
-            assertKnown(id, components, pkg.id);
+            const tracked = Object.hasOwn(components, id);
+            if (!tracked && name.startsWith("@lenso/"))
+                assertKnown(id, components, pkg.id);
+            if (!tracked) {
+                normalizeRequirement(aliasMatch?.[2] ?? rawRequirement, id);
+                continue;
+            }
             const localVersion = planned.get(id);
             const manifestRequirement = aliasMatch?.[2] ?? rawRequirement;
             const workspaceRequirement = manifestRequirement.startsWith("workspace:") ? manifestRequirement.slice(10) : undefined;
@@ -84,7 +90,8 @@ async function npmObservations(cwd, pkg, components, planned) {
             if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(resolvedVersion)) {
                 fail(`pnpm lock resolution for ${id} is not an exact version`);
             }
-            result.push({ id, requirement, resolvedVersion });
+            if (tracked)
+                result.push({ id, requirement, resolvedVersion });
         }
     }
     return result.sort((left, right) => left.id.localeCompare(right.id));
@@ -463,6 +470,8 @@ export async function exportReleasePlan(options) {
         const pkg = captured.get(id);
         if (!pkg)
             return fail(`Tegami package ${id} was not captured`);
+        if (options.ignore?.some((entry) => entry === id || entry === pkg.name))
+            return [];
         if (!pkg.version)
             return fail(`${id} has no exact previous version`);
         const nextVersion = packageDraft.bumpVersion(pkg);
