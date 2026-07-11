@@ -94,6 +94,26 @@ describe("Tegami release plan export", () => {
     expect(await readFile(join(cwd, ".lenso-release/plan.json"), "utf8")).toBe(persisted);
   });
 
+  it("repeats a Cargo plan after applying workspace dependency versions", async () => {
+    const cwd = await fixture("cargo-workspace-dependency");
+    const options = {
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(
+        ["cargo:fixture-core", "foundation", true],
+        ["cargo:fixture-consumer", "host", true],
+      ),
+    };
+
+    const first = await exportReleasePlan(options);
+    expect(first.packages.find(({ id }) => id === "cargo:fixture-consumer")?.dependencies).toContainEqual({
+      id: "cargo:fixture-core",
+      requirement: "^0.1.1",
+      resolvedVersion: "0.1.1",
+      source: "plan",
+    });
+    await expect(exportReleasePlan(options)).resolves.toEqual(first);
+  });
+
   it("resolves auto-installed peer dependencies from the pnpm importer", async () => {
     const cwd = await fixture("npm-only");
     const path = join(cwd, "package.json");

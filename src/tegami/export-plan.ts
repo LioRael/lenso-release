@@ -518,19 +518,19 @@ export async function exportReleasePlan(options: ExportReleasePlanOptions): Prom
     return existing;
   }
 
-  const observations = new Map<string, DependencyObservation[]>();
   const planned = new Map(pending.map((item) => [item.id, item.nextVersion]));
-  for (const item of pending) {
-    const pkg = captured.get(sourceId(options, item.id));
-    if (!pkg) fail(`Tegami package ${sourceId(options, item.id)} was not captured`);
-    observations.set(item.id, item.id.startsWith("artifact:")
-      ? []
-      : await observeDependencies(options.cwd, pkg, options.components, planned));
-  }
-  const releasePackages = buildPackages(options, pending, observations);
   const snapshot = await snapshotWorkspace(options.cwd, captured.values());
   try {
     await draft.apply();
+    const observations = new Map<string, DependencyObservation[]>();
+    for (const item of pending) {
+      const pkg = captured.get(sourceId(options, item.id));
+      if (!pkg) fail(`Tegami package ${sourceId(options, item.id)} was not captured`);
+      observations.set(item.id, item.id.startsWith("artifact:")
+        ? []
+        : await observeDependencies(options.cwd, pkg, options.components, planned));
+    }
+    const releasePackages = buildPackages(options, pending, observations);
     await verifyApplied(options, releasePackages, captured);
     const generatedFiles = await collectGeneratedFiles(options.cwd, await expectedGeneratedPaths(options, releasePackages, captured));
     const plan = buildPlan(options, releasePackages, generatedFiles);
