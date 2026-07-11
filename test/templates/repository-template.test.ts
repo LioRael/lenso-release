@@ -182,10 +182,13 @@ describe("publisher preflight execution gate", () => {
       await createPreflightProof(environment);
       const proofPath = join(fixture.cwd, ".lenso-release/preflight-proof.json"); const tampered = JSON.parse(await readFile(proofPath, "utf8")); tampered.bindingDigest = `sha256:${"f".repeat(64)}`; await writeFile(proofPath, JSON.stringify(tampered));
       await expect(consumePreflightProof(environment)).rejects.toThrow(/does not bind/u); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(0);
+      await createPreflightProof(environment); await consumePreflightProof(environment);
+      const markerPath = join(fixture.cwd, ".lenso-release/preflight-marker.json"); const marker = JSON.parse(await readFile(markerPath, "utf8")); const sealedPath = join(fixture.cwd, marker.artifacts[0].path); await chmod(sealedPath, 0o600);
+      await expect(publishSelected(environment)).rejects.toThrow(/sealed artifact changed/u); await rm(markerPath); await rm(dirname(sealedPath), { recursive: true, force: true });
       await createPreflightProof(environment); await consumePreflightProof(environment); const first = await publishSelected(environment);
       expect(first[0]?.receiptId).toMatch(/^sha256:/u); expect((await readFile(npmLog, "utf8")).split("\n").filter((line) => line.startsWith("publish")).every((line) => line.includes("--dry-run"))).toBe(true);
       await expect(publishSelected(environment)).rejects.toThrow(/sealed marker/u);
-      expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(1);
+      expect(requests.filter(({ url }) => url === "/preflight")).toHaveLength(3); expect(requests.filter(({ url }) => url === "/consume")).toHaveLength(2); expect(requests.filter(({ url }) => url === "/receipt")).toHaveLength(1); expect(requests.filter(({ url }) => url === "/cleanup")).toHaveLength(1);
     } finally { server.close(); for (const [key, value] of Object.entries({ PATH: saved.PATH, RUNNER_IMAGE: saved.RUNNER_IMAGE, LENSO_NPM_REGISTRY_URL: saved.npm, LENSO_TEST_ARTIFACT_PROXY_URL: saved.proxy, LENSO_GITHUB_API_URL: saved.github, LENSO_COORDINATOR_PREFLIGHT_URL: saved.preflight, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: saved.consume, LENSO_COORDINATOR_RECEIPT_URL: saved.receipt, LENSO_COORDINATOR_CLEANUP_URL: saved.cleanup, LENSO_APP_ID: saved.app })) value === undefined ? delete process.env[key] : process.env[key] = value; }
   });
 });
