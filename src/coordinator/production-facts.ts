@@ -177,7 +177,7 @@ export async function createCoordinatorHandlers(
       return "version" in observation && observation.version === version;
     }
     const productionUrl = id.startsWith("cargo:")
-      ? `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      ? `https://static.crates.io/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(id.slice(6))}-${encodeURIComponent(version)}.crate`
       : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}`;
     const url = id.startsWith("cargo:")
       ? `${input.env.LENSO_SHADOW_CRATES_API_URL}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
