@@ -315,8 +315,15 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
+      - cargo:lenso-api
+      - cargo:lenso-bootstrap
       - cargo:lenso-contracts
+      - cargo:lenso-migrate
       - cargo:lenso-module-organization
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-module
+      - cargo:lenso-worker
   - id: cargo:lenso-operator
     repository: LioRael/lenso
     registry: crates-io

@@ -283,7 +283,17 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module-remote",
     "cargo:lenso-platform-runtime"
   ],
-  "cargo:lenso": ["cargo:lenso-contracts", "cargo:lenso-module-organization"],
+  "cargo:lenso": [
+    "cargo:lenso-api",
+    "cargo:lenso-bootstrap",
+    "cargo:lenso-contracts",
+    "cargo:lenso-migrate",
+    "cargo:lenso-module-organization",
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-module",
+    "cargo:lenso-worker"
+  ],
   "cargo:lenso-cli": ["artifact:lenso-runtime-console", "cargo:lenso"],
   "npm:@lenso/cli": ["artifact:lenso-runtime-console", "cargo:lenso", "cargo:lenso-cli"],
   "npm:@lenso/auth-console": ["npm:@lenso/runtime-console-api"],
@@ -388,12 +398,15 @@ describe("component release graph", () => {
       .sort();
 
     expect(sameRepositoryEdges).toEqual([
+      "cargo:lenso-api -> cargo:lenso",
+      "cargo:lenso-bootstrap -> cargo:lenso",
       "cargo:lenso-bootstrap -> cargo:lenso-api",
       "cargo:lenso-bootstrap -> cargo:lenso-migrate",
       "cargo:lenso-bootstrap -> cargo:lenso-worker",
       "cargo:lenso-cli -> npm:@lenso/cli",
       "cargo:lenso-contracts -> cargo:lenso",
       "cargo:lenso-contracts -> cargo:lenso-service",
+      "cargo:lenso-migrate -> cargo:lenso",
       "cargo:lenso-module-auth -> cargo:lenso-module-auth-anonymous",
       "cargo:lenso-module-auth -> cargo:lenso-module-auth-device",
       "cargo:lenso-module-auth -> cargo:lenso-module-auth-github",
@@ -409,14 +422,17 @@ describe("component release graph", () => {
       "cargo:lenso-platform-admin -> cargo:lenso-api",
       "cargo:lenso-platform-admin-data -> cargo:lenso-api",
       "cargo:lenso-platform-admin-data -> cargo:lenso-bootstrap",
+      "cargo:lenso-platform-core -> cargo:lenso",
       "cargo:lenso-platform-core -> cargo:lenso-api",
       "cargo:lenso-platform-core -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-core -> cargo:lenso-migrate",
       "cargo:lenso-platform-core -> cargo:lenso-platform-admin-data",
       "cargo:lenso-platform-core -> cargo:lenso-worker",
+      "cargo:lenso-platform-http -> cargo:lenso",
       "cargo:lenso-platform-http -> cargo:lenso-api",
       "cargo:lenso-platform-http -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-http -> cargo:lenso-platform-admin-data",
+      "cargo:lenso-platform-module -> cargo:lenso",
       "cargo:lenso-platform-module -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-module -> cargo:lenso-platform-admin-data",
       "cargo:lenso-platform-module-remote -> cargo:lenso-api",
@@ -425,6 +441,7 @@ describe("component release graph", () => {
       "cargo:lenso-platform-runtime -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-runtime -> cargo:lenso-worker",
       "cargo:lenso-service -> cargo:lenso-platform-admin-data",
+      "cargo:lenso-worker -> cargo:lenso",
       "npm:@lenso/remote-module-kit -> npm:@lenso/service-kit"
     ]);
   });
