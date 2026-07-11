@@ -94,10 +94,55 @@ describe("Tegami release plan export", () => {
     expect(await readFile(join(cwd, ".lenso-release/plan.json"), "utf8")).toBe(persisted);
   });
 
+  it("resolves auto-installed peer dependencies from the pnpm importer", async () => {
+    const cwd = await fixture("npm-only");
+    const path = join(cwd, "package.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.peerDependencies = manifest.dependencies;
+    delete manifest.dependencies;
+    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    const plan = await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      components: metadata(["npm:@fixture/console", "console", false], ["npm:@fixture/runtime", "console", false]),
+    });
+    expect(plan.packages[0]?.dependencies).toEqual([expect.objectContaining({ id: "npm:@fixture/runtime", resolvedVersion: "2.3.4" })]);
+  });
+
   it("fails closed when discovered package metadata is absent", async () => {
     await expect(exportReleasePlan({
       cwd: await fixture("npm-only"), repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher, components: {},
     })).rejects.toThrow("missing component registry metadata");
+  });
+
+  it("maps a Tegami workspace version to a reviewed hosted artifact", async () => {
+    const cwd = await fixture("npm-only");
+    const plan = await exportReleasePlan({
+      cwd,
+      repository: "LioRael/fixture",
+      sourceCommit: "1".repeat(40),
+      publisher,
+      aliases: { "artifact:lenso-runtime-console": "npm:@fixture/console" },
+      components: metadata(["artifact:lenso-runtime-console", "console", true]),
+    });
+
+    expect(plan.packages).toEqual([
+      expect.objectContaining({
+        id: "artifact:lenso-runtime-console",
+        previousVersion: "1.0.0",
+        nextVersion: "1.0.1",
+        dependencies: [],
+      }),
+    ]);
+    expect(plan.generatedFiles.map(({ path }) => path)).toContain("package.json");
+    expect(await readFile(join(cwd, "package.json"), "utf8")).toContain('"version": "1.0.1"');
+    await expect(exportReleasePlan({
+      cwd,
+      repository: "LioRael/fixture",
+      sourceCommit: "1".repeat(40),
+      publisher,
+      aliases: { "artifact:lenso-runtime-console": "npm:@fixture/console" },
+      components: metadata(["artifact:lenso-runtime-console", "console", true]),
+    })).resolves.toEqual(plan);
   });
 
   it("rejects an unknown dependency before mutating manifests or intents", async () => {

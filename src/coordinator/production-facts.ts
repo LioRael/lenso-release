@@ -17,6 +17,7 @@ import {
 } from "./dispatch.js";
 import type { GitStateStore, StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
+import { observeGithubArtifact } from "../registry/github.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -61,6 +62,20 @@ export async function checkedExternal(request: typeof fetch, url: string): Promi
     return response;
   }
   throw new Error("external observation redirect limit exceeded");
+}
+export async function checkedGithubAsset(request: typeof fetch, url: string, token: string): Promise<Response> {
+  assertGithubApi(url);
+  const parsed = new URL(url);
+  if (!/^\/repos\/[^/]+\/[^/]+\/releases\/assets\/\d+$/u.test(parsed.pathname))
+    throw new TypeError("GitHub asset URL is invalid");
+  const initial = await request(parsed, { redirect: "manual", headers: { ...headers(token), accept: "application/octet-stream" } });
+  if (![301, 302, 303, 307, 308].includes(initial.status)) return initial;
+  const location = initial.headers.get("location");
+  if (!location) throw new TypeError("GitHub asset redirect missing location");
+  const target = new URL(location);
+  if (target.protocol !== "https:" || !["objects.githubusercontent.com", "release-assets.githubusercontent.com"].includes(target.hostname))
+    throw new TypeError("GitHub asset redirect target is not trusted");
+  return request(target, { redirect: "error", headers: { accept: "application/octet-stream" } });
 }
 function nonce() {
   return crypto.randomUUID();
@@ -149,6 +164,19 @@ export async function createCoordinatorHandlers(
   const now = () => new Date();
   const request = input.request ?? fetch;
   const provenanceVerifier = input.provenanceVerifier ?? new GhAttestationVerifier();
+  const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
+    if (id.startsWith("artifact:")) {
+      const component = registry.packages[id];
+      if (!component || component.registry !== "github-release") return false;
+      const token = await input.tokens.tokenFor(component.repository, { contents: "read", metadata: "read" });
+      const observation = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { fetch: request, token });
+      return "version" in observation && observation.version === version;
+    }
+    const url = id.startsWith("cargo:")
+      ? `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
+      : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}/${encodeURIComponent(version)}`;
+    try { await checkedExternal(request, url); return true; } catch { return false; }
+  };
   const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
     assertGithubApi(url);
     const response = await request(url, { redirect: "error", headers: headers(token) });
@@ -205,10 +233,7 @@ export async function createCoordinatorHandlers(
           for (const pkg of plan.packages)
             for (const dep of pkg.dependencies)
               if (!selectedIds.has(dep.id)) {
-                const url = dep.id.startsWith("cargo:")
-                  ? `https://crates.io/api/v1/crates/${dep.id.slice(6)}/${dep.resolvedVersion}`
-                  : `https://registry.npmjs.org/${encodeURIComponent(dep.id.slice(4))}/${dep.resolvedVersion}`;
-                try { await checkedExternal(request, url); } catch { externalDependenciesVisible = false; }
+                if (!await dependencyVisible(dep.id, dep.resolvedVersion)) externalDependenciesVisible = false;
               }
           const branch = await githubJson(
             `${api}/branches/${encodeURIComponent(input.env.LENSO_SOURCE_BRANCH ?? "main")}/protection`,
@@ -313,7 +338,9 @@ export async function createCoordinatorHandlers(
           const repository = context.repository;
           const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", attestations: "read", metadata: "read" });
           const githubApi = `https://api.github.com/repos/${repository}`;
-          const packageName = packageId.startsWith("cargo:") ? packageId.slice(6) : packageId.slice("npm:@lenso/".length);
+          const packageName = packageId.startsWith("cargo:")
+            ? packageId.slice(6)
+            : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length) : packageId.slice("artifact:".length);
           const tagName = `${packageName}@${packageVersion}`;
           const expectedTagUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tagName)}`;
           let packedBytes: Uint8Array;
@@ -329,7 +356,7 @@ export async function createCoordinatorHandlers(
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
             registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
-          } else {
+          } else if (packageId.startsWith("npm:")) {
             const name = `@lenso/${packageName}`;
             const packumentUrl = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
             const packument = await (await checkedExternal(request, packumentUrl)).json() as Record<string, unknown>;
@@ -343,16 +370,35 @@ export async function createCoordinatorHandlers(
             nativeIntegrity = String(dist.integrity);
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
+          } else {
+            const release = await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+            if (release.draft !== true || typeof release.created_at !== "string") return null;
+            const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
+            const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
+            const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
+            if (!asset?.url || !asset.browser_download_url || !checksumAsset?.url) return null;
+            const artifact = await checkedGithubAsset(request, String(asset.url), token);
+            if (!artifact.ok) return null;
+            packedBytes = new Uint8Array(await artifact.arrayBuffer());
+            nativeIntegrity = sha256(packedBytes);
+            const checksum = await checkedGithubAsset(request, String(checksumAsset.url), token);
+            const expectedChecksum = `${nativeIntegrity.slice("sha256:".length)}  ${packageName}.tar.gz\n`;
+            if (!checksum.ok || Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) return null;
+            publishedAt = String(release.created_at);
+            registryUrl = String(asset.browser_download_url);
           }
           const packedDigest = sha256(packedBytes);
           const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
           const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
-          if (!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          if (!workflow) return null;
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if (runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          const subjectName = packageId.startsWith("cargo:") ? `${packageName}-${packageVersion}.crate` : `${packageName}-${packageVersion}.tgz`;
+          if (runUrl !== expected.workflowUrl || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
+          if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          const subjectName = packageId.startsWith("cargo:")
+            ? `${packageName}-${packageVersion}.crate`
+            : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
           const subject = await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
           if (!subject) return null;
           const rulesetList = await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown;
@@ -455,11 +501,8 @@ export async function createCoordinatorHandlers(
             if (!pkg) return false;
             for (const dep of pkg.dependencies) {
               const version = dep.resolvedVersion;
-              const url = dep.id.startsWith("cargo:")
-                ? `https://crates.io/api/v1/crates/${encodeURIComponent(dep.id.slice(6))}/${encodeURIComponent(version)}`
-                : `https://registry.npmjs.org/${encodeURIComponent(dep.id.slice(4))}/${encodeURIComponent(version)}`;
               if (!selected.has(dep.id) || dep.source === "plan") {
-                try { await checkedExternal(request, url); } catch { return false; }
+                if (!await dependencyVisible(dep.id, version)) return false;
               }
             }
           }
@@ -514,6 +557,7 @@ export async function createCoordinatorHandlers(
             correlationId: pkg.requestEventId,
             receipt: {
               schema: "lenso.component-receipt.v1",
+              environment: "production",
               receiptId: zero,
               planId: state.planId,
               packageId: pkg.id,

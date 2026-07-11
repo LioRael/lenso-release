@@ -186,15 +186,20 @@ function immutableRequirement(value: unknown, path: string): string {
   return result;
 }
 
-function packageEcosystem(packageId: unknown, path: string): "cargo" | "npm" {
+function packageEcosystem(packageId: unknown, path: string): "cargo" | "npm" | "artifact" {
   const result = string(packageId, path);
   if (/^cargo:.+/u.test(result)) return "cargo";
   if (/^npm:.+/u.test(result)) return "npm";
-  fail(path, "must use a cargo: or npm: package ID");
+  if (/^artifact:.+/u.test(result)) return "artifact";
+  fail(path, "must use a cargo:, npm:, or artifact: component ID");
 }
 
-function registryIntegrity(value: unknown, ecosystem: "cargo" | "npm", path: string): string {
+function registryIntegrity(value: unknown, ecosystem: "cargo" | "npm" | "artifact", path: string): string {
   const result = string(value, path);
+  if (ecosystem === "artifact") {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(result)) fail(path, "must be a canonical artifact SHA-256 digest");
+    return result;
+  }
   if (ecosystem === "cargo") {
     if (!/^[0-9a-f]{64}$/u.test(result)) fail(path, "must be a crates.io lowercase SHA-256 checksum");
     return result;
@@ -369,9 +374,10 @@ export function assertComponentReceipt(value: unknown): asserts value is Compone
   const receipt = record(value, "componentReceipt", [
     "schema", "receiptId", "planId", "packageId", "version", "repository", "sourceCommit",
     "packedSha256", "registryIntegrity", "registryUrl", "provenanceUrl", "provenanceSubject",
-    "workflowUrl", "tagUrl", "publishedAt",
+    "workflowUrl", "tagUrl", "publishedAt", "environment",
   ]);
   literal(receipt.schema, "componentReceipt.schema", "lenso.component-receipt.v1");
+  if (receipt.environment !== undefined && receipt.environment !== "shadow" && receipt.environment !== "production") fail("componentReceipt.environment", "must be shadow or production");
   sha256(receipt.receiptId, "componentReceipt.receiptId");
   sha256(receipt.planId, "componentReceipt.planId");
   string(receipt.packageId, "componentReceipt.packageId");

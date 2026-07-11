@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { assertReconciliationReport } from "../../src/contracts/validate.js";
 import { observeCrateVersion } from "../../src/registry/crates.js";
 import { observeNpmVersion } from "../../src/registry/npm.js";
-import { observeGithubTag } from "../../src/registry/github.js";
+import { observeGithubArtifact, observeGithubTag } from "../../src/registry/github.js";
 import { observeCatalogFile, reconcileSnapshot, runReconcile, type ReconciliationSnapshot } from "../../src/commands/reconcile.js";
 
 const known = ["npm:@lenso/auth-console"];
@@ -173,6 +173,25 @@ describe("immutable registry observations", () => {
     expect(valid).toMatchObject({ version: "0.1.0", digest: `sha256:${checksum}` });
     const malformed = await observeGithubTag("LioRael/lenso", "lenso@0.1.0", "cargo:lenso", "0.1.0", { fetch: response("A".repeat(64)) });
     expect(malformed).toMatchObject({ failure: "schema" });
+  });
+
+  it("observes exact hosted artifact bytes and accepts artifact receipt integrity", async () => {
+    const archive = Buffer.from("hosted console archive");
+    const digest = (await import("node:crypto")).createHash("sha256").update(archive).digest("hex");
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/releases/tags/v1.2.3")) return new Response(JSON.stringify({ draft: true, created_at: "2026-07-11T00:00:00Z", assets: [{ id: 1, name: "lenso-runtime-console.tar.gz" }, { id: 2, name: "lenso-runtime-console.tar.gz.sha256" }] }));
+      if (url.endsWith("/assets/1")) return new Response(null, { status: 302, headers: { location: "https://release-assets.githubusercontent.com/lenso-runtime-console.tar.gz" } });
+      if (url === "https://release-assets.githubusercontent.com/lenso-runtime-console.tar.gz") {
+        expect(new Headers(init?.headers).has("authorization")).toBe(false);
+        return new Response(archive);
+      }
+      if (url.endsWith("/assets/2")) return new Response(`${digest}  lenso-runtime-console.tar.gz\n`);
+      if (url.includes("/git/ref/")) return new Response(JSON.stringify({ object: { type: "tag", sha: "c".repeat(40) } }));
+      return new Response(JSON.stringify({ tag: "lenso-runtime-console@1.2.3", message: JSON.stringify({ schema: "lenso.component-receipt.v1", packageId: "artifact:lenso-runtime-console", version: "1.2.3", registryIntegrity: `sha256:${digest}`, publishedAt: "2026-07-11T00:00:00Z" }) }));
+    });
+    await expect(observeGithubArtifact("LioRael/lenso-runtime-console", "lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
+    await expect(observeGithubTag("LioRael/lenso-runtime-console", "lenso-runtime-console@1.2.3", "artifact:lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
   });
 
   it("distinguishes GitHub 404, HTTP, transport, and timeout without leaking errors", async () => {

@@ -14,6 +14,7 @@ import {
 import {
   assertLegalTransition,
   assertPlanState,
+  assertReleaseStateSnapshot,
   cancelPlan,
   planStatePath,
   StateConflictError,
@@ -71,14 +72,14 @@ function state(): PlanStateV1 {
         workflow: ".github/workflows/publish.yml",
         packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }],
         inputs: {
-          event: "{}",
+          event_id: digest("c"),
           plan_id: planId,
           plan_sha256: digest("b"),
           release_commit: "2".repeat(40),
-          packages: JSON.stringify([
+          packages_json: JSON.stringify([
             { id: "cargo:lenso-contracts", version: "1.0.0" },
           ]),
-          source_repository: "LioRael/lenso-release",
+          nonce: "nonce",
         },
         status: "pending",
         claimOwner: null,
@@ -182,7 +183,7 @@ describe("atomic coordinator state", () => {
     const makeReceipt = (packageId: "cargo:a" | "cargo:b", correlationId: string) => {
       const bytes = Buffer.from(packageId);
       const packedSha256 = sha256(bytes) as Sha256;
-      const receipt: ComponentReceiptV1 = { schema: "lenso.component-receipt.v1", receiptId: digest(packageId === "cargo:a" ? "6" : "7"), planId: plan.planId, packageId, version: "1.0.0", repository: plan.repository, sourceCommit: releaseCommit, packedSha256, registryIntegrity: packedSha256.slice(7), registryUrl: `https://registry.example/${packageId}`, provenanceUrl: `https://example.com/provenance/${packageId}`, provenanceSubject: { name: `${packageId}.crate`, digest: packedSha256 }, workflowUrl: `https://github.com/LioRael/lenso/actions/runs/${packageId}`, tagUrl: `https://github.com/LioRael/lenso/releases/tag/${packageId}`, publishedAt: "2026-07-11T00:01:00Z" };
+      const receipt: ComponentReceiptV1 = { schema: "lenso.component-receipt.v1", environment: "production", receiptId: digest(packageId === "cargo:a" ? "6" : "7"), planId: plan.planId, packageId, version: "1.0.0", repository: plan.repository, sourceCommit: releaseCommit, packedSha256, registryIntegrity: packedSha256.slice(7), registryUrl: `https://registry.example/${packageId}`, provenanceUrl: `https://example.com/provenance/${packageId}`, provenanceSubject: { name: `${packageId}.crate`, digest: packedSha256 }, workflowUrl: `https://github.com/LioRael/lenso/actions/runs/${packageId}`, tagUrl: `https://github.com/LioRael/lenso/releases/tag/${packageId}`, publishedAt: "2026-07-11T00:01:00Z" };
       const event = { schema: "lenso.release-event.v1" as const, eventType: "lenso-publish-receipt" as const, eventId: receipt.receiptId, issuedAt: "2026-07-11T00:02:00Z", nonce: "receipt-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit, correlationId: correlationId as PlanStateV1["planId"], receipt };
       return { bytes, receipt, event };
     };
@@ -219,6 +220,27 @@ describe("atomic coordinator state", () => {
     );
     expect(() => planStatePath("../lenso", digest("a"))).toThrow("repository");
     expect(() => assertPlanState(state())).not.toThrow();
+  });
+  it("round-trips hosted artifact package and occupancy identities", () => {
+    const value = state();
+    value.packages[0]!.id = "artifact:lenso-runtime-console";
+    value.outbox[0]!.packages[0]!.id = "artifact:lenso-runtime-console";
+    value.outbox[0]!.inputs.packages_json = JSON.stringify([
+      { id: "artifact:lenso-runtime-console", version: "1.0.0" },
+    ]);
+    value.occupancyKeys = [
+      "package:artifact:lenso-runtime-console:1.0.0",
+      `plan:LioRael/lenso:${value.planId}`,
+    ].sort();
+    const artifactSnapshot: ReleaseStateSnapshot = {
+      headSha: "3".repeat(40),
+      plans: { [planStatePath(value.repository, value.planId)]: value },
+      activeRepositories: { [value.repository]: value.planId },
+      occupiedPackages: {
+        "package:artifact:lenso-runtime-console:1.0.0": value.planId,
+      },
+    };
+    expect(() => assertReleaseStateSnapshot(artifactSnapshot)).not.toThrow();
   });
   it("re-reads the branch snapshot after a lost update", async () => {
     const store = new MemoryStore(snapshot());

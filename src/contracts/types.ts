@@ -1,6 +1,6 @@
 export type Sha256 = `sha256:${string}`;
 export type GitOid = string;
-export type RegistryPackageId = `cargo:${string}` | `npm:${string}`;
+export type RegistryPackageId = `cargo:${string}` | `npm:${string}` | `artifact:${string}`;
 
 export type PackageDependency = {
   id: string;
@@ -72,6 +72,7 @@ export type ReleaseEventV1 =
 
 export type ComponentReceiptV1 = {
   schema: "lenso.component-receipt.v1";
+  environment: "shadow" | "production";
   receiptId: Sha256;
   planId: Sha256;
   packageId: RegistryPackageId;
@@ -110,7 +111,7 @@ export type PlanDispatchOutbox = {
   ref: string;
   workflow: string;
   packages: EventPackage[];
-  inputs: Record<"event" | "plan_id" | "plan_sha256" | "release_commit" | "packages" | "source_repository", string>;
+  inputs: Record<"event_id" | "plan_id" | "plan_sha256" | "release_commit" | "packages_json" | "nonce", string>;
   status: "pending" | "in-flight" | "dispatched" | "cancelled";
   claimOwner: string | null;
   leaseExpiresAt: string | null;

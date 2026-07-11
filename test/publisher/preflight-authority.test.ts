@@ -1,0 +1,28 @@
+import { createServer } from "node:http";
+import { generateKeyPairSync } from "node:crypto";
+import { afterEach, describe, expect, it } from "vitest";
+import { sha256, type JsonValue } from "../../src/core/canonical.js";
+import { createPreflightHttpHandler, GitPreflightStore, MemoryPreflightStore, PreflightAuthority, type PreflightBinding } from "../../src/publisher/preflight-authority.js";
+
+const servers: ReturnType<typeof createServer>[] = []; afterEach(() => servers.splice(0).forEach((server) => server.close()));
+function binding(): PreflightBinding { const planId = `sha256:${"a".repeat(64)}`; return { eventId: `sha256:${"b".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId, planSha256: `sha256:${"c".repeat(64)}`, repository: "LioRael/lenso", releaseCommit: "d".repeat(40), ref: `release-execution/${planId.slice(7)}`, workflowSha256: `sha256:${"e".repeat(64)}`, runtimeManifestSha256: `sha256:${"f".repeat(64)}`, packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }], generated: [] }; }
+describe("authoritative preflight service", () => {
+  it("authenticates issue and permits exactly one concurrent consume", async () => {
+    const { privateKey } = generateKeyPairSync("ed25519"); const authority = new PreflightAuthority(new MemoryPreflightStore(), Buffer.alloc(32, 7), privateKey, () => new Date("2026-07-11T00:00:00.000Z"));
+    const server = createServer((request, response) => { let body = ""; request.on("data", (chunk) => { body += chunk; }); request.on("end", async () => { try { const value = JSON.parse(body); const auth = async () => request.headers.authorization === "Bearer app-token"; const result = request.url === "/issue" ? await authority.issue(value.binding, value.bindingDigest, auth) : await authority.consume(value.proof, value.facts, value.artifacts, auth); response.setHeader("content-type", "application/json"); response.end(JSON.stringify(result)); } catch (error) { response.statusCode = 409; response.end(JSON.stringify({ error: error instanceof Error ? error.message : "failure" })); } }); }); servers.push(server); await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); if (!address || typeof address === "string") throw new Error("missing address"); const base = `http://127.0.0.1:${address.port}`;
+    const value = binding(); const issue = await fetch(`${base}/issue`, { method: "POST", headers: { authorization: "Bearer app-token" }, body: JSON.stringify({ binding: value, bindingDigest: sha256(value as unknown as JsonValue) }) }); expect(issue.status).toBe(200); const proof = await issue.json();
+    const facts = { eventId: value.eventId, nonce: value.nonce, planId: value.planId, releaseCommit: value.releaseCommit, ref: value.ref };
+    const metadata = { name: "lenso-contracts", vers: "1.0.0" }; const artifacts = [{ id: "cargo:lenso-contracts", name: "lenso-contracts", version: "1.0.0", kind: "cargo", path: `.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}/lenso-contracts-1.0.0.crate`, sha256: `sha256:${"9".repeat(64)}`, size: 42, ino: 7, mode: 256, cargoMetadata: metadata, cargoMetadataSha256: sha256(metadata as JsonValue) }];
+    const consume = () => fetch(`${base}/consume`, { method: "POST", headers: { authorization: "Bearer app-token" }, body: JSON.stringify({ proof, facts, artifacts }) }); const outcomes = await Promise.all([consume(), consume()]);
+    expect(outcomes.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const replay = await consume(); expect(replay.status).toBe(409);
+  });
+  it("persists consumed proofs across authority restart through Git CAS", async () => {
+    let durable: { revision: number; bytes: Uint8Array } | null = null; const backend = { async read() { return durable ? { revision: durable.revision, bytes: durable.bytes.slice() } : null; }, async compareAndSwap(_path: string, expected: number, bytes: Uint8Array) { if ((durable?.revision ?? 0) !== expected) return false; durable = { revision: expected + 1, bytes: bytes.slice() }; return true; } };
+    const { privateKey } = generateKeyPairSync("ed25519"); const now = () => new Date("2026-07-11T00:00:00.000Z"); const first = new PreflightAuthority(new GitPreflightStore(backend), Buffer.alloc(32, 3), privateKey, now); const value = binding(); const digest = sha256(value as unknown as JsonValue); const proof = await first.issue(value, digest, async () => true);
+    const metadata = { name: "lenso-contracts", vers: "1.0.0" }; const artifacts = [{ id: "cargo:lenso-contracts", name: "lenso-contracts", version: "1.0.0", kind: "cargo" as const, path: `.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}/lenso-contracts-1.0.0.crate`, sha256: `sha256:${"9".repeat(64)}` as const, size: 42, ino: 7, mode: 256 as const, cargoMetadata: metadata, cargoMetadataSha256: sha256(metadata as JsonValue) as `sha256:${string}` }]; const facts = { eventId: value.eventId, nonce: value.nonce, planId: value.planId, releaseCommit: value.releaseCommit, ref: value.ref };
+    await expect(first.consume(proof, facts, artifacts, async () => true)).resolves.toMatchObject({ accepted: true });
+    const restarted = new PreflightAuthority(new GitPreflightStore(backend), Buffer.alloc(32, 3), privateKey, now); await expect(restarted.consume(proof, facts, artifacts, async () => true)).rejects.toThrow("already consumed");
+    const handler = createPreflightHttpHandler(restarted, async (request) => request.headers.get("authorization") === "Bearer app"); const response = await handler(new Request("https://authority.test/consume", { method: "POST", headers: { authorization: "Bearer app" }, body: JSON.stringify({ proof, facts, artifacts }) })); expect(response.status).toBe(409);
+  });
+});
