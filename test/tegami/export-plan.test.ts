@@ -114,6 +114,35 @@ describe("Tegami release plan export", () => {
     await expect(exportReleasePlan(options)).resolves.toEqual(first);
   });
 
+  it("atomically replaces a retained plan when fresh intent exists", async () => {
+    const cwd = await fixture("cargo-only");
+    const components = metadata(["cargo:fixture-core", "foundation", true]);
+    const first = await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher, components,
+    });
+    await writeFile(join(cwd, ".tegami/release.md"), `---
+packages:
+  fixture-core: patch
+---
+
+### Features
+
+Exercise the next reviewed release.
+`);
+
+    const second = await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "2".repeat(40), publisher, components,
+    });
+
+    expect(second.sourceCommit).toBe("2".repeat(40));
+    expect(second.packages).toEqual([expect.objectContaining({
+      id: "cargo:fixture-core", previousVersion: "0.1.1", nextVersion: "0.1.2",
+    })]);
+    expect(second.planId).not.toBe(first.planId);
+    await expect(readFile(join(cwd, ".lenso-release/plan.json"), "utf8"))
+      .resolves.toBe(`${JSON.stringify(second, null, 2)}\n`);
+  });
+
   it("resolves auto-installed peer dependencies from the pnpm importer", async () => {
     const cwd = await fixture("npm-only");
     const path = join(cwd, "package.json");

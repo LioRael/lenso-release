@@ -62,10 +62,13 @@ describe("repository template workflow contracts", () => {
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
   });
 
-  it("uses scoped App authentication for pushes and emits a ready event instead of cleaning optimistically", async () => {
+  it("uses scoped App authentication and prioritizes fresh intent over a retained plan", async () => {
     const source = await readFile(join(template, ".github/workflows/release-plan.yml"), "utf8");
     expect(source).toContain("x-access-token:${GH_TOKEN}");
     expect(source).toContain("ready-event.js");
+    expect(source).toContain("if: ${{ hashFiles('.lenso-release/plan.json') != '' && hashFiles('.tegami/*.md') == '' }}");
+    expect(source).toContain("if: ${{ hashFiles('.tegami/*.md') != '' }}");
+    expect(source).toContain("if: ${{ steps.draft.outputs.created == 'true' }}");
     expect(source).not.toMatch(/github\.token|git push origin/u);
     expect(source).not.toMatch(/rm\s+.*plan\.json/u);
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);

@@ -43,7 +43,7 @@ jobs:
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
       - name: Emit ready event for an approved merged plan
-        if: ${{ hashFiles('.lenso-release/plan.json') != '' }}
+        if: ${{ hashFiles('.lenso-release/plan.json') != '' && hashFiles('.tegami/*.md') == '' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           READY_URL: ${{ vars.LENSO_COORDINATOR_READY_URL }}
@@ -54,10 +54,13 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
             --data-binary @/tmp/ready.json "$READY_URL"
       - name: Draft and apply Tegami plan
-        if: ${{ hashFiles('.lenso-release/plan.json') == '' && hashFiles('.tegami/*.md') != '' }}
-        run: node .lenso-release/runtime/lib/repository/cli.js plan
+        id: draft
+        if: ${{ hashFiles('.tegami/*.md') != '' }}
+        run: |
+          node .lenso-release/runtime/lib/repository/cli.js plan
+          echo 'created=true' >> "$GITHUB_OUTPUT"
       - name: Create or update the single release PR
-        if: ${{ hashFiles('.lenso-release/plan.json') == '' && hashFiles('.tegami/*.md') != '' }}
+        if: ${{ steps.draft.outputs.created == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           BRANCH: release/${{ github.event.repository.name }}

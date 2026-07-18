@@ -46,9 +46,12 @@ The participating component repositories are `lenso`, `lenso-cli`,
    merge it to `main`. The intent must name only the packages meant to change.
 2. A change to `.tegami/**`, `.lenso-release/**`, or package manifests triggers
    `.github/workflows/release-plan.yml`.
-3. If no merged plan exists, the repository-local runtime drafts and applies the
-   Tegami changes, writes the canonical plan, and creates or updates the single
-   `release/<repository>` pull request.
+3. When reviewed intent exists, the repository-local runtime drafts and applies
+   the Tegami changes, writes the canonical plan, and creates or updates the single
+   `release/<repository>` pull request. Fresh intent takes precedence over a
+   retained plan from an earlier release; the new plan replaces it atomically in
+   the release PR. A merged plan emits a ready event only when no newer intent
+   remains.
 4. Review the PR's versions, dependency order, changelogs, exact source and release
    commits, package set, generated lock, plan digest, and CI evidence. A changed
    plan invalidates prior approval.
