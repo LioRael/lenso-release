@@ -57,6 +57,18 @@ packages:
     userFacing: true
     publishable: true
     dependencies: [cargo:lenso-contracts]
+  - id: cargo:lenso-autonomous-service
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: true
+    publishable: true
+    dependencies:
+      - cargo:lenso-contracts
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-http
+      - cargo:lenso-platform-runtime
+      - cargo:lenso-service
   - id: cargo:lenso-module-story
     repository: LioRael/lenso
     registry: crates-io
