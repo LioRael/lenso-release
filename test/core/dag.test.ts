@@ -120,6 +120,7 @@ const expectedInventory = {
     true
   ],
   "cargo:lenso-module-story": ["LioRael/lenso", "crates-io", "modules", true, true],
+  "cargo:lenso-autonomous-service": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-operator": ["LioRael/lenso", "crates-io", "host", false, true],
   "cargo:lenso-platform-admin": ["LioRael/lenso", "crates-io", "host", true, true],
   "cargo:lenso-platform-admin-data": ["LioRael/lenso", "crates-io", "host", true, true],
@@ -185,6 +186,13 @@ const expectedInventory = {
 } as const;
 
 const expectedDependencies: Record<string, readonly string[]> = {
+  "cargo:lenso-autonomous-service": [
+    "cargo:lenso-contracts",
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-runtime",
+    "cargo:lenso-service"
+  ],
   "cargo:lenso-module-auth": [
     "cargo:lenso-contracts",
     "cargo:lenso-platform-core",
@@ -405,6 +413,7 @@ describe("component release graph", () => {
       "cargo:lenso-bootstrap -> cargo:lenso-worker",
       "cargo:lenso-cli -> npm:@lenso/cli",
       "cargo:lenso-contracts -> cargo:lenso",
+      "cargo:lenso-contracts -> cargo:lenso-autonomous-service",
       "cargo:lenso-contracts -> cargo:lenso-service",
       "cargo:lenso-migrate -> cargo:lenso",
       "cargo:lenso-module-auth -> cargo:lenso-module-auth-anonymous",
@@ -424,12 +433,14 @@ describe("component release graph", () => {
       "cargo:lenso-platform-admin-data -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-core -> cargo:lenso",
       "cargo:lenso-platform-core -> cargo:lenso-api",
+      "cargo:lenso-platform-core -> cargo:lenso-autonomous-service",
       "cargo:lenso-platform-core -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-core -> cargo:lenso-migrate",
       "cargo:lenso-platform-core -> cargo:lenso-platform-admin-data",
       "cargo:lenso-platform-core -> cargo:lenso-worker",
       "cargo:lenso-platform-http -> cargo:lenso",
       "cargo:lenso-platform-http -> cargo:lenso-api",
+      "cargo:lenso-platform-http -> cargo:lenso-autonomous-service",
       "cargo:lenso-platform-http -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-http -> cargo:lenso-platform-admin-data",
       "cargo:lenso-platform-module -> cargo:lenso",
@@ -438,8 +449,10 @@ describe("component release graph", () => {
       "cargo:lenso-platform-module-remote -> cargo:lenso-api",
       "cargo:lenso-platform-module-remote -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-runtime -> cargo:lenso-api",
+      "cargo:lenso-platform-runtime -> cargo:lenso-autonomous-service",
       "cargo:lenso-platform-runtime -> cargo:lenso-bootstrap",
       "cargo:lenso-platform-runtime -> cargo:lenso-worker",
+      "cargo:lenso-service -> cargo:lenso-autonomous-service",
       "cargo:lenso-service -> cargo:lenso-platform-admin-data",
       "cargo:lenso-worker -> cargo:lenso",
       "npm:@lenso/remote-module-kit -> npm:@lenso/service-kit"
