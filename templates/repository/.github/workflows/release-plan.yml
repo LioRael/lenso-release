@@ -42,6 +42,7 @@ jobs:
           npm install --global npm@11.7.0
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
+          cargo fetch --locked
       - name: Emit ready event for an approved merged plan
         if: ${{ hashFiles('.lenso-release/plan.json') != '' && hashFiles('.tegami/*.md') == '' }}
         env:
