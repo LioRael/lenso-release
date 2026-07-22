@@ -178,12 +178,13 @@ version because receipt delivery failed.
 - If a release partially published, record exactly which immutable artifacts exist
   before deciding whether recovery can continue.
 
-If a shadow publisher fails before creating any receipt or registry version, the
-reviewed `retire-failed-shadow-plan` workflow may release the stale coordinator
-occupancy. It fails closed unless every dispatched workflow is completed with a
-failure or cancellation conclusion, the plan has zero receipts, no dispatch is in
-flight, and every selected version is absent from the shadow registry. This path
-is unavailable in production mode and does not delete execution refs or history.
+If a shadow publisher fails, the reviewed `retire-failed-shadow-plan` workflow may
+release the stale coordinator occupancy. It fails closed unless every dispatched
+workflow is complete, no dispatch is in flight, every received package still exists
+in the shadow registry, and every unreceived selected version is absent. Successful
+dispatches require complete matching shadow receipts; partial receipt evidence is
+rejected. Existing receipts and execution history remain immutable. This path is
+unavailable in production mode.
 
 ## Break-glass publishing
 

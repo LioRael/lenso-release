@@ -540,23 +540,35 @@ export async function retireFailedShadowPlan(
   if (!state) throw new Error("plan state not found");
   if (!(["publishing", "blocked"] as const).includes(state.status as "publishing" | "blocked"))
     throw new Error("plan is not eligible for failed dispatch retirement");
-  if (state.receipts.length !== 0)
-    throw new Error("failed dispatch retirement requires zero receipts");
+  if (state.receipts.some(({ environment }) => environment !== "shadow"))
+    throw new Error("failed dispatch retirement accepts only shadow receipts");
   if (state.outbox.some(({ status }) => status === "in-flight"))
     throw new Error("failed dispatch retirement forbids in-flight dispatches");
   const dispatched = state.outbox.filter(({ status }) => status === "dispatched");
   if (dispatched.length === 0)
     throw new Error("failed dispatch retirement requires a dispatched workflow");
+  const received = new Set(state.receipts.map(({ packageId, version }) => `${packageId}@${version}`));
   for (const entry of dispatched) {
     const run = await facts.observeRun(entry);
+    const receivedCount = entry.packages.filter(({ id, version }) => received.has(`${id}@${version}`)).length;
+    if (receivedCount !== 0 && receivedCount !== entry.packages.length)
+      throw new Error("dispatched package set has partial receipt evidence");
+    const allowedConclusions = receivedCount === entry.packages.length
+      ? ["success", "failure", "cancelled"]
+      : ["failure", "cancelled"];
     if (
       !run || run.runUrl !== entry.runUrl || run.status !== "completed" ||
-      !["failure", "cancelled"].includes(run.conclusion ?? "")
+      !allowedConclusions.includes(run.conclusion ?? "")
     ) throw new Error("dispatched workflow is not conclusively failed");
   }
-  for (const pkg of state.packages)
-    if (await facts.packageVersionExists(pkg.id, pkg.version))
-      throw new Error(`package version already exists: ${pkg.id}@${pkg.version}`);
+  for (const pkg of state.packages) {
+    const hasReceipt = received.has(`${pkg.id}@${pkg.version}`);
+    const exists = await facts.packageVersionExists(pkg.id, pkg.version);
+    if (hasReceipt !== exists)
+      throw new Error(hasReceipt
+        ? `received shadow package is missing: ${pkg.id}@${pkg.version}`
+        : `unreceived package version already exists: ${pkg.id}@${pkg.version}`);
+  }
 
   let result!: PlanStateV1;
   const snapshot = await transact(store, (current) => {

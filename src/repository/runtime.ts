@@ -229,7 +229,8 @@ export async function consumePreflightProof(environment: RuntimeEnvironment): Pr
 export async function stageCargoArchives(cwd: string, plan: ReleasePlanV1, selected: PublishSelection[]): Promise<void> {
   const cargoPackages = publicationOrder(plan, selected).filter(({ id }) => id.startsWith("cargo:"));
   if (cargoPackages.length === 0) return;
-  const packageArgs = cargoPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
+  const verificationPackages = cargoVerificationOrder(plan, cargoPackages);
+  const packageArgs = verificationPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
   // One Cargo invocation creates a temporary local registry containing all
   // selected packages, so same-plan dependency versions can be verified
   // without weakening the no-write preflight boundary.
@@ -245,6 +246,28 @@ export async function stageCargoArchives(cwd: string, plan: ReleasePlanV1, selec
     const info = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") fail(`Cargo did not materialize archive: ${name} ${item.version}`); throw error; });
     if (!info.isFile() || info.nlink !== 1) fail(`Cargo archive is not an isolated regular file: ${name} ${item.version}`);
   }
+}
+
+export function cargoVerificationOrder(plan: ReleasePlanV1, selected: PublishSelection[]): PublishSelection[] {
+  const packagesById = new Map(plan.packages.map((item) => [item.id, item]));
+  const visiting = new Set<string>(); const visited = new Set<string>(); const ordered: PublishSelection[] = [];
+  const visit = (item: PublishSelection): void => {
+    if (visited.has(item.id)) return;
+    if (visiting.has(item.id)) fail(`selected package dependency cycle: ${item.id}`);
+    const planned = packagesById.get(item.id);
+    if (!planned) fail(`selected package missing from plan: ${item.id}`);
+    visiting.add(item.id);
+    for (const dependency of planned.dependencies) {
+      if (dependency.source !== "plan" || !dependency.id.startsWith("cargo:")) continue;
+      const plannedDependency = packagesById.get(dependency.id);
+      if (!plannedDependency || plannedDependency.nextVersion !== dependency.resolvedVersion)
+        fail(`planned Cargo dependency is missing or inconsistent: ${dependency.id}`);
+      visit({ id: plannedDependency.id, version: plannedDependency.nextVersion });
+    }
+    visiting.delete(item.id); visited.add(item.id); ordered.push(item);
+  };
+  for (const item of selected) visit(item);
+  return ordered;
 }
 async function writeSealedMarker(cwd: string, marker: SealedMarker): Promise<void> {
   const path = join(cwd, ".lenso-release/preflight-marker.json"); const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
