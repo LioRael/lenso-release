@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { consumePreflightProof, createPreflightProof, preflight, publicationOrder, publishSelected } from "../../src/repository/runtime.js";
+import { consumePreflightProof, createPreflightProof, preflight, publicationOrder, publishSelected, stageCargoArchives } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -152,6 +152,30 @@ describe("publisher preflight execution gate", () => {
 
     plan.packages[1]!.dependencies = [{ id: autonomous.id }] as ReleasePlanV1["packages"][number]["dependencies"];
     expect(() => publicationOrder(plan, [autonomous, service])).toThrow("selected package dependency cycle");
+  });
+
+  it("materializes Cargo archives after the joint dry-run removes them", async () => {
+    const cwd = await temp(); const bin = join(cwd, "bin"); const log = join(cwd, "cargo.log");
+    await mkdir(bin); await mkdir(join(cwd, "target/package"), { recursive: true });
+    await writeFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "stale");
+    await writeFile(join(bin, "cargo"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif test "$1" = package; then\n  case "$5" in\n    lenso-service) version=0.1.5 ;;\n    lenso-autonomous-service) version=0.1.1 ;;\n    *) exit 9 ;;\n  esac\n  mkdir -p target/package\n  printf 'fresh-%s' "$5" > "target/package/$5-$version.crate"\nfi\n`); await chmod(join(bin, "cargo"), 0o755);
+    const service = { id: "cargo:lenso-service", version: "0.1.5" } as const;
+    const autonomous = { id: "cargo:lenso-autonomous-service", version: "0.1.1" } as const;
+    const plan = { packages: [
+      { id: autonomous.id, dependencies: [{ id: service.id }] },
+      { id: service.id, dependencies: [] },
+    ] } as unknown as ReleasePlanV1;
+    const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      await stageCargoArchives(cwd, plan, [autonomous, service]);
+      expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
+        "publish --dry-run --locked -p lenso-service -p lenso-autonomous-service",
+        "package --locked --no-verify -p lenso-service",
+        "package --locked --no-verify -p lenso-autonomous-service",
+      ]);
+      expect(await readFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "utf8")).toBe("fresh-lenso-service");
+      expect(await readFile(join(cwd, "target/package/lenso-autonomous-service-0.1.1.crate"), "utf8")).toBe("fresh-lenso-autonomous-service");
+    } finally { process.env.PATH = oldPath; }
   });
 
   it("accepts the exact reviewed runtime and rejects workflow, bundle and generated-file drift before publish", async () => {
