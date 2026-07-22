@@ -378,6 +378,7 @@ packages:
     dependencies:
       - artifact:lenso-runtime-console
       - cargo:lenso
+      - cargo:lenso-service
   - id: npm:@lenso/cli
     repository: LioRael/lenso-cli
     registry: npm

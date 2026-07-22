@@ -331,7 +331,7 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module",
     "cargo:lenso-worker"
   ],
-  "cargo:lenso-cli": ["artifact:lenso-runtime-console", "cargo:lenso"],
+  "cargo:lenso-cli": ["artifact:lenso-runtime-console", "cargo:lenso", "cargo:lenso-service"],
   "npm:@lenso/cli": ["artifact:lenso-runtime-console", "cargo:lenso", "cargo:lenso-cli"],
   "npm:@lenso/auth-console": ["npm:@lenso/runtime-console-api"],
   "npm:@lenso/auth-device-console": ["npm:@lenso/runtime-console-api"],
