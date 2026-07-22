@@ -51,7 +51,7 @@ jobs:
           APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
         run: |
           node .lenso-release/runtime/lib/repository/ready-event.js > /tmp/ready.json
-          curl --fail-with-body --location-trusted=false --proto '=https' \
+          curl --fail-with-body --proto '=https' \
             -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
             --data-binary @/tmp/ready.json "$READY_URL"
       - name: Draft and apply Tegami plan
