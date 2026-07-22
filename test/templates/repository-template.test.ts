@@ -70,6 +70,7 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("if: ${{ hashFiles('.tegami/*.md') != '' }}");
     expect(source).toContain("if: ${{ steps.draft.outputs.created == 'true' }}");
     expect(source).toContain("cargo fetch --locked");
+    expect(source).not.toContain("cache: pnpm");
     expect(source).toContain('remote_ref="$(git ls-remote --heads "$remote" "refs/heads/$BRANCH")"');
     expect(source).toContain('remote_oid="${remote_ref%%[[:space:]]*}"');
     expect(source).toContain('git fetch --no-tags "$remote" "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"');
