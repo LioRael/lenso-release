@@ -402,9 +402,10 @@ export function assertLegalTransition(
     if (before.requestEventId !== null && before.requestEventId !== after.requestEventId)
       throw new TypeError("immutable package request rewrite");
   }
+  const nextReceipts = new Set(next.receipts.map((receipt) => JSON.stringify(receipt)));
   if (
-    JSON.stringify(next.receipts.slice(0, previous.receipts.length)) !==
-      JSON.stringify(previous.receipts) ||
+    next.receipts.length < previous.receipts.length ||
+    previous.receipts.some((receipt) => !nextReceipts.has(JSON.stringify(receipt))) ||
     JSON.stringify(next.attempts.slice(0, previous.attempts.length)) !==
       JSON.stringify(previous.attempts) ||
     JSON.stringify(next.evidence.slice(0, previous.evidence.length)) !==
