@@ -245,16 +245,14 @@ export async function stageCargoArchives(cwd, plan, selected) {
     const cargoPackages = publicationOrder(plan, selected).filter(({ id }) => id.startsWith("cargo:"));
     if (cargoPackages.length === 0)
         return;
-    const verificationPackages = cargoVerificationOrder(plan, cargoPackages);
-    const packageArgs = verificationPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
     const materializationPackages = publicationOrder(plan, plan.packages
         .filter(({ id }) => id.startsWith("cargo:"))
         .map(({ id, nextVersion }) => ({ id, version: nextVersion })));
-    const materializationArgs = materializationPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
+    const planArgs = materializationPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
     // One Cargo invocation creates a temporary local registry containing all
-    // selected packages, so same-plan dependency versions can be verified
-    // without weakening the no-write preflight boundary.
-    await execFile("cargo", ["publish", "--dry-run", "--locked", ...packageArgs], { cwd });
+    // planned packages, so same-plan dependencies and workspace dev-dependencies
+    // can be verified without weakening the no-write preflight boundary.
+    await execFile("cargo", ["publish", "--dry-run", "--locked", ...planArgs], { cwd });
     // Cargo removes archives produced by `publish --dry-run`. Materialize the
     // already-verified source in one dependency-aware invocation as well. Use
     // every Cargo package in the plan because `cargo package` also resolves
@@ -265,7 +263,7 @@ export async function stageCargoArchives(cwd, plan, selected) {
         const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
         await rm(path, { force: true });
     }
-    await execFile("cargo", ["package", "--locked", "--no-verify", ...materializationArgs], { cwd });
+    await execFile("cargo", ["package", "--locked", "--no-verify", ...planArgs], { cwd });
     for (const item of cargoPackages) {
         const name = item.id.slice(6);
         const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
