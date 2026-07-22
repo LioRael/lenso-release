@@ -43,7 +43,10 @@ export async function checkedExternal(request: typeof fetch, url: string): Promi
   for (let redirects = 0; redirects <= 5; redirects += 1) {
     if (current.protocol !== "https:" || !EXTERNAL_HOSTS.has(current.hostname))
       throw new TypeError(`external observation host is not allowed: ${current.hostname}`);
-    const response = await request(current, { redirect: "manual" });
+    const response = await request(current, {
+      redirect: "manual",
+      headers: { "user-agent": "lenso-release-coordinator/1.0" },
+    });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       if (!location) throw new Error("external redirect missing location");
@@ -88,6 +91,16 @@ export function npmPackumentContainsVersion(value: unknown, version: string): bo
   if (versions === null || typeof versions !== "object" || Array.isArray(versions))
     throw new TypeError("shadow npm packument versions invalid");
   return Object.hasOwn(versions, version);
+}
+
+export function productionDependencyUrl(id: string, version: string): string {
+  if (id.startsWith("cargo:")) {
+    const name = encodeURIComponent(id.slice(6));
+    return `https://crates.io/api/v1/crates/${name}/${encodeURIComponent(version)}/download`;
+  }
+  if (id.startsWith("npm:"))
+    return `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}`;
+  throw new TypeError(`unsupported registry dependency ${id}`);
 }
 
 export function executionRefProtectionIsImmutable(value: unknown): boolean {
@@ -214,9 +227,7 @@ export async function createCoordinatorHandlers(
       const observation = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { fetch: request, token });
       return "version" in observation && observation.version === version;
     }
-    const productionUrl = id.startsWith("cargo:")
-      ? `https://static.crates.io/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(id.slice(6))}-${encodeURIComponent(version)}.crate`
-      : `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}`;
+    const productionUrl = productionDependencyUrl(id, version);
     const url = id.startsWith("cargo:")
       ? `${input.env.LENSO_SHADOW_CRATES_API_URL}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`
       : `${input.env.LENSO_SHADOW_NPM_REGISTRY_URL}/${encodeURIComponent(id.slice(4))}`;

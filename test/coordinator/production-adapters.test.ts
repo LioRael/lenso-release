@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, npmPackumentContainsVersion, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -17,6 +17,31 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("observes Cargo dependencies through the official crates.io download API", () => {
+    expect(productionDependencyUrl("cargo:lenso-module-auth", "0.1.8")).toBe(
+      "https://crates.io/api/v1/crates/lenso-module-auth/0.1.8/download",
+    );
+  });
+
+  it("identifies allowlisted external observations across crates.io redirects", async () => {
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("user-agent")).toBe("lenso-release-coordinator/1.0");
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      if (new URL(String(input)).hostname === "crates.io") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://static.crates.io/crates/lenso/lenso-0.1.0.crate" },
+        });
+      }
+      return new Response("crate");
+    });
+    await expect(checkedExternal(
+      request as typeof fetch,
+      "https://crates.io/api/v1/crates/lenso/0.1.0/download",
+    )).resolves.toHaveProperty("status", 200);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed when npm absence cannot be proven from a valid packument", () => {
     expect(npmPackumentContainsVersion({ versions: { "1.0.0": {} } }, "1.0.0")).toBe(true);
     expect(npmPackumentContainsVersion({ versions: {} }, "1.0.0")).toBe(false);
