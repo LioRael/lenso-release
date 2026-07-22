@@ -239,7 +239,7 @@ export async function stageCargoArchives(cwd: string, plan: ReleasePlanV1, selec
   // One Cargo invocation creates a temporary local registry containing all
   // planned packages, so same-plan dependencies and workspace dev-dependencies
   // can be verified without weakening the no-write preflight boundary.
-  await execFile("cargo", ["publish", "--dry-run", "--locked", ...planArgs], { cwd });
+  await execFile("cargo", ["publish", "--dry-run", "--locked", "--allow-dirty", ...planArgs], { cwd });
   // Cargo removes archives produced by `publish --dry-run`. Materialize the
   // already-verified source in one dependency-aware invocation as well. Use
   // every Cargo package in the plan because `cargo package` also resolves
@@ -250,7 +250,7 @@ export async function stageCargoArchives(cwd: string, plan: ReleasePlanV1, selec
     const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
     await rm(path, { force: true });
   }
-  await execFile("cargo", ["package", "--locked", "--no-verify", ...planArgs], { cwd });
+  await execFile("cargo", ["package", "--locked", "--no-verify", "--allow-dirty", ...planArgs], { cwd });
   for (const item of cargoPackages) {
     const name = item.id.slice(6);
     const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
