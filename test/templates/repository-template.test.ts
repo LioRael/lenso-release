@@ -88,6 +88,7 @@ describe("repository template workflow contracts", () => {
 
   it("keeps wrappers thin and the Cargo entrypoint fail-closed", async () => {
     expect(await readFile(join(template, "scripts/release-plan.mjs"), "utf8")).toContain("runtime/lib/repository/cli.js");
+    expect(await readFile(join(template, "scripts/release-mode.mjs"), "utf8")).not.toContain("NPM_CONFIG_REGISTRY");
     const cargo = await readFile(join(template, "scripts/publish-cargo.sh"), "utf8");
     expect(cargo).toContain("official crates.io token action did not provide a token");
     await expect(execute("sh", ["-n", join(template, "scripts/publish-cargo.sh")])).resolves.toBeDefined();
