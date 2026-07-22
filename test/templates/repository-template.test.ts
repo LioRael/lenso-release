@@ -174,7 +174,7 @@ describe("publisher preflight execution gate", () => {
       await stageCargoArchives(cwd, plan, [autonomous, service]);
       expect(cargoVerificationOrder(plan, [autonomous, service])).toEqual([contracts, service, autonomous]);
       expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
-        "publish --dry-run --locked -p lenso-contracts -p lenso-service -p lenso-autonomous-service",
+        "publish --dry-run --locked -p lenso-contracts -p lenso-service -p lenso-autonomous-service -p lenso-platform-testing",
         "package --locked --no-verify -p lenso-contracts -p lenso-service -p lenso-autonomous-service -p lenso-platform-testing",
       ]);
       expect(await readFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "utf8")).toBe("fresh-lenso-service");
