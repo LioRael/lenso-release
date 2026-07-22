@@ -1,10 +1,10 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "e25e3e1b6d2ddd67bf2e9423c32423c1c889e91a",
+  "sourceRevision": "2c9111b6fe6029d1a1fc7ec3498cf76510dbb155",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
-      "sha256": "sha256:2122b42ca58c3eae379b2565dd7ae0ed52f45526aea19f9b9ad622ae94a8bb57"
+      "sha256": "sha256:59258573832efdcbbfdd85d7e340338e0e36bd3c1109782ec6bfa85735cae668"
     },
     {
       "path": ".lenso-release/runtime/lib/config/components.js",
