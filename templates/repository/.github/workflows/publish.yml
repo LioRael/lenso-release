@@ -60,6 +60,8 @@ jobs:
           npm install --global npm@11.7.0
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
+      - name: Build exact release artifacts when configured
+        run: pnpm run --if-present build
       - name: Complete fail-closed preflight before any registry OIDC
         env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
