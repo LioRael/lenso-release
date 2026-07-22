@@ -21,6 +21,7 @@ export type EventHandlers = {
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive?(): Promise<unknown>;
   retireFailedShadowPlan?(repository: string, planId: string, eventId: Sha256): Promise<unknown>;
+  retryFailedShadowPlan?(repository: string, planId: string): Promise<unknown>;
 };
 export type HandlerFactory = (env: NodeJS.ProcessEnv) => Promise<EventHandlers>;
 
@@ -126,6 +127,14 @@ export async function runHandleEventCli(
 ): Promise<number> {
   try {
     const handlers = await factory(env);
+    if (argv[0] === "--retry-failed-shadow-plan") {
+      if (
+        argv.length !== 5 || argv[1] !== "--repository" ||
+        argv[3] !== "--plan-id" || !handlers.retryFailedShadowPlan
+      ) throw new TypeError("usage: handle-event --retry-failed-shadow-plan --repository OWNER/REPO --plan-id SHA256");
+      await handlers.retryFailedShadowPlan(argv[2]!, argv[4]!);
+      return HANDLE_EVENT_EXIT.ok;
+    }
     if (argv[0] === "--retire-failed-shadow-plan") {
       if (
         argv.length !== 5 || argv[1] !== "--repository" ||

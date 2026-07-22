@@ -2,7 +2,11 @@ import { sha256 } from "./protocol.js";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = Record<string, unknown>;
-type CoordinatorEnv = { DB: { prepare(query: string): any }; PREFLIGHT_PRIVATE_KEY: string };
+type CoordinatorEnv = {
+  DB: { prepare(query: string): any };
+  ARTIFACTS: { get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null> };
+  PREFLIGHT_PRIVATE_KEY: string;
+};
 
 export function canonical(value: Json): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -73,6 +77,45 @@ async function requireAuthoritativeBinding(token: string, binding: ObjectValue):
     throw new Error("preflight binding is not authorized by active release state");
   if (canonical(dispatch.packages as Json) !== canonical(binding.packages as Json)) throw new Error("preflight package selection is not authorized by release outbox");
   if (typeof inputs.packages_json !== "string" || canonical(JSON.parse(inputs.packages_json) as Json) !== canonical(binding.packages as Json)) throw new Error("preflight dispatch inputs do not authorize package selection");
+}
+
+export async function assertExistingArtifactMatches(
+  env: Pick<CoordinatorEnv, "DB" | "ARTIFACTS">,
+  repository: string,
+  artifact: ObjectValue,
+): Promise<void> {
+  const id = string(artifact.id, "artifact.id");
+  const version = string(artifact.version, "artifact.version");
+  const expected = string(artifact.sha256, "artifact.sha256");
+  let actual: string | null = null;
+  if (id.startsWith("cargo:")) {
+    const row = await env.DB.prepare("SELECT object_key FROM cargo_packages WHERE name=?1 AND version=?2")
+      .bind(id.slice(6), version).first() as { object_key?: string } | null;
+    if (row) {
+      const object = await env.ARTIFACTS.get(string(row.object_key, "stored Cargo object key"));
+      if (!object) throw new Error(`existing shadow artifact bytes are missing: ${id}@${version}`);
+      actual = `sha256:${await sha256(new Uint8Array(await object.arrayBuffer()))}`;
+    }
+  } else if (id.startsWith("npm:")) {
+    const row = await env.DB.prepare("SELECT object_key FROM npm_packages WHERE name=?1 AND version=?2")
+      .bind(id.slice(4), version).first() as { object_key?: string } | null;
+    if (row) {
+      const object = await env.ARTIFACTS.get(string(row.object_key, "stored npm object key"));
+      if (!object) throw new Error(`existing shadow artifact bytes are missing: ${id}@${version}`);
+      actual = `sha256:${await sha256(new Uint8Array(await object.arrayBuffer()))}`;
+    }
+  } else if (id.startsWith("artifact:")) {
+    const name = `${id.slice("artifact:".length)}.tar.gz`;
+    const row = await env.DB.prepare("SELECT a.object_key FROM github_assets a JOIN github_releases r ON r.id=a.release_id WHERE r.repository=?1 AND r.tag_name=?2 AND a.name=?3")
+      .bind(repository, `v${version}`, name).first() as { object_key?: string } | null;
+    if (row) {
+      const object = await env.ARTIFACTS.get(string(row.object_key, "stored release object key"));
+      if (!object) throw new Error(`existing shadow artifact bytes are missing: ${id}@${version}`);
+      actual = `sha256:${await sha256(new Uint8Array(await object.arrayBuffer()))}`;
+    }
+  }
+  if (actual !== null && actual !== expected)
+    throw new Error(`existing shadow artifact digest mismatch: ${id}@${version}`);
 }
 
 async function dispatch(request: Request, eventType: "lenso-plan-ready" | "lenso-publish-receipt"): Promise<Response> {
@@ -148,6 +191,7 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
     const cargoDigest = artifact.cargoMetadataSha256;
     if (kind === "cargo" ? !cargoMetadata || cargoDigest !== await canonicalSha256(cargoMetadata as Json) : cargoMetadata !== null || cargoDigest !== null)
       throw new Error("Cargo upload metadata binding mismatch");
+    await assertExistingArtifactMatches(env, row.repository, artifact);
   }
   const consumedAt = new Date().toISOString();
   const result = await env.DB.prepare("UPDATE preflight_proofs SET consumed_at=?2 WHERE proof_id=?1 AND consumed_at IS NULL AND token=?3 AND binding_digest=?4 AND binding_json=?5 AND expires_at>?2")

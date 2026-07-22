@@ -15,7 +15,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, retireFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 
@@ -188,6 +188,7 @@ export async function createCoordinatorHandlers(
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
+  retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
     ? new URL("../../../config/components.yaml", import.meta.url).pathname
@@ -243,6 +244,7 @@ export async function createCoordinatorHandlers(
     receipt(value: unknown): Promise<StoredPlanState>;
     recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
+    retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -736,6 +738,31 @@ export async function createCoordinatorHandlers(
         },
         now(),
       );
+    },
+    async retryFailedShadowPlan(repository, planId) {
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const token = await input.tokens.tokenFor(repository, { actions: "read", metadata: "read" });
+      await retryFailedShadowPlan(
+        input.store,
+        repository,
+        planId,
+        input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit },
+              entry.eventId,
+              token,
+            );
+          },
+        },
+        now(),
+        nonce(),
+        input.config.appId,
+      );
+      return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
     },
   };
   return handlers;

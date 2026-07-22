@@ -591,8 +591,8 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
       await publishOnce(environment, item, artifact);
       observed = await observe();
       if (!observed.exists) fail("published package is not registry-visible");
-      if (hash(observed.bytes!) !== hash(artifact.bytes)) fail("registry archive differs from packed archive");
     }
+    if (hash(observed.bytes!) !== hash(artifact.bytes)) fail("registry archive differs from packed archive");
     const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
     const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment, fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
     assertComponentReceipt(receipt);
