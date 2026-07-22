@@ -69,6 +69,9 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("if: ${{ hashFiles('.lenso-release/plan.json') != '' && hashFiles('.tegami/*.md') == '' }}");
     expect(source).toContain("if: ${{ hashFiles('.tegami/*.md') != '' }}");
     expect(source).toContain("if: ${{ steps.draft.outputs.created == 'true' }}");
+    expect(source).toContain('git ls-remote --exit-code --heads "$remote" "refs/heads/$BRANCH"');
+    expect(source).toContain('git fetch --no-tags "$remote" "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"');
+    expect(source.indexOf("git fetch --no-tags")).toBeLessThan(source.indexOf("git push --force-with-lease"));
     expect(source).not.toMatch(/github\.token|git push origin/u);
     expect(source).not.toMatch(/rm\s+.*plan\.json/u);
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
