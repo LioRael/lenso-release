@@ -162,10 +162,12 @@ describe("publisher preflight execution gate", () => {
     const service = { id: "cargo:lenso-service", version: "0.1.5" } as const;
     const autonomous = { id: "cargo:lenso-autonomous-service", version: "0.1.1" } as const;
     const contracts = { id: "cargo:lenso-contracts", version: "0.3.8" } as const;
+    const testing = { id: "cargo:lenso-platform-testing", version: "0.1.2" } as const;
     const plan = { packages: [
       { id: autonomous.id, nextVersion: autonomous.version, dependencies: [{ id: service.id, source: "plan", resolvedVersion: service.version }] },
       { id: service.id, nextVersion: service.version, dependencies: [{ id: contracts.id, source: "plan", resolvedVersion: contracts.version }] },
       { id: contracts.id, nextVersion: contracts.version, dependencies: [] },
+      { id: testing.id, nextVersion: testing.version, dependencies: [] },
     ] } as unknown as ReleasePlanV1;
     const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`;
     try {
@@ -173,7 +175,7 @@ describe("publisher preflight execution gate", () => {
       expect(cargoVerificationOrder(plan, [autonomous, service])).toEqual([contracts, service, autonomous]);
       expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
         "publish --dry-run --locked -p lenso-contracts -p lenso-service -p lenso-autonomous-service",
-        "package --locked --no-verify -p lenso-contracts -p lenso-service -p lenso-autonomous-service",
+        "package --locked --no-verify -p lenso-contracts -p lenso-service -p lenso-autonomous-service -p lenso-platform-testing",
       ]);
       expect(await readFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "utf8")).toBe("fresh-lenso-service");
       expect(await readFile(join(cwd, "target/package/lenso-autonomous-service-0.1.1.crate"), "utf8")).toBe("fresh-lenso-autonomous-service");
