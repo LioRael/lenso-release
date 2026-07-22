@@ -192,7 +192,10 @@ export async function createPreflightProof(environment: RuntimeEnvironment): Pro
   const { binding, digest } = await gateBinding(environment); const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_URL;
   if (!endpoint) fail("coordinator preflight endpoint is required");
   const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": environment.eventId }, body: JSON.stringify({ schema: "lenso.publisher-preflight.v1", binding, bindingDigest: digest }) });
-  if (!response.ok) fail(`coordinator preflight confirmation ${response.status}`);
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    fail(`coordinator preflight confirmation ${response.status}: ${detail}`);
+  }
   const proof = await response.json() as PreflightProof; const now = Date.now(); const issued = Date.parse(proof.issuedAt); const expires = Date.parse(proof.expiresAt);
   if (proof.schema !== "lenso.publisher-preflight-proof.v1" || !/^sha256:[0-9a-f]{64}$/u.test(proof.proofId) || proof.bindingDigest !== digest || typeof proof.token !== "string" || proof.token.length < 32 || !Number.isFinite(issued) || !Number.isFinite(expires) || issued < now - 30_000 || issued > now + 30_000 || expires <= now || expires > now + 300_000) fail("invalid coordinator preflight proof");
   await writeProof(environment.cwd, proof); return proof;
