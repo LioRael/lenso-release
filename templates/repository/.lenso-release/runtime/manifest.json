@@ -1,6 +1,6 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "1c0015a9142c1b366046ba8105f6f88d7ac356d5",
+  "sourceRevision": "ffffa92ccaa4851a81b4cfd74fbe31f849a77846",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
