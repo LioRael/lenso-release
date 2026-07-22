@@ -245,7 +245,8 @@ export async function stageCargoArchives(cwd, plan, selected) {
     const cargoPackages = publicationOrder(plan, selected).filter(({ id }) => id.startsWith("cargo:"));
     if (cargoPackages.length === 0)
         return;
-    const packageArgs = cargoPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
+    const verificationPackages = cargoVerificationOrder(plan, cargoPackages);
+    const packageArgs = verificationPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
     // One Cargo invocation creates a temporary local registry containing all
     // selected packages, so same-plan dependency versions can be verified
     // without weakening the no-write preflight boundary.
@@ -263,6 +264,36 @@ export async function stageCargoArchives(cwd, plan, selected) {
         if (!info.isFile() || info.nlink !== 1)
             fail(`Cargo archive is not an isolated regular file: ${name} ${item.version}`);
     }
+}
+export function cargoVerificationOrder(plan, selected) {
+    const packagesById = new Map(plan.packages.map((item) => [item.id, item]));
+    const visiting = new Set();
+    const visited = new Set();
+    const ordered = [];
+    const visit = (item) => {
+        if (visited.has(item.id))
+            return;
+        if (visiting.has(item.id))
+            fail(`selected package dependency cycle: ${item.id}`);
+        const planned = packagesById.get(item.id);
+        if (!planned)
+            fail(`selected package missing from plan: ${item.id}`);
+        visiting.add(item.id);
+        for (const dependency of planned.dependencies) {
+            if (dependency.source !== "plan" || !dependency.id.startsWith("cargo:"))
+                continue;
+            const plannedDependency = packagesById.get(dependency.id);
+            if (!plannedDependency || plannedDependency.nextVersion !== dependency.resolvedVersion)
+                fail(`planned Cargo dependency is missing or inconsistent: ${dependency.id}`);
+            visit({ id: plannedDependency.id, version: plannedDependency.nextVersion });
+        }
+        visiting.delete(item.id);
+        visited.add(item.id);
+        ordered.push(item);
+    };
+    for (const item of selected)
+        visit(item);
+    return ordered;
 }
 async function writeSealedMarker(cwd, marker) {
     const path = join(cwd, ".lenso-release/preflight-marker.json");

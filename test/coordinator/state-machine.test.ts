@@ -582,7 +582,7 @@ describe("atomic coordinator state", () => {
     const running = state(); running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
     await expect(cancelPlan(new MemoryStore(snapshot(running)), "LioRael/lenso", digest("a"), digest("e"), new Date())).rejects.toThrow("dispatch begins");
   });
-  it("retires only a zero-receipt shadow plan with conclusively failed runs and absent versions", async () => {
+  it("retires failed shadow plans while preserving exact received versions", async () => {
     const failed = state();
     failed.outbox[0] = {
       ...failed.outbox[0]!,
@@ -623,12 +623,16 @@ describe("atomic coordinator state", () => {
     }];
     const withReceiptSnapshot = snapshot(withReceipt);
     withReceiptSnapshot.occupiedPackages = {};
-    await expect(retireFailedShadowPlan(new MemoryStore(withReceiptSnapshot), withReceipt.repository, withReceipt.planId, digest("f"), "shadow", facts, new Date())).rejects.toThrow("zero receipts");
+    const partiallyRetired = await retireFailedShadowPlan(new MemoryStore(withReceiptSnapshot), withReceipt.repository, withReceipt.planId, digest("f"), "shadow", {
+      async observeRun() { return { runUrl: withReceipt.outbox[0]!.runUrl!, status: "completed", conclusion: "success" }; },
+      async packageVersionExists(id, version) { return id === withReceipt.receipts[0]!.packageId && version === withReceipt.receipts[0]!.version; },
+    }, new Date());
+    expect(partiallyRetired.state).toMatchObject({ status: "blocked", receipts: withReceipt.receipts, occupancyKeys: [] });
 
     for (const [mode, receipts, conclusion, exists, message] of [
       ["production", [], "failure", false, "shadow mode"],
       ["shadow", [], "success", false, "conclusively failed"],
-      ["shadow", [], "failure", true, "already exists"],
+      ["shadow", [], "failure", true, "unreceived package version already exists"],
     ] as const) {
       const candidate = structuredClone(failed);
       candidate.receipts = receipts as never;
