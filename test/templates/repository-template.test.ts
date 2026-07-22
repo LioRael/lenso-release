@@ -158,7 +158,7 @@ describe("publisher preflight execution gate", () => {
     const cwd = await temp(); const bin = join(cwd, "bin"); const log = join(cwd, "cargo.log");
     await mkdir(bin); await mkdir(join(cwd, "target/package"), { recursive: true });
     await writeFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "stale");
-    await writeFile(join(bin, "cargo"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif test "$1" = package; then\n  case "$5" in\n    lenso-service) version=0.1.5 ;;\n    lenso-autonomous-service) version=0.1.1 ;;\n    *) exit 9 ;;\n  esac\n  mkdir -p target/package\n  printf 'fresh-%s' "$5" > "target/package/$5-$version.crate"\nfi\n`); await chmod(join(bin, "cargo"), 0o755);
+    await writeFile(join(bin, "cargo"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif test "$1" = package; then\n  mkdir -p target/package\n  printf 'fresh-contracts' > target/package/lenso-contracts-0.3.8.crate\n  printf 'fresh-lenso-service' > target/package/lenso-service-0.1.5.crate\n  printf 'fresh-lenso-autonomous-service' > target/package/lenso-autonomous-service-0.1.1.crate\nfi\n`); await chmod(join(bin, "cargo"), 0o755);
     const service = { id: "cargo:lenso-service", version: "0.1.5" } as const;
     const autonomous = { id: "cargo:lenso-autonomous-service", version: "0.1.1" } as const;
     const contracts = { id: "cargo:lenso-contracts", version: "0.3.8" } as const;
@@ -173,8 +173,7 @@ describe("publisher preflight execution gate", () => {
       expect(cargoVerificationOrder(plan, [autonomous, service])).toEqual([contracts, service, autonomous]);
       expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
         "publish --dry-run --locked -p lenso-contracts -p lenso-service -p lenso-autonomous-service",
-        "package --locked --no-verify -p lenso-service",
-        "package --locked --no-verify -p lenso-autonomous-service",
+        "package --locked --no-verify -p lenso-contracts -p lenso-service -p lenso-autonomous-service",
       ]);
       expect(await readFile(join(cwd, "target/package/lenso-service-0.1.5.crate"), "utf8")).toBe("fresh-lenso-service");
       expect(await readFile(join(cwd, "target/package/lenso-autonomous-service-0.1.1.crate"), "utf8")).toBe("fresh-lenso-autonomous-service");
