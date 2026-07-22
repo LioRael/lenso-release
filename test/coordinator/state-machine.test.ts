@@ -600,6 +600,31 @@ describe("atomic coordinator state", () => {
     expect(store.snapshot.occupiedPackages).toEqual({});
     expect(() => assertLegalTransition(retired.state, { ...retired.state, revision: retired.state.revision + 1 })).toThrow("retired");
 
+    const withReceipt = structuredClone(failed);
+    withReceipt.packages[0]!.status = "received";
+    withReceipt.occupancyKeys = [`plan:${withReceipt.repository}:${withReceipt.planId}`];
+    withReceipt.receipts = [{
+      schema: "lenso.component-receipt.v1",
+      environment: "shadow",
+      receiptId: digest("9"),
+      planId: withReceipt.planId,
+      packageId: withReceipt.packages[0]!.id,
+      version: withReceipt.packages[0]!.version,
+      repository: withReceipt.repository,
+      sourceCommit: withReceipt.releaseCommit,
+      packedSha256: digest("8"),
+      registryIntegrity: "8".repeat(64),
+      registryUrl: "https://shadow.example/lenso-contracts.crate",
+      provenanceUrl: "https://shadow.example/attestations/1",
+      provenanceSubject: { name: "lenso-contracts-1.0.0.crate", digest: digest("8") },
+      workflowUrl: withReceipt.outbox[0]!.runUrl!,
+      tagUrl: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0",
+      publishedAt: "2026-07-11T00:02:00Z",
+    }];
+    const withReceiptSnapshot = snapshot(withReceipt);
+    withReceiptSnapshot.occupiedPackages = {};
+    await expect(retireFailedShadowPlan(new MemoryStore(withReceiptSnapshot), withReceipt.repository, withReceipt.planId, digest("f"), "shadow", facts, new Date())).rejects.toThrow("zero receipts");
+
     for (const [mode, receipts, conclusion, exists, message] of [
       ["production", [], "failure", false, "shadow mode"],
       ["shadow", [], "success", false, "conclusively failed"],

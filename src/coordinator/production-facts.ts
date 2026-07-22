@@ -15,7 +15,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { retireFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, retireFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 
@@ -79,6 +79,15 @@ export async function checkedGithubAsset(request: typeof fetch, url: string, tok
 }
 function nonce() {
   return crypto.randomUUID();
+}
+
+export function npmPackumentContainsVersion(value: unknown, version: string): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new TypeError("shadow npm packument invalid");
+  const versions = (value as Record<string, unknown>).versions;
+  if (versions === null || typeof versions !== "object" || Array.isArray(versions))
+    throw new TypeError("shadow npm packument versions invalid");
+  return Object.hasOwn(versions, version);
 }
 
 export function executionRefProtectionIsImmutable(value: unknown): boolean {
@@ -661,7 +670,7 @@ export async function createCoordinatorHandlers(
     },
     async retireFailedShadowPlan(repository, planId, eventId) {
       const snapshot = await input.store.readSnapshot();
-      const state = snapshot.plans[`plans/${encodeURIComponent(repository)}/${planId.replace("sha256:", "")}.json`];
+      const state = snapshot.plans[planStatePath(repository, planId)];
       if (!state) throw new Error("plan state not found");
       const token = await input.tokens.tokenFor(repository, { actions: "read", metadata: "read" });
       return retireFailedShadowPlan(
@@ -690,9 +699,7 @@ export async function createCoordinatorHandlers(
               response = await request(`${input.env.LENSO_SHADOW_NPM_REGISTRY_URL}/${encodeURIComponent(id.slice(4))}`, { redirect: "error" });
               if (response.status === 404) return false;
               if (!response.ok) throw new Error(`shadow registry observation ${response.status}`);
-              const packument = await response.json() as Record<string, unknown>;
-              const versions = packument.versions as Record<string, unknown> | undefined;
-              return versions !== undefined && Object.hasOwn(versions, version);
+              return npmPackumentContainsVersion(await response.json(), version);
             }
             const component = registry.packages[id];
             if (!component) throw new TypeError(`unknown package ${id}`);

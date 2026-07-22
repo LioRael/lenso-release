@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, npmPackumentContainsVersion, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -17,6 +17,12 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("fails closed when npm absence cannot be proven from a valid packument", () => {
+    expect(npmPackumentContainsVersion({ versions: { "1.0.0": {} } }, "1.0.0")).toBe(true);
+    expect(npmPackumentContainsVersion({ versions: {} }, "1.0.0")).toBe(false);
+    for (const malformed of [{}, { versions: null }, { versions: [] }, null])
+      expect(() => npmPackumentContainsVersion(malformed, "1.0.0")).toThrow("packument");
+  });
   it("accepts only immutable execution-ref branch protection", () => {
     const exact = {
       enforce_admins: { enabled: true },
