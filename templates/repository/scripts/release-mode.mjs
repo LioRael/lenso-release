@@ -25,4 +25,3 @@ if (mode === "shadow") {
     console.log(`${target}=${value}`);
   }
 }
-
