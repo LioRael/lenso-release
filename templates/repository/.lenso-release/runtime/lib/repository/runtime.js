@@ -209,6 +209,14 @@ export async function consumePreflightProof(environment) {
     const artifactDirectory = join(environment.cwd, ".lenso-release/preflight-artifacts", proof.proofId.slice(7));
     await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
     const artifacts = [];
+    const cargoPackages = publicationOrder(plan, environment.packages).filter(({ id }) => id.startsWith("cargo:"));
+    if (cargoPackages.length > 0) {
+        const packageArgs = cargoPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
+        // One Cargo invocation creates a temporary local registry containing all
+        // selected packages, so same-plan dependency versions can be verified
+        // without weakening the no-write preflight boundary.
+        await execFile("cargo", ["publish", "--dry-run", "--locked", ...packageArgs], { cwd: environment.cwd });
+    }
     for (const item of environment.packages) {
         const packed = await packedArtifact(environment.cwd, item);
         const destination = join(artifactDirectory, basename(packed.path));
@@ -219,8 +227,6 @@ export async function consumePreflightProof(environment) {
             fail("sealed artifact is not an isolated regular file");
         if (item.id.startsWith("npm:"))
             await execFile("npm", ["publish", destination, "--dry-run", "--ignore-scripts"], { cwd: environment.cwd });
-        else if (item.id.startsWith("cargo:"))
-            await execFile("cargo", ["publish", "--dry-run", "--locked", "-p", item.id.slice(6)], { cwd: environment.cwd });
         const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
         const kind = item.id.startsWith("npm:") ? "npm" : item.id.startsWith("cargo:") ? "cargo" : "artifact";
         const cargoMetadata = kind === "cargo" ? await cargoWireMetadataFromCrate(destination, name, item.version) : null;
@@ -446,9 +452,36 @@ async function packedArtifact(cwd, item) {
         return { path, bytes };
     }
     const name = item.id.slice(6);
-    await execFile("cargo", ["package", "--locked", "-p", name], { cwd });
     const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
     return { path, bytes: await readFile(path) };
+}
+export function publicationOrder(plan, selected) {
+    const selectedById = new Map(selected.map((item) => [item.id, item]));
+    const packagesById = new Map(plan.packages.map((item) => [item.id, item]));
+    const visiting = new Set();
+    const visited = new Set();
+    const ordered = [];
+    const visit = (item) => {
+        if (visited.has(item.id))
+            return;
+        if (visiting.has(item.id))
+            fail(`selected package dependency cycle: ${item.id}`);
+        visiting.add(item.id);
+        const planned = packagesById.get(item.id);
+        if (!planned)
+            fail(`selected package missing from plan: ${item.id}`);
+        for (const dependency of planned.dependencies) {
+            const selectedDependency = selectedById.get(dependency.id);
+            if (selectedDependency)
+                visit(selectedDependency);
+        }
+        visiting.delete(item.id);
+        visited.add(item.id);
+        ordered.push(item);
+    };
+    for (const item of selected)
+        visit(item);
+    return ordered;
 }
 async function publishOnce(environment, item, artifact) {
     if (item.id.startsWith("npm:")) {
@@ -608,7 +641,7 @@ export async function publishSelected(environment) {
     const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
     const fixedGroup = selectedFixedGroup(config, environment.packages);
     const receipts = [];
-    for (const item of environment.packages) {
+    for (const item of publicationOrder(plan, environment.packages)) {
         const name = item.id.slice(item.id.indexOf(":") + 1);
         const observe = () => item.id.startsWith("npm:")
             ? npmObservation(name, item.version)
