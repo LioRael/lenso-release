@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { consumePreflightProof, createPreflightProof, preflight, publishSelected } from "../../src/repository/runtime.js";
+import { consumePreflightProof, createPreflightProof, preflight, publicationOrder, publishSelected } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -139,6 +139,21 @@ async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string;
 }
 
 describe("publisher preflight execution gate", () => {
+  it("publishes selected packages after their selected plan dependencies", () => {
+    const service = { id: "cargo:lenso-service", version: "0.1.5" } as const;
+    const autonomous = { id: "cargo:lenso-autonomous-service", version: "0.1.1" } as const;
+    const plan = {
+      packages: [
+        { id: autonomous.id, dependencies: [{ id: service.id }] },
+        { id: service.id, dependencies: [] },
+      ],
+    } as unknown as ReleasePlanV1;
+    expect(publicationOrder(plan, [autonomous, service])).toEqual([service, autonomous]);
+
+    plan.packages[1]!.dependencies = [{ id: autonomous.id }] as ReleasePlanV1["packages"][number]["dependencies"];
+    expect(() => publicationOrder(plan, [autonomous, service])).toThrow("selected package dependency cycle");
+  });
+
   it("accepts the exact reviewed runtime and rejects workflow, bundle and generated-file drift before publish", async () => {
     const fixture = await repositoryFixture();
     const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
