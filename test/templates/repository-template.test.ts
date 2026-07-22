@@ -168,6 +168,22 @@ async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string;
 }
 
 describe("publisher preflight execution gate", () => {
+  it("stages Cargo archives before issuing the short-lived preflight proof", async () => {
+    const source = await readFile(join(root, "src/repository/runtime.ts"), "utf8");
+    const issue = source.slice(
+      source.indexOf("export async function createPreflightProof"),
+      source.indexOf("export async function consumePreflightProof"),
+    );
+    const consume = source.slice(
+      source.indexOf("export async function consumePreflightProof"),
+      source.indexOf("export async function stageCargoArchives"),
+    );
+    expect(issue).toContain("await stageCargoArchives(environment.cwd, plan, environment.packages)");
+    expect(issue.indexOf("await stageCargoArchives")).toBeLessThan(issue.indexOf("await fetch(endpoint"));
+    expect(consume).not.toContain("await stageCargoArchives");
+    expect(consume).toContain("coordinator preflight proof consumption ${response.status}: ${detail}");
+  });
+
   it("publishes selected packages after their selected plan dependencies", () => {
     const service = { id: "cargo:lenso-service", version: "0.1.5" } as const;
     const autonomous = { id: "cargo:lenso-autonomous-service", version: "0.1.1" } as const;
