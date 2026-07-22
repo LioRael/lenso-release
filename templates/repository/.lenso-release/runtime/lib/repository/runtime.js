@@ -729,9 +729,9 @@ export async function publishSelected(environment) {
             observed = await observe();
             if (!observed.exists)
                 fail("published package is not registry-visible");
-            if (hash(observed.bytes) !== hash(artifact.bytes))
-                fail("registry archive differs from packed archive");
         }
+        if (hash(observed.bytes) !== hash(artifact.bytes))
+            fail("registry archive differs from packed archive");
         const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
         const receipt = receiptFor(plan, item, observed, provenanceUrl, environment, fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
         assertComponentReceipt(receipt);
