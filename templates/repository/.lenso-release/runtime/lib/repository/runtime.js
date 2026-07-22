@@ -252,13 +252,18 @@ export async function stageCargoArchives(cwd, plan, selected) {
     // without weakening the no-write preflight boundary.
     await execFile("cargo", ["publish", "--dry-run", "--locked", ...packageArgs], { cwd });
     // Cargo removes archives produced by `publish --dry-run`. Materialize the
-    // already-verified source without running a second, dependency-isolated
-    // verification pass, then seal those exact bytes below.
+    // already-verified source in one dependency-aware invocation as well: a
+    // later phase may depend on an ancestor version that exists only in the
+    // shadow registry and is therefore unavailable to an isolated `package`.
     for (const item of cargoPackages) {
         const name = item.id.slice(6);
         const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
         await rm(path, { force: true });
-        await execFile("cargo", ["package", "--locked", "--no-verify", "-p", name], { cwd });
+    }
+    await execFile("cargo", ["package", "--locked", "--no-verify", ...packageArgs], { cwd });
+    for (const item of cargoPackages) {
+        const name = item.id.slice(6);
+        const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
         const info = await lstat(path).catch((error) => { if (error.code === "ENOENT")
             fail(`Cargo did not materialize archive: ${name} ${item.version}`); throw error; });
         if (!info.isFile() || info.nlink !== 1)
