@@ -204,14 +204,7 @@ export async function consumePreflightProof(environment: RuntimeEnvironment): Pr
   if (proof.schema !== "lenso.publisher-preflight-proof.v1" || proof.bindingDigest !== digest || Date.parse(proof.expiresAt) <= Date.now()) fail("preflight proof is stale or does not bind this execution");
   const artifactDirectory = join(environment.cwd, ".lenso-release/preflight-artifacts", proof.proofId.slice(7)); await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
   const artifacts: AuthorizedArtifact[] = [];
-  const cargoPackages = publicationOrder(plan, environment.packages).filter(({ id }) => id.startsWith("cargo:"));
-  if (cargoPackages.length > 0) {
-    const packageArgs = cargoPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
-    // One Cargo invocation creates a temporary local registry containing all
-    // selected packages, so same-plan dependency versions can be verified
-    // without weakening the no-write preflight boundary.
-    await execFile("cargo", ["publish", "--dry-run", "--locked", ...packageArgs], { cwd: environment.cwd });
-  }
+  await stageCargoArchives(environment.cwd, plan, environment.packages);
   for (const item of environment.packages) {
     const packed = await packedArtifact(environment.cwd, item); const destination = join(artifactDirectory, basename(packed.path));
     await copyFile(packed.path, destination, constants.COPYFILE_EXCL); await chmod(destination, 0o400); const info = await stat(destination);
@@ -231,6 +224,27 @@ export async function consumePreflightProof(environment: RuntimeEnvironment): Pr
   verifyAuthorization(confirmation.authorization, confirmation.signature, digest, environment, artifacts);
   const marker: SealedMarker = { schema: "lenso.publisher-sealed-marker.v1", authorization: confirmation.authorization, signature: confirmation.signature };
   await writeSealedMarker(environment.cwd, marker); await rm(join(environment.cwd, ".lenso-release/preflight-proof.json"), { force: true }); return marker;
+}
+
+export async function stageCargoArchives(cwd: string, plan: ReleasePlanV1, selected: PublishSelection[]): Promise<void> {
+  const cargoPackages = publicationOrder(plan, selected).filter(({ id }) => id.startsWith("cargo:"));
+  if (cargoPackages.length === 0) return;
+  const packageArgs = cargoPackages.flatMap(({ id }) => ["-p", id.slice(6)]);
+  // One Cargo invocation creates a temporary local registry containing all
+  // selected packages, so same-plan dependency versions can be verified
+  // without weakening the no-write preflight boundary.
+  await execFile("cargo", ["publish", "--dry-run", "--locked", ...packageArgs], { cwd });
+  // Cargo removes archives produced by `publish --dry-run`. Materialize the
+  // already-verified source without running a second, dependency-isolated
+  // verification pass, then seal those exact bytes below.
+  for (const item of cargoPackages) {
+    const name = item.id.slice(6);
+    const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
+    await rm(path, { force: true });
+    await execFile("cargo", ["package", "--locked", "--no-verify", "-p", name], { cwd });
+    const info = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") fail(`Cargo did not materialize archive: ${name} ${item.version}`); throw error; });
+    if (!info.isFile() || info.nlink !== 1) fail(`Cargo archive is not an isolated regular file: ${name} ${item.version}`);
+  }
 }
 async function writeSealedMarker(cwd: string, marker: SealedMarker): Promise<void> {
   const path = join(cwd, ".lenso-release/preflight-marker.json"); const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
