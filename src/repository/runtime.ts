@@ -68,6 +68,12 @@ type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; authorization:
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
+export function npmRegistryAuthentication(registry: string): { registry: string; authKey: string } {
+  const url = new URL(registry);
+  if (url.username || url.password || url.search || url.hash) fail("npm registry URL must not contain credentials, query parameters, or a fragment");
+  url.pathname = url.pathname.replace(/\/?$/u, "/");
+  return { registry: url.toString(), authKey: `//${url.host}${url.pathname}:_authToken` };
+}
 function safeRelative(path: string): void {
   if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === "..")) fail(`unsafe path ${path}`);
 }
@@ -448,18 +454,17 @@ export function publicationOrder(plan: ReleasePlanV1, selected: PublishSelection
 async function publishOnce(environment: RuntimeEnvironment, item: PublishSelection, artifact: { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }): Promise<void> {
   if (item.id.startsWith("npm:")) {
     const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
-    const registry = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
+    const npmAuth = npmRegistryAuthentication(process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org");
+    const registry = npmAuth.registry;
     let authDirectory: string | undefined;
     try {
       const authArgs: string[] = [];
       if (shadow) {
         const token = process.env.NODE_AUTH_TOKEN;
         if (!token) fail("shadow npm registry token is required");
-        const url = new URL(registry);
         authDirectory = await mkdtemp(join(tmpdir(), "lenso-npm-auth-"));
         const userConfig = join(authDirectory, "npmrc");
-        const authPath = `${url.pathname.replace(/\/?$/u, "/")}`;
-        await writeFile(userConfig, `registry=${registry}\n//${url.host}${authPath}:_authToken=${token}\nalways-auth=true\n`, { mode: 0o600 });
+        await writeFile(userConfig, `registry=${registry}\n${npmAuth.authKey}=${token}\n`, { mode: 0o600 });
         authArgs.push("--userconfig", userConfig);
       } else if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) {
         fail("npm token fallback is forbidden");
