@@ -39,6 +39,8 @@ export type ObservedWorkflowRun = DispatchRunContext & {
   event: "workflow_dispatch";
   runName: string;
   runUrl: string;
+  status: string;
+  conclusion: string | null;
 };
 export type WorkflowDispatcher = {
   findByEventId(

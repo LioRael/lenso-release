@@ -15,7 +15,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import type { GitStateStore, StoredPlanState } from "./state.js";
+import { planStatePath, retireFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 
@@ -79,6 +79,15 @@ export async function checkedGithubAsset(request: typeof fetch, url: string, tok
 }
 function nonce() {
   return crypto.randomUUID();
+}
+
+export function npmPackumentContainsVersion(value: unknown, version: string): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new TypeError("shadow npm packument invalid");
+  const versions = (value as Record<string, unknown>).versions;
+  if (versions === null || typeof versions !== "object" || Array.isArray(versions))
+    throw new TypeError("shadow npm packument versions invalid");
+  return Object.hasOwn(versions, version);
 }
 
 export function executionRefProtectionIsImmutable(value: unknown): boolean {
@@ -164,6 +173,7 @@ export async function createCoordinatorHandlers(
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+  retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
     ? new URL("../../../config/components.yaml", import.meta.url).pathname
@@ -218,6 +228,7 @@ export async function createCoordinatorHandlers(
     ready(value: unknown): Promise<StoredPlanState>;
     receipt(value: unknown): Promise<StoredPlanState>;
     recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+    retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -656,6 +667,50 @@ export async function createCoordinatorHandlers(
             },
           });
       });
+    },
+    async retireFailedShadowPlan(repository, planId, eventId) {
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const token = await input.tokens.tokenFor(repository, { actions: "read", metadata: "read" });
+      return retireFailedShadowPlan(
+        input.store,
+        repository,
+        planId,
+        eventId,
+        input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit },
+              entry.eventId,
+              token,
+            );
+          },
+          async packageVersionExists(id, version) {
+            let response: Response;
+            if (id.startsWith("cargo:")) {
+              response = await request(`${input.env.LENSO_SHADOW_CRATES_API_URL}/api/v1/crates/${encodeURIComponent(id.slice(6))}/${encodeURIComponent(version)}`, { redirect: "error" });
+              if (response.status === 404) return false;
+              if (!response.ok) throw new Error(`shadow registry observation ${response.status}`);
+              return true;
+            }
+            if (id.startsWith("npm:")) {
+              response = await request(`${input.env.LENSO_SHADOW_NPM_REGISTRY_URL}/${encodeURIComponent(id.slice(4))}`, { redirect: "error" });
+              if (response.status === 404) return false;
+              if (!response.ok) throw new Error(`shadow registry observation ${response.status}`);
+              return npmPackumentContainsVersion(await response.json(), version);
+            }
+            const component = registry.packages[id];
+            if (!component) throw new TypeError(`unknown package ${id}`);
+            response = await request(`${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${component.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`, { redirect: "error", headers: headers(token) });
+            if (response.status === 404) return false;
+            if (!response.ok) throw new Error(`shadow release observation ${response.status}`);
+            return true;
+          },
+        },
+        now(),
+      );
     },
   };
   return handlers;

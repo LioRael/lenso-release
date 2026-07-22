@@ -234,7 +234,14 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       (item.repository as Record<string, unknown> | undefined)?.full_name === context.repository &&
       String(item.html_url) === `https://github.com/${context.repository}/actions/runs/${String(item.id)}`,
     );
-    return run ? { ...context, event: "workflow_dispatch", runName, runUrl: String(run.html_url) } : null;
+    return run ? {
+      ...context,
+      event: "workflow_dispatch",
+      runName,
+      runUrl: String(run.html_url),
+      status: String(run.status),
+      conclusion: run.conclusion === null ? null : String(run.conclusion),
+    } : null;
   }
   async dispatch(
     command: DispatchCommand,
