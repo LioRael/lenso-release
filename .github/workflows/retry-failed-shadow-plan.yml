@@ -1,0 +1,45 @@
+name: retry-failed-shadow-plan
+run-name: retry-failed-shadow-plan:${{ inputs.repository }}:${{ inputs.plan_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Exact owner/repository of the blocked shadow plan
+        required: true
+        type: string
+      plan_id:
+        description: Exact sha256 plan ID
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: retry-failed-shadow-plan
+  cancel-in-progress: false
+jobs:
+  retry:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0
+        with:
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: corepack pnpm install --frozen-lockfile && corepack pnpm build
+      - run: node dist/src/commands/handle-event.js --retry-failed-shadow-plan --repository "$RETRY_REPOSITORY" --plan-id "$RETRY_PLAN_ID"
+        env:
+          RETRY_REPOSITORY: ${{ inputs.repository }}
+          RETRY_PLAN_ID: ${{ inputs.plan_id }}
+          LENSO_GITHUB_APP_ID: ${{ secrets.LENSO_GITHUB_APP_ID }}
+          LENSO_GITHUB_APP_INSTALLATION_ID: ${{ secrets.LENSO_GITHUB_APP_INSTALLATION_ID }}
+          LENSO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.LENSO_GITHUB_APP_PRIVATE_KEY }}
+          LENSO_GITHUB_APP_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}
+          LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}
+          LENSO_COORDINATOR_FACTS_MODULE: file://${{ github.workspace }}/dist/src/coordinator/production-facts.js
+          LENSO_COORDINATOR_MODE: ${{ vars.LENSO_COORDINATOR_MODE }}

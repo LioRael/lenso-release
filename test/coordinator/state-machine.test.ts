@@ -17,6 +17,7 @@ import {
   assertReleaseStateSnapshot,
   cancelPlan,
   retireFailedShadowPlan,
+  retryFailedShadowPlan,
   planStatePath,
   StateConflictError,
   transact,
@@ -662,6 +663,49 @@ describe("atomic coordinator state", () => {
       }, new Date())).rejects.toThrow(message);
     }
   });
+  it("retries a conclusively failed shadow dispatch with a fresh binding", async () => {
+    const failed = state();
+    failed.outbox[0] = {
+      ...failed.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
+    };
+    const previousEventId = failed.outbox[0]!.eventId;
+    const store = new MemoryStore(snapshot(failed));
+    const retried = await retryFailedShadowPlan(
+      store,
+      failed.repository,
+      failed.planId,
+      "shadow",
+      { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
+      new Date("2026-07-11T00:03:00Z"),
+      "retry-nonce",
+      42,
+    );
+    expect(retried.state.outbox).toHaveLength(2);
+    expect(retried.state.outbox.find(({ eventId }) => eventId === previousEventId)).toMatchObject({ status: "dispatched", runUrl: failed.outbox[0]!.runUrl });
+    const pending = retried.state.outbox.find(({ status }) => status === "pending")!;
+    expect(pending.eventId).not.toBe(previousEventId);
+    expect(pending.packages).toEqual(failed.outbox[0]!.packages);
+    expect(retried.state.packages[0]!.requestEventId).toBe(pending.eventId);
+    expect(retried.state.attempts.at(-1)).toMatchObject({ eventId: pending.eventId, kind: "recovery", outcome: "accepted", detail: "retry failed shadow dispatch" });
+    await expect(retryFailedShadowPlan(
+      store, failed.repository, failed.planId, "shadow",
+      { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
+      new Date("2026-07-11T00:04:00Z"), "second-retry", 42,
+    )).rejects.toThrow("already consumed");
+
+    await expect(retryFailedShadowPlan(
+      new MemoryStore(snapshot(failed)), failed.repository, failed.planId, "production",
+      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+    )).rejects.toThrow("shadow mode");
+    const running = structuredClone(failed);
+    running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", runUrl: null, claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
+    await expect(retryFailedShadowPlan(
+      new MemoryStore(snapshot(running)), running.repository, running.planId, "shadow",
+      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+    )).rejects.toThrow("pending or in-flight");
+  });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));
     const receipt = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));
@@ -678,6 +722,9 @@ describe("atomic coordinator state", () => {
     const retire = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retire-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retireFailedShadowPlan: retire }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retire).toHaveBeenCalledOnce();
+    const retry = vi.fn(async () => undefined);
+    expect(await runHandleEventCli(["--retry-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retryFailedShadowPlan: retry }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(retry).toHaveBeenCalledOnce();
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {

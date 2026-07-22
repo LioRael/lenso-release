@@ -25,6 +25,7 @@ export type StoredPlanState = { state: PlanStateV1; headSha: string };
 export class StateConflictError extends Error {}
 
 const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
+const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -304,9 +305,12 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
       const right = `${b.id}:${b.version}`;
       return left < right ? -1 : left > right ? 1 : 0;
     });
+    const historical = expectedPackages.length === 0;
     if (
-      JSON.stringify(canonicalSelection(entry.packages)) !==
-        JSON.stringify(canonicalSelection(expectedPackages)) ||
+      entry.packages.some(({ id, version }) => !packages.some((item) => item.id === id && item.version === version)) ||
+      (historical && !["dispatched", "cancelled"].includes(entry.status)) ||
+      (!historical && JSON.stringify(canonicalSelection(entry.packages)) !==
+        JSON.stringify(canonicalSelection(expectedPackages))) ||
       entry.inputs.plan_id !== state.planId ||
       entry.inputs.plan_sha256 !== state.planSha256 ||
       entry.inputs.release_commit !== state.releaseCommit ||
@@ -394,13 +398,23 @@ export function assertLegalTransition(
   )
     throw new TypeError("retired state is immutable");
   const statusRank = { pending: 0, dispatched: 1, received: 2 } as const;
+  const appendedAttempts = next.attempts.slice(previous.attempts.length);
+  const retryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
+    kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
+  );
+  const retryOutbox = retryAttempt
+    ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)
+    : undefined;
   for (let index = 0; index < previous.packages.length; index += 1) {
     const before = previous.packages[index]!;
     const after = next.packages[index]!;
     if (statusRank[after.status] < statusRank[before.status])
       throw new TypeError("package status regression");
-    if (before.requestEventId !== null && before.requestEventId !== after.requestEventId)
-      throw new TypeError("immutable package request rewrite");
+    if (
+      before.requestEventId !== null && before.requestEventId !== after.requestEventId &&
+      (!retryOutbox || after.requestEventId !== retryOutbox.eventId ||
+        !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version))
+    ) throw new TypeError("immutable package request rewrite");
   }
   const nextReceipts = new Set(next.receipts.map((receipt) => JSON.stringify(receipt)));
   if (
@@ -522,6 +536,111 @@ export type FailedShadowRetirementFacts = {
   } | null>;
   packageVersionExists(id: string, version: string): Promise<boolean>;
 };
+
+export type FailedShadowRetryFacts = {
+  observeRun(entry: PlanDispatchOutbox): Promise<{
+    runUrl: string;
+    status: string;
+    conclusion: string | null;
+  } | null>;
+};
+
+export async function retryFailedShadowPlan(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  mode: string | undefined,
+  facts: FailedShadowRetryFacts,
+  now: Date,
+  nonce: string,
+  appId: number,
+): Promise<StoredPlanState> {
+  if (mode !== "shadow") throw new Error("failed plan retry is restricted to shadow mode");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (!state) throw new Error("plan state not found");
+  if (!(state.status === "publishing" || (state.status === "blocked" && state.reason === "dispatch outcome unknown")))
+    throw new Error("plan is not eligible for failed dispatch retry");
+  if (state.attempts.some(({ kind, outcome, detail }) =>
+    kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
+  )) throw new Error("failed shadow plan retry was already consumed");
+  if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
+    throw new Error("failed dispatch retry forbids pending or in-flight dispatches");
+  const previous = state.outbox
+    .filter(({ status }) => status === "dispatched")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  if (!previous?.runUrl) throw new Error("failed dispatch retry requires a dispatched workflow");
+  const run = await facts.observeRun(previous);
+  if (
+    !run || run.runUrl !== previous.runUrl || run.status !== "completed" ||
+    !["failure", "cancelled"].includes(run.conclusion ?? "")
+  ) throw new Error("dispatched workflow is not conclusively failed");
+
+  const at = now.toISOString();
+  const identity = {
+    schema: "lenso.release-event.v1",
+    eventType: "lenso-publish-requested",
+    issuedAt: at,
+    nonce,
+    sourceRepository: "LioRael/lenso-release",
+    expectedAppId: appId,
+    planId: state.planId,
+    planUrl: `https://raw.githubusercontent.com/${state.repository}/${state.releaseCommit}/.lenso-release/plan.json`,
+    planSha256: state.planSha256,
+    releaseCommit: state.releaseCommit,
+    packages: previous.packages,
+  } as const;
+  const eventId = sha256(identity as unknown as JsonValue) as Sha256;
+  const entry: PlanDispatchOutbox = {
+    eventId,
+    nonce,
+    ref: previous.ref,
+    workflow: previous.workflow,
+    packages: previous.packages,
+    inputs: {
+      event_id: eventId,
+      plan_id: state.planId,
+      plan_sha256: state.planSha256,
+      release_commit: state.releaseCommit,
+      packages_json: JSON.stringify(previous.packages),
+      nonce,
+    },
+    status: "pending",
+    claimOwner: null,
+    leaseExpiresAt: null,
+    runUrl: null,
+    createdAt: at,
+    updatedAt: at,
+  };
+
+  const snapshot = await transact(store, (current) => {
+    const candidate = current.plans[path];
+    if (!candidate || candidate.revision !== state.revision)
+      throw new StateConflictError("plan changed while retry facts were observed");
+    const selected = new Set(entry.packages.map(({ id, version }) => `${id}\0${version}`));
+    const result: PlanStateV1 = {
+      ...candidate,
+      status: "publishing",
+      reason: null,
+      evidence: candidate.status === "blocked"
+        ? [...candidate.evidence, { kind: "recovery", url: previous.runUrl, digest: eventId }]
+        : candidate.evidence,
+      packages: candidate.packages.map((pkg) => selected.has(`${pkg.id}\0${pkg.version}`)
+        ? { ...pkg, requestEventId: eventId }
+        : pkg),
+      attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: RETRIED_FAILED_SHADOW_PLAN }],
+      outbox: [...candidate.outbox, entry].sort((left, right) => left.eventId.localeCompare(right.eventId)),
+      revision: candidate.revision + 1,
+      updatedAt: at,
+    };
+    assertLegalTransition(candidate, result);
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: snapshot.plans[path]!, headSha: snapshot.headSha };
+}
 
 export async function retireFailedShadowPlan(
   store: GitStateStore,

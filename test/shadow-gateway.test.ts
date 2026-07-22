@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { npmPublication, parseCargoUpload } from "../shadow-gateway/src/protocol.js";
-import { canonical, canonicalSha256, signAuthorization } from "../shadow-gateway/src/coordinator.js";
+import { assertExistingArtifactMatches, canonical, canonicalSha256, signAuthorization } from "../shadow-gateway/src/coordinator.js";
 
 describe("shadow gateway protocols", () => {
   it("parses the Cargo publish wire format without changing artifact bytes", () => {
@@ -51,5 +51,22 @@ describe("shadow gateway protocols", () => {
     const authorization = { schema: "lenso.publisher-authorization.v1", eventId: "sha256:test" };
     const signature = Buffer.from((await signAuthorization(authorization, privateKey)).replaceAll("-", "+").replaceAll("_", "/"), "base64");
     expect(await crypto.subtle.verify("Ed25519", pair.publicKey, signature, Buffer.from(canonical(authorization)))).toBe(true);
+  });
+
+  it("rejects a retry when an existing shadow artifact differs from the sealed bytes", async () => {
+    const bytes = Buffer.from("exact existing crate bytes");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const env = {
+      DB: {
+        prepare() {
+          return { bind() { return { async first() { return { object_key: "cargo/lenso-cli/0.2.8.crate" }; } }; } };
+        },
+      },
+      ARTIFACTS: { async get() { return { async arrayBuffer() { return Uint8Array.from(bytes).buffer; } }; } },
+    };
+    const artifact = { id: "cargo:lenso-cli", version: "0.2.8", sha256: `sha256:${checksum}` };
+    await expect(assertExistingArtifactMatches(env, "LioRael/lenso-cli", artifact)).resolves.toBeUndefined();
+    await expect(assertExistingArtifactMatches(env, "LioRael/lenso-cli", { ...artifact, sha256: `sha256:${"b".repeat(64)}` })).rejects.toThrow("digest mismatch");
+    await expect(assertExistingArtifactMatches({ ...env, ARTIFACTS: { async get() { return null; } } }, "LioRael/lenso-cli", artifact)).rejects.toThrow("bytes are missing");
   });
 });

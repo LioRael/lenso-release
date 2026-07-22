@@ -186,6 +186,16 @@ dispatches require complete matching shadow receipts; partial receipt evidence i
 rejected. Existing receipts and execution history remain immutable. This path is
 unavailable in production mode.
 
+If a shadow publisher fails after writing only part of an atomic package set, do
+not retire the plan or manually rerun the consumed workflow proof. The reviewed
+`retry-failed-shadow-plan` workflow may create one fresh dispatch binding for the
+same plan and package set. It is shadow-only, requires the previous workflow to be
+conclusively failed or cancelled, forbids pending or in-flight dispatches, preserves
+the previous outbox entry, and may be accepted only once per plan. During the new
+proof consumption, the Shadow Gateway re-reads every already-present package and
+requires its exact SHA-256 digest to match the newly sealed artifact before it signs
+publication authorization. Any missing bytes or digest mismatch stops recovery.
+
 ## Break-glass publishing
 
 Break-glass publishing is an exception, not an alternate workflow. Use it only when
