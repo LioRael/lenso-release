@@ -26,6 +26,10 @@ jobs:
         with:
           app-id: ${{ vars.LENSO_RELEASE_APP_ID }}
           private-key: ${{ secrets.LENSO_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            lenso-release
           permission-contents: write
           permission-metadata: read
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
