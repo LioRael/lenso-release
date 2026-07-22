@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, preflight, publicationOrder, publishSelected, stageCargoArchives } from "../../src/repository/runtime.js";
+import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -31,6 +31,21 @@ afterEach(async () => {
 });
 async function temp(): Promise<string> { const path = await mkdtemp(join(tmpdir(), "lenso-template-test-")); temporary.push(path); return path; }
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+
+describe("npm shadow registry authentication", () => {
+  it("normalizes the registry and token scope to the same trailing-slash path", () => {
+    expect(npmRegistryAuthentication("https://registry.example/npm")).toEqual({
+      registry: "https://registry.example/npm/",
+      authKey: "//registry.example/npm/:_authToken",
+    });
+  });
+
+  it("rejects registry URLs that could redirect or disclose credentials", () => {
+    expect(() => npmRegistryAuthentication("https://user:secret@registry.example/npm")).toThrow(/must not contain credentials/u);
+    expect(() => npmRegistryAuthentication("https://registry.example/npm?target=other")).toThrow(/query parameters/u);
+  });
+});
+
 async function assertVendorLicenses(modules: string): Promise<void> {
   const packages: string[] = [];
   for (const entry of await readdir(modules, { withFileTypes: true })) {
