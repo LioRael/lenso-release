@@ -124,6 +124,20 @@ export async function scanActiveRecovery(
   return { recovered, incomplete };
 }
 
+export async function scanActiveOutboxRecovery(
+  plans: Record<string, PlanStateV1>,
+  recover: (state: PlanStateV1) => Promise<void>,
+): Promise<string[]> {
+  const recovered: string[] = [];
+  for (const state of Object.values(plans).sort((a, b) => `${a.repository}:${a.planId}`.localeCompare(`${b.repository}:${b.planId}`))) {
+    if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
+    if (!state.outbox.some(({ status }) => status === "pending" || status === "in-flight")) continue;
+    await recover(state);
+    recovered.push(`${state.repository}:${state.planId}`);
+  }
+  return recovered;
+}
+
 export function tagRefIsImmutable(value: unknown, tagRef: string): boolean {
   if (!Array.isArray(value)) return false;
   const match = (pattern: string): boolean | null => {
@@ -632,7 +646,18 @@ export async function createCoordinatorHandlers(
     },
     async recoverActive() {
       const snapshot = await input.store.readSnapshot();
-      return scanActiveRecovery(snapshot.plans, async (state, pkg) => {
+      await scanActiveOutboxRecovery(snapshot.plans, async (state) => {
+        await runDispatchOutbox(
+          input.store,
+          state.repository,
+          state.planId,
+          input.dispatcher,
+          input.tokens,
+          now,
+        );
+      });
+      const refreshed = await input.store.readSnapshot();
+      return scanActiveRecovery(refreshed.plans, async (state, pkg) => {
           const zero = `sha256:${"0".repeat(64)}` as const;
           await handlers.receipt({
             schema: "lenso.release-event.v1",

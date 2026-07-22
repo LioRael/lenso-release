@@ -26,7 +26,7 @@ import {
 import { acceptReadyEvent } from "../../src/coordinator/ready.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
 import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
-import { scanActiveRecovery } from "../../src/coordinator/production-facts.js";
+import { scanActiveOutboxRecovery, scanActiveRecovery } from "../../src/coordinator/production-facts.js";
 import { HANDLE_EVENT_EXIT, handleEvent, runHandleEventCli } from "../../src/commands/handle-event.js";
 
 const digest = (value: string) => `sha256:${value.repeat(64)}` as const;
@@ -532,6 +532,26 @@ describe("atomic coordinator state", () => {
     await expect(scanActiveRecovery({ a: first, b: second }, async (plan) => {
       if (plan.repository === "LioRael/lenso-cli") throw new TypeError("security contradiction");
     })).rejects.toThrow("security contradiction");
+  });
+  it("recovers active dispatch outboxes even when no package receipt is missing", async () => {
+    const active = state();
+    active.packages[0] = { ...active.packages[0]!, status: "received" };
+    active.outbox[0] = {
+      ...active.outbox[0]!,
+      status: "in-flight",
+      claimOwner: "crashed-after-send",
+      leaseExpiresAt: "2026-07-11T00:01:00Z",
+    };
+    const inactive = structuredClone(active);
+    inactive.repository = "LioRael/lenso-cli";
+    inactive.status = "verified";
+    const calls: string[] = [];
+    const recovered = await scanActiveOutboxRecovery(
+      { inactive, active },
+      async (plan) => { calls.push(plan.repository); },
+    );
+    expect(calls).toEqual(["LioRael/lenso"]);
+    expect(recovered).toEqual([`${active.repository}:${active.planId}`]);
   });
   it("rejects identity rewrites and premature later phases", () => {
     const previous = state();
