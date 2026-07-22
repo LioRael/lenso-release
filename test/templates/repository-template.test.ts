@@ -55,6 +55,9 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}");
     expect(source).toContain("LENSO_ATTESTATION_TOKEN: ${{ github.token }}");
     expect(source).toContain("fetch-depth: 0");
+    expect(source).toContain("owner: ${{ github.repository_owner }}");
+    expect(source).toContain("${{ github.event.repository.name }}");
+    expect(source).toContain("lenso-release");
     expect(source).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
     expect(source.indexOf("cli.js preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
     expect(source.indexOf("cli.js consume-preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
