@@ -143,6 +143,36 @@ Exercise the next reviewed release.
       .resolves.toBe(`${JSON.stringify(second, null, 2)}\n`);
   });
 
+  it("verifies a partial release beside historical package changelogs", async () => {
+    const cwd = await fixture("mixed");
+    const components = metadata(
+      ["cargo:fixture-core", "foundation", true],
+      ["npm:@fixture/console", "console", true],
+    );
+    await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher, components,
+    });
+    await writeFile(join(cwd, ".tegami/release.md"), `---
+packages:
+  fixture-core: patch
+---
+
+### Fixes
+
+Exercise a partial follow-up release.
+`);
+
+    const partial = await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "2".repeat(40), publisher, components,
+    });
+
+    expect(partial.packages.map(({ id }) => id)).toEqual(["cargo:fixture-core"]);
+    expect(partial.generatedFiles.map(({ path }) => path)).not.toContain("packages/console/CHANGELOG.md");
+    await expect(exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "2".repeat(40), publisher, components,
+    })).resolves.toEqual(partial);
+  });
+
   it("resolves auto-installed peer dependencies from the pnpm importer", async () => {
     const cwd = await fixture("npm-only");
     const path = join(cwd, "package.json");
