@@ -181,8 +181,10 @@ export async function createPreflightProof(environment) {
     if (!endpoint)
         fail("coordinator preflight endpoint is required");
     const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": environment.eventId }, body: JSON.stringify({ schema: "lenso.publisher-preflight.v1", binding, bindingDigest: digest }) });
-    if (!response.ok)
-        fail(`coordinator preflight confirmation ${response.status}`);
+    if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        fail(`coordinator preflight confirmation ${response.status}: ${detail}`);
+    }
     const proof = await response.json();
     const now = Date.now();
     const issued = Date.parse(proof.issuedAt);
