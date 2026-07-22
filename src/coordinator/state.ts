@@ -24,6 +24,15 @@ export type GitStateStore = {
 export type StoredPlanState = { state: PlanStateV1; headSha: string };
 export class StateConflictError extends Error {}
 
+const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
+
+export function isRetiredPlan(state: PlanStateV1): boolean {
+  return state.status === "blocked" && (
+    state.reason?.startsWith("cancelled before dispatch") === true ||
+    state.reason === RETIRED_FAILED_SHADOW_PLAN
+  );
+}
+
 const REPOSITORY =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/u;
 const OID = /^[0-9a-f]{40}$/u;
@@ -60,9 +69,7 @@ export function assertReleaseStateSnapshot(
     assertPlanState(state);
     if (path !== planStatePath(state.repository, state.planId))
       throw new TypeError("snapshot plan path mismatch");
-    const cancelled =
-      state.status === "blocked" && state.reason?.startsWith("cancelled before dispatch");
-    if (state.status !== "verified" && !cancelled) {
+    if (state.status !== "verified" && !isRetiredPlan(state)) {
       if (active[state.repository])
         throw new TypeError("snapshot contains multiple active repository plans");
       active[state.repository] = state.planId;
@@ -331,9 +338,8 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
   const expectedPackageLocks = packages
     .filter((p) => p.status !== "received")
     .map((p) => `package:${p.id}:${p.version}`);
-  const cancelled = state.status === "blocked" && String(state.reason).startsWith("cancelled before dispatch");
   const expected =
-    state.status === "verified" || cancelled
+    state.status === "verified" || isRetiredPlan(state as unknown as PlanStateV1)
       ? []
       : [
           `plan:${state.repository}:${state.planId}`,
@@ -383,11 +389,10 @@ export function assertLegalTransition(
   if (previous.status === "verified" && JSON.stringify(previous) !== JSON.stringify(next))
     throw new TypeError("verified state is immutable");
   if (
-    previous.status === "blocked" &&
-    previous.reason?.startsWith("cancelled before dispatch") &&
+    isRetiredPlan(previous) &&
     JSON.stringify(previous) !== JSON.stringify(next)
   )
-    throw new TypeError("cancelled state is immutable");
+    throw new TypeError("retired state is immutable");
   const statusRank = { pending: 0, dispatched: 1, received: 2 } as const;
   for (let index = 0; index < previous.packages.length; index += 1) {
     const before = previous.packages[index]!;
@@ -506,4 +511,87 @@ export async function cancelPlan(
     return current;
   });
   return { state: snapshot.plans[planStatePath(repository, planId)]!, headSha: snapshot.headSha };
+}
+
+export type FailedShadowRetirementFacts = {
+  observeRun(entry: PlanDispatchOutbox): Promise<{
+    runUrl: string;
+    status: string;
+    conclusion: string | null;
+  } | null>;
+  packageVersionExists(id: string, version: string): Promise<boolean>;
+};
+
+export async function retireFailedShadowPlan(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  eventId: Sha256,
+  mode: string | undefined,
+  facts: FailedShadowRetirementFacts,
+  now: Date,
+): Promise<StoredPlanState> {
+  if (mode !== "shadow")
+    throw new Error("failed plan retirement is restricted to shadow mode");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (!state) throw new Error("plan state not found");
+  if (!(["publishing", "blocked"] as const).includes(state.status as "publishing" | "blocked"))
+    throw new Error("plan is not eligible for failed dispatch retirement");
+  if (state.receipts.length !== 0)
+    throw new Error("failed dispatch retirement requires zero receipts");
+  if (state.outbox.some(({ status }) => status === "in-flight"))
+    throw new Error("failed dispatch retirement forbids in-flight dispatches");
+  const dispatched = state.outbox.filter(({ status }) => status === "dispatched");
+  if (dispatched.length === 0)
+    throw new Error("failed dispatch retirement requires a dispatched workflow");
+  for (const entry of dispatched) {
+    const run = await facts.observeRun(entry);
+    if (
+      !run || run.runUrl !== entry.runUrl || run.status !== "completed" ||
+      !["failure", "cancelled"].includes(run.conclusion ?? "")
+    ) throw new Error("dispatched workflow is not conclusively failed");
+  }
+  for (const pkg of state.packages)
+    if (await facts.packageVersionExists(pkg.id, pkg.version))
+      throw new Error(`package version already exists: ${pkg.id}@${pkg.version}`);
+
+  let result!: PlanStateV1;
+  const snapshot = await transact(store, (current) => {
+    const currentState = current.plans[path];
+    if (!currentState || currentState.revision !== state.revision)
+      throw new StateConflictError("plan changed while retirement facts were observed");
+    const at = now.toISOString();
+    result = {
+      ...currentState,
+      status: "blocked",
+      reason: RETIRED_FAILED_SHADOW_PLAN,
+      occupancyKeys: [],
+      outbox: currentState.outbox.map((entry) => entry.status === "pending" ? {
+        ...entry,
+        status: "cancelled" as const,
+        claimOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: at,
+      } : entry),
+      attempts: [...currentState.attempts, {
+        eventId,
+        kind: "cancel" as const,
+        at,
+        outcome: "accepted" as const,
+        detail: RETIRED_FAILED_SHADOW_PLAN,
+      }],
+      revision: currentState.revision + 1,
+      updatedAt: at,
+    };
+    assertLegalTransition(currentState, result);
+    delete current.activeRepositories[repository];
+    for (const [key, owner] of Object.entries(current.occupiedPackages))
+      if (owner === planId) delete current.occupiedPackages[key];
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: snapshot.plans[path]!, headSha: snapshot.headSha };
 }

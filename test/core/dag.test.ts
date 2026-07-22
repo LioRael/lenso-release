@@ -186,6 +186,28 @@ const expectedInventory = {
 } as const;
 
 const expectedDependencies: Record<string, readonly string[]> = {
+  "cargo:lenso-platform-core": ["cargo:lenso-contracts"],
+  "cargo:lenso-platform-http": ["cargo:lenso-platform-core"],
+  "cargo:lenso-platform-runtime": ["cargo:lenso-contracts", "cargo:lenso-platform-core"],
+  "cargo:lenso-platform-testing": ["cargo:lenso-platform-core"],
+  "cargo:lenso-platform-module": [
+    "cargo:lenso-contracts",
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-runtime"
+  ],
+  "cargo:lenso-platform-module-remote": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-module",
+    "cargo:lenso-platform-runtime"
+  ],
+  "cargo:lenso-module-story": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-module",
+    "cargo:lenso-service"
+  ],
   "cargo:lenso-autonomous-service": [
     "cargo:lenso-contracts",
     "cargo:lenso-platform-core",
@@ -276,6 +298,12 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module",
     "cargo:lenso-service"
   ],
+  "cargo:lenso-platform-admin": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-module",
+    "cargo:lenso-service"
+  ],
   "cargo:lenso-migrate": ["cargo:lenso-bootstrap", "cargo:lenso-platform-core"],
   "cargo:lenso-worker": [
     "cargo:lenso-bootstrap",
@@ -289,7 +317,8 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module-remote",
-    "cargo:lenso-platform-runtime"
+    "cargo:lenso-platform-runtime",
+    "cargo:lenso-service"
   ],
   "cargo:lenso": [
     "cargo:lenso-api",
@@ -405,58 +434,12 @@ describe("component release graph", () => {
       )
       .sort();
 
-    expect(sameRepositoryEdges).toEqual([
-      "cargo:lenso-api -> cargo:lenso",
-      "cargo:lenso-bootstrap -> cargo:lenso",
-      "cargo:lenso-bootstrap -> cargo:lenso-api",
-      "cargo:lenso-bootstrap -> cargo:lenso-migrate",
-      "cargo:lenso-bootstrap -> cargo:lenso-worker",
-      "cargo:lenso-cli -> npm:@lenso/cli",
-      "cargo:lenso-contracts -> cargo:lenso",
-      "cargo:lenso-contracts -> cargo:lenso-autonomous-service",
-      "cargo:lenso-contracts -> cargo:lenso-service",
-      "cargo:lenso-migrate -> cargo:lenso",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-anonymous",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-device",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-github",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-google",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-oauth",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-oidc",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-password",
-      "cargo:lenso-module-auth -> cargo:lenso-module-auth-phone",
-      "cargo:lenso-module-auth-oauth -> cargo:lenso-module-auth-github",
-      "cargo:lenso-module-auth-oauth -> cargo:lenso-module-auth-google",
-      "cargo:lenso-module-auth-password -> cargo:lenso-module-auth-phone",
-      "cargo:lenso-module-story -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-admin -> cargo:lenso-api",
-      "cargo:lenso-platform-admin-data -> cargo:lenso-api",
-      "cargo:lenso-platform-admin-data -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-core -> cargo:lenso",
-      "cargo:lenso-platform-core -> cargo:lenso-api",
-      "cargo:lenso-platform-core -> cargo:lenso-autonomous-service",
-      "cargo:lenso-platform-core -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-core -> cargo:lenso-migrate",
-      "cargo:lenso-platform-core -> cargo:lenso-platform-admin-data",
-      "cargo:lenso-platform-core -> cargo:lenso-worker",
-      "cargo:lenso-platform-http -> cargo:lenso",
-      "cargo:lenso-platform-http -> cargo:lenso-api",
-      "cargo:lenso-platform-http -> cargo:lenso-autonomous-service",
-      "cargo:lenso-platform-http -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-http -> cargo:lenso-platform-admin-data",
-      "cargo:lenso-platform-module -> cargo:lenso",
-      "cargo:lenso-platform-module -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-module -> cargo:lenso-platform-admin-data",
-      "cargo:lenso-platform-module-remote -> cargo:lenso-api",
-      "cargo:lenso-platform-module-remote -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-runtime -> cargo:lenso-api",
-      "cargo:lenso-platform-runtime -> cargo:lenso-autonomous-service",
-      "cargo:lenso-platform-runtime -> cargo:lenso-bootstrap",
-      "cargo:lenso-platform-runtime -> cargo:lenso-worker",
-      "cargo:lenso-service -> cargo:lenso-autonomous-service",
-      "cargo:lenso-service -> cargo:lenso-platform-admin-data",
-      "cargo:lenso-worker -> cargo:lenso",
-      "npm:@lenso/remote-module-kit -> npm:@lenso/service-kit"
-    ]);
+    const reviewedSameRepositoryEdges = Object.entries(expectedDependencies)
+      .flatMap(([id, dependencies]) => dependencies
+        .filter((dependency) => registry.packages[dependency]!.repository === registry.packages[id]!.repository)
+        .map((dependency) => `${dependency} -> ${id}`))
+      .sort();
+    expect(sameRepositoryEdges).toEqual(reviewedSameRepositoryEdges);
   });
 
   it("publishes Auth foundations before providers that consume them", async () => {

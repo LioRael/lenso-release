@@ -16,6 +16,7 @@ import {
   assertPlanState,
   assertReleaseStateSnapshot,
   cancelPlan,
+  retireFailedShadowPlan,
   planStatePath,
   StateConflictError,
   transact,
@@ -34,6 +35,8 @@ const observedRun = (context: DispatchRunContext, eventId: string, id = 1) => ({
   event: "workflow_dispatch" as const,
   runName: `lenso-publish-requested:${eventId}`,
   runUrl: `https://github.com/${context.repository}/actions/runs/${id}`,
+  status: "completed",
+  conclusion: "success",
 });
 function state(): PlanStateV1 {
   const planId = digest("a");
@@ -569,7 +572,7 @@ describe("atomic coordinator state", () => {
       reason: null,
       occupancyKeys: state().occupancyKeys,
       evidence: [...cancelled.state.evidence, { kind: "recovery", url: null, digest: null }],
-    })).toThrow("cancelled state is immutable");
+    })).toThrow("retired state is immutable");
     const dispatch = vi.fn();
     await runDispatchOutbox(store, "LioRael/lenso", digest("a"), {
       async findByEventId() { return null; },
@@ -578,6 +581,37 @@ describe("atomic coordinator state", () => {
     expect(dispatch).not.toHaveBeenCalled();
     const running = state(); running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
     await expect(cancelPlan(new MemoryStore(snapshot(running)), "LioRael/lenso", digest("a"), digest("e"), new Date())).rejects.toThrow("dispatch begins");
+  });
+  it("retires only a zero-receipt shadow plan with conclusively failed runs and absent versions", async () => {
+    const failed = state();
+    failed.outbox[0] = {
+      ...failed.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
+    };
+    const store = new MemoryStore(snapshot(failed));
+    const facts = {
+      async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+      async packageVersionExists() { return false; },
+    };
+    const retired = await retireFailedShadowPlan(store, failed.repository, failed.planId, digest("e"), "shadow", facts, new Date("2026-07-11T00:03:00Z"));
+    expect(retired.state).toMatchObject({ status: "blocked", reason: "retired failed shadow dispatch", occupancyKeys: [] });
+    expect(store.snapshot.activeRepositories).toEqual({});
+    expect(store.snapshot.occupiedPackages).toEqual({});
+    expect(() => assertLegalTransition(retired.state, { ...retired.state, revision: retired.state.revision + 1 })).toThrow("retired");
+
+    for (const [mode, receipts, conclusion, exists, message] of [
+      ["production", [], "failure", false, "shadow mode"],
+      ["shadow", [], "success", false, "conclusively failed"],
+      ["shadow", [], "failure", true, "already exists"],
+    ] as const) {
+      const candidate = structuredClone(failed);
+      candidate.receipts = receipts as never;
+      await expect(retireFailedShadowPlan(new MemoryStore(snapshot(candidate)), candidate.repository, candidate.planId, digest("f"), mode, {
+        async observeRun() { return { runUrl: candidate.outbox[0]!.runUrl!, status: "completed", conclusion }; },
+        async packageVersionExists() { return exists; },
+      }, new Date())).rejects.toThrow(message);
+    }
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));
@@ -592,6 +626,9 @@ describe("atomic coordinator state", () => {
     const recoverActive = vi.fn(async () => []);
     expect(await runHandleEventCli(["--recover-active"], {}, async () => ({ ready, receipt, recoverActive }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(recoverActive).toHaveBeenCalledOnce();
+    const retire = vi.fn(async () => undefined);
+    expect(await runHandleEventCli(["--retire-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retireFailedShadowPlan: retire }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(retire).toHaveBeenCalledOnce();
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {

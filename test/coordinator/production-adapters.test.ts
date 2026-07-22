@@ -127,12 +127,12 @@ describe("production coordinator adapters", () => {
         { id: 41, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: "wrong", head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/41" },
         { id: 40, event: "push", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/40" },
         { id: 39, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: "3".repeat(40), repository: { full_name: "attacker/repo" }, html_url: "https://github.com/attacker/repo/actions/runs/39" },
-        { id: 42, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/42" },
+        { id: 42, event: "workflow_dispatch", display_title: `lenso-publish-requested:${eventId}`, head_branch: context.ref, head_sha: context.sha, repository: { full_name: context.repository }, html_url: "https://github.com/LioRael/lenso/actions/runs/42", status: "completed", conclusion: "failure" },
       ],
     }), { status: 200, headers: { "content-type": "application/json" } }));
     const run = await new GithubWorkflowDispatcher(request as typeof fetch)
       .findByEventId(context, eventId, "token");
-    expect(run).toMatchObject({ ...context, runUrl: "https://github.com/LioRael/lenso/actions/runs/42" });
+    expect(run).toMatchObject({ ...context, runUrl: "https://github.com/LioRael/lenso/actions/runs/42", status: "completed", conclusion: "failure" });
     const [requestedUrl] = request.mock.calls[0] as unknown as [string];
     expect(String(requestedUrl)).toContain("actions/workflows/.github%2Fworkflows%2Fpublish.yml/runs");
   });
@@ -155,6 +155,8 @@ describe("production coordinator adapters", () => {
         head_sha: "2".repeat(40),
         repository: { full_name: "LioRael/lenso" },
         html_url: "https://github.com/LioRael/lenso/actions/runs/99",
+        status: "queued",
+        conclusion: null,
       }] }), { status: 200, headers: { "content-type": "application/json" } });
     });
     const run = await new GithubWorkflowDispatcher(request as typeof fetch).dispatch({

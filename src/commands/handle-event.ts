@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 
 import type { StoredPlanState } from "../coordinator/state.js";
+import type { Sha256 } from "../contracts/types.js";
+import { sha256, type JsonValue } from "../core/canonical.js";
 import {
   GithubAppTokenProvider,
   GithubSnapshotStore,
@@ -18,6 +20,7 @@ export type EventHandlers = {
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive?(): Promise<unknown>;
+  retireFailedShadowPlan?(repository: string, planId: string, eventId: Sha256): Promise<unknown>;
 };
 export type HandlerFactory = (env: NodeJS.ProcessEnv) => Promise<EventHandlers>;
 
@@ -123,6 +126,21 @@ export async function runHandleEventCli(
 ): Promise<number> {
   try {
     const handlers = await factory(env);
+    if (argv[0] === "--retire-failed-shadow-plan") {
+      if (
+        argv.length !== 5 || argv[1] !== "--repository" ||
+        argv[3] !== "--plan-id" || !handlers.retireFailedShadowPlan
+      ) throw new TypeError("usage: handle-event --retire-failed-shadow-plan --repository OWNER/REPO --plan-id SHA256");
+      const repository = argv[2]!;
+      const planId = argv[4]!;
+      const eventId = sha256({
+        action: "retire-failed-shadow-plan",
+        repository,
+        planId,
+      } as JsonValue) as Sha256;
+      await handlers.retireFailedShadowPlan(repository, planId, eventId);
+      return HANDLE_EVENT_EXIT.ok;
+    }
     if (argv.length === 1 && argv[0] === "--recover-active") {
       if (!handlers.recoverActive) throw new TypeError("active recovery is not configured");
       await handlers.recoverActive();
