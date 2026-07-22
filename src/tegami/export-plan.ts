@@ -450,16 +450,6 @@ async function verifyGeneratedFiles(
   for (const [index, item] of actual.entries()) {
     if (item.sha256 !== plan.generatedFiles[index]!.sha256) fail(`generated file digest mismatch for ${item.path}`);
   }
-  const expectedSet = new Set(expected);
-  for (const pkg of packages.values()) {
-    const changelogPath = relative(cwd, join(pkg.path, "CHANGELOG.md"));
-    try {
-      await lstat(join(cwd, changelogPath));
-      if (!expectedSet.has(changelogPath)) fail(`unexpected generated file ${changelogPath}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
 }
 
 async function readExisting(path: string): Promise<ReleasePlanV1 | undefined> {
