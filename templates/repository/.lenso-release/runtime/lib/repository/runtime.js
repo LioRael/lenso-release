@@ -183,7 +183,8 @@ async function writeProof(cwd, proof) {
     await rename(temporary, target);
 }
 export async function createPreflightProof(environment) {
-    const { binding, digest } = await gateBinding(environment);
+    const { plan, binding, digest } = await gateBinding(environment);
+    await stageCargoArchives(environment.cwd, plan, environment.packages);
     const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_URL;
     if (!endpoint)
         fail("coordinator preflight endpoint is required");
@@ -202,7 +203,7 @@ export async function createPreflightProof(environment) {
     return proof;
 }
 export async function consumePreflightProof(environment) {
-    const { plan, digest } = await gateBinding(environment);
+    const { digest } = await gateBinding(environment);
     let proofBytes;
     try {
         proofBytes = await safeRead(environment.cwd, ".lenso-release/preflight-proof.json");
@@ -218,7 +219,6 @@ export async function consumePreflightProof(environment) {
     const artifactDirectory = join(environment.cwd, ".lenso-release/preflight-artifacts", proof.proofId.slice(7));
     await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
     const artifacts = [];
-    await stageCargoArchives(environment.cwd, plan, environment.packages);
     for (const item of environment.packages) {
         const packed = await packedArtifact(environment.cwd, item);
         const destination = join(artifactDirectory, basename(packed.path));
@@ -239,8 +239,10 @@ export async function consumePreflightProof(environment) {
         fail("coordinator proof consumption endpoint is required");
     const facts = { eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, releaseCommit: environment.releaseCommit, ref: environment.refName };
     const response = await fetch(endpoint, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, "content-type": "application/json", "idempotency-key": proof.proofId }, body: JSON.stringify({ proof, facts, artifacts }) });
-    if (!response.ok)
-        fail(`coordinator preflight proof consumption ${response.status}`);
+    if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        fail(`coordinator preflight proof consumption ${response.status}: ${detail}`);
+    }
     const confirmation = await response.json();
     if (confirmation.accepted !== true || confirmation.eventId !== environment.eventId || confirmation.proofId !== proof.proofId || !confirmation.authorization || typeof confirmation.signature !== "string")
         fail("coordinator preflight proof was not atomically consumed");
