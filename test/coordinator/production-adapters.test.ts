@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -79,6 +79,36 @@ describe("production coordinator adapters", () => {
     await expect(checkedGithubAsset(request as typeof fetch, "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).resolves.toHaveProperty("status", 200);
     expect(request).toHaveBeenCalledTimes(2);
     await expect(checkedGithubAsset(async () => new Response(null, { status: 302, headers: { location: "https://evil.example/archive" } }), "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).rejects.toThrow("not trusted");
+  });
+
+  it("observes shadow GitHub releases and assets only through the configured gateway", async () => {
+    const gateway = "https://shadow.example/github";
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(new URL(String(input)).origin).toBe("https://shadow.example");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+      return String(input).endsWith("/assets/42")
+        ? new Response("archive")
+        : Response.json({ draft: true });
+    });
+    await expect(checkedShadowGithubJson(
+      request as typeof fetch,
+      `${gateway}/repos/LioRael/lenso-runtime-console/releases/tags/v0.1.2`,
+      gateway,
+      "secret",
+    )).resolves.toEqual({ draft: true });
+    await expect(checkedShadowGithubAsset(
+      request as typeof fetch,
+      `${gateway}/assets/42`,
+      gateway,
+      "secret",
+    )).resolves.toHaveProperty("status", 200);
+    await expect(checkedShadowGithubAsset(
+      request as typeof fetch,
+      "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42",
+      gateway,
+      "secret",
+    )).rejects.toThrow("shadow GitHub request");
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("requires active update-and-delete protection for the exact tag ref", () => {
