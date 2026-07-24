@@ -82,11 +82,11 @@ describe("production coordinator adapters", () => {
   });
 
   it("observes shadow GitHub releases and assets only through the configured gateway", async () => {
-    const gateway = "https://shadow.example";
+    const gateway = "https://shadow.example/github";
     const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(new URL(String(input)).origin).toBe(gateway);
+      expect(new URL(String(input)).origin).toBe("https://shadow.example");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
-      return String(input).endsWith("/releases/assets/42")
+      return String(input).endsWith("/assets/42")
         ? new Response("archive")
         : Response.json({ draft: true });
     });
@@ -98,7 +98,7 @@ describe("production coordinator adapters", () => {
     )).resolves.toEqual({ draft: true });
     await expect(checkedShadowGithubAsset(
       request as typeof fetch,
-      `${gateway}/repos/LioRael/lenso-runtime-console/releases/assets/42`,
+      `${gateway}/assets/42`,
       gateway,
       "secret",
     )).resolves.toHaveProperty("status", 200);

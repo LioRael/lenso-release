@@ -84,10 +84,10 @@ export async function checkedGithubAsset(request: typeof fetch, url: string, tok
     throw new TypeError("GitHub asset redirect target is not trusted");
   return request(target, { redirect: "error", headers: { accept: "application/octet-stream" } });
 }
-function assertShadowGithubApi(url: string, gateway: string): void {
+function assertShadowGithubApi(url: string, gateway: string, route: "assets" | "repos"): void {
   const parsed = new URL(url);
   const configured = new URL(gateway);
-  const prefix = `${configured.pathname.replace(/\/+$/u, "")}/repos/`;
+  const prefix = `${configured.pathname.replace(/\/+$/u, "")}/${route}/`;
   if (
     configured.protocol !== "https:" ||
     parsed.protocol !== "https:" ||
@@ -102,10 +102,10 @@ export async function checkedShadowGithubJson(
   gateway: string,
   token: string,
 ): Promise<Record<string, unknown>> {
-  assertShadowGithubApi(url, gateway);
+  assertShadowGithubApi(url, gateway, "repos");
   const response = await request(url, { redirect: "error", headers: headers(token) });
   if (!response.ok) throw new Error(`shadow GitHub observation ${response.status}`);
-  if (response.url) assertShadowGithubApi(response.url, gateway);
+  if (response.url) assertShadowGithubApi(response.url, gateway, "repos");
   return await response.json() as Record<string, unknown>;
 }
 export async function checkedShadowGithubAsset(
@@ -114,12 +114,12 @@ export async function checkedShadowGithubAsset(
   gateway: string,
   token: string,
 ): Promise<Response> {
-  assertShadowGithubApi(url, gateway);
+  assertShadowGithubApi(url, gateway, "assets");
   const response = await request(url, {
     redirect: "error",
     headers: { ...headers(token), accept: "application/octet-stream" },
   });
-  if (response.url) assertShadowGithubApi(response.url, gateway);
+  if (response.url) assertShadowGithubApi(response.url, gateway, "assets");
   return response;
 }
 function nonce() {
@@ -483,6 +483,9 @@ export async function createCoordinatorHandlers(
             : { contents: "write", actions: "read", attestations: "read", metadata: "read" });
           const githubApi = `https://api.github.com/repos/${repository}`;
           const tagApi = shadow ? `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}` : githubApi;
+          const readGithubAsset = shadow
+            ? (url: string) => checkedShadowGithubAsset(request, url, input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
+            : (url: string) => checkedGithubAsset(request, url, token);
           const packageName = packageId.startsWith("cargo:")
             ? packageId.slice(6)
             : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length) : packageId.slice("artifact:".length);
@@ -537,15 +540,13 @@ export async function createCoordinatorHandlers(
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
             const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
             if (!asset?.url || !asset.browser_download_url || !checksumAsset?.url) return null;
-            const artifact = shadow
-              ? await checkedShadowGithubAsset(request, String(asset.url), input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
-              : await checkedGithubAsset(request, String(asset.url), token);
+            if (shadow)
+              assertShadowGithubApi(String(asset.browser_download_url), input.env.LENSO_SHADOW_GITHUB_API_URL!, "assets");
+            const artifact = await readGithubAsset(String(asset.url));
             if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = sha256(packedBytes);
-            const checksum = shadow
-              ? await checkedShadowGithubAsset(request, String(checksumAsset.url), input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
-              : await checkedGithubAsset(request, String(checksumAsset.url), token);
+            const checksum = await readGithubAsset(String(checksumAsset.url));
             const expectedChecksum = `${nativeIntegrity.slice("sha256:".length)}  ${packageName}.tar.gz\n`;
             if (!checksum.ok || Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) return null;
             publishedAt = String(release.created_at);
