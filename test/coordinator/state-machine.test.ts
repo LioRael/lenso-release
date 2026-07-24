@@ -690,7 +690,7 @@ describe("atomic coordinator state", () => {
       "shadow",
       { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
       new Date("2026-07-11T00:03:00Z"),
-      "retry-nonce",
+      () => "retry-nonce",
       42,
     );
     expect(retried.state.outbox).toHaveLength(2);
@@ -700,21 +700,72 @@ describe("atomic coordinator state", () => {
     expect(pending.packages).toEqual(failed.outbox[0]!.packages);
     expect(retried.state.packages[0]!.requestEventId).toBe(pending.eventId);
     expect(retried.state.attempts.at(-1)).toMatchObject({ eventId: pending.eventId, kind: "recovery", outcome: "accepted", detail: "retry failed shadow dispatch" });
-    await expect(retryFailedShadowPlan(
+    const replayNonce = vi.fn(() => "second-retry");
+    const replayed = await retryFailedShadowPlan(
       store, failed.repository, failed.planId, "shadow",
       { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
-      new Date("2026-07-11T00:04:00Z"), "second-retry", 42,
-    )).rejects.toThrow("already consumed");
+      new Date("2026-07-11T00:04:00Z"), replayNonce, 42,
+    );
+    expect(replayNonce).not.toHaveBeenCalled();
+    expect(replayed.state).toEqual(retried.state);
+    expect(replayed.state.outbox).toHaveLength(2);
+    expect(replayed.state.attempts.filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
+    )).toHaveLength(1);
+
+    const dispatch = vi.fn(async () => { throw new Error("workflow run is not yet visible"); });
+    await expect(runDispatchOutbox(
+      store,
+      failed.repository,
+      failed.planId,
+      { async findByEventId() { return null; }, dispatch },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:05:00Z"),
+    )).rejects.toThrow("not yet visible");
+    const acceptedRetry = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
+    const inFlight = acceptedRetry.outbox.find(({ eventId }) => eventId === pending.eventId)!;
+    expect(inFlight).toMatchObject({ status: "in-flight", nonce: "retry-nonce", packages: pending.packages });
+
+    const delayedReplayNonce = vi.fn(() => "third-retry");
+    await retryFailedShadowPlan(
+      store, failed.repository, failed.planId, "shadow",
+      { async observeRun() { return null; } },
+      new Date("2026-07-11T00:20:00Z"), delayedReplayNonce, 42,
+    );
+    expect(delayedReplayNonce).not.toHaveBeenCalled();
+
+    const redispatch = vi.fn();
+    const reconciled = await runDispatchOutbox(
+      store,
+      failed.repository,
+      failed.planId,
+      {
+        async findByEventId(context, eventId) { return observedRun(context, eventId, 99); },
+        async dispatch() { redispatch(); throw new Error("must not redispatch"); },
+      },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:20:00Z"),
+    );
+    expect(redispatch).not.toHaveBeenCalled();
+    expect(reconciled.state.outbox.find(({ eventId }) => eventId === pending.eventId)).toMatchObject({
+      status: "dispatched",
+      nonce: "retry-nonce",
+      packages: pending.packages,
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/99",
+    });
+    expect(reconciled.state.attempts.filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
+    )).toHaveLength(1);
 
     await expect(retryFailedShadowPlan(
       new MemoryStore(snapshot(failed)), failed.repository, failed.planId, "production",
-      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+      { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("shadow mode");
     const running = structuredClone(failed);
     running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", runUrl: null, claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
     await expect(retryFailedShadowPlan(
       new MemoryStore(snapshot(running)), running.repository, running.planId, "shadow",
-      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+      { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("pending or in-flight");
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {

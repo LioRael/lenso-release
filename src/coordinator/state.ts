@@ -566,7 +566,7 @@ export async function retryFailedShadowPlan(
   mode: string | undefined,
   facts: FailedShadowRetryFacts,
   now: Date,
-  nonce: string,
+  nextNonce: () => string,
   appId: number,
 ): Promise<StoredPlanState> {
   if (mode !== "shadow") throw new Error("failed plan retry is restricted to shadow mode");
@@ -579,7 +579,7 @@ export async function retryFailedShadowPlan(
     throw new Error("plan is not eligible for failed dispatch retry");
   if (state.attempts.some(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
-  )) throw new Error("failed shadow plan retry was already consumed");
+  )) return { state, headSha: initial.headSha };
   if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
     throw new Error("failed dispatch retry forbids pending or in-flight dispatches");
   const previous = state.outbox
@@ -593,6 +593,7 @@ export async function retryFailedShadowPlan(
   ) throw new Error("dispatched workflow is not conclusively failed");
 
   const at = now.toISOString();
+  const nonce = nextNonce();
   const identity = {
     schema: "lenso.release-event.v1",
     eventType: "lenso-publish-requested",
