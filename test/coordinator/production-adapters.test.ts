@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -17,6 +17,13 @@ import {
 } from "../../src/coordinator/state.js";
 
 describe("production coordinator adapters", () => {
+  it("accepts only explicit coordinator environments", () => {
+    expect(coordinatorEnvironment("shadow")).toBe("shadow");
+    expect(coordinatorEnvironment("production")).toBe("production");
+    expect(() => coordinatorEnvironment(undefined)).toThrow("must be shadow or production");
+    expect(() => coordinatorEnvironment("staging")).toThrow("must be shadow or production");
+  });
+
   it("observes Cargo dependencies through the official crates.io download API", () => {
     expect(productionDependencyUrl("cargo:lenso-module-auth", "0.1.8")).toBe(
       "https://crates.io/api/v1/crates/lenso-module-auth/0.1.8/download",

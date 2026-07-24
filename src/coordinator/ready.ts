@@ -58,6 +58,7 @@ export type ReadyDependencies = {
   store: GitStateStore;
   github: GitHubReadyReader;
   registry: ComponentRegistry;
+  environment: "shadow" | "production";
   now(): Date;
   nonce(): string;
   appId: number;
@@ -200,6 +201,7 @@ export async function acceptReadyEvent(
     const ids = new Set(ready.map(({ id }) => id));
     result = {
       schema: "lenso.plan-state.v1",
+      environment: deps.environment,
       repository: plan.repository,
       planId: plan.planId,
       planSha256: value.planSha256,

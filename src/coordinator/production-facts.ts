@@ -33,6 +33,10 @@ const headers = (token: string) => ({
   authorization: `Bearer ${token}`,
 });
 const EXTERNAL_HOSTS = new Set(["crates.io", "static.crates.io", "registry.npmjs.org"]);
+export function coordinatorEnvironment(value: string | undefined): "shadow" | "production" {
+  if (value === "shadow" || value === "production") return value;
+  throw new TypeError("LENSO_COORDINATOR_MODE must be shadow or production");
+}
 function assertGithubApi(url: string): void {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || parsed.origin !== "https://api.github.com")
@@ -218,7 +222,8 @@ export async function createCoordinatorHandlers(
   const now = () => new Date();
   const request = input.request ?? fetch;
   const provenanceVerifier = input.provenanceVerifier ?? new GhAttestationVerifier();
-  const shadow = input.env.LENSO_COORDINATOR_MODE === "shadow";
+  const environment = coordinatorEnvironment(input.env.LENSO_COORDINATOR_MODE);
+  const shadow = environment === "shadow";
   const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
     if (id.startsWith("artifact:")) {
       const component = registry.packages[id];
@@ -389,6 +394,7 @@ export async function createCoordinatorHandlers(
         store: input.store,
         github,
         registry,
+        environment,
         now,
         nonce,
         appId: input.config.appId,
