@@ -43,6 +43,7 @@ function state(): PlanStateV1 {
   const planId = digest("a");
   return {
     schema: "lenso.plan-state.v1",
+    environment: "production",
     repository: "LioRael/lenso",
     planId,
     planSha256: digest("b"),
@@ -160,7 +161,7 @@ describe("atomic coordinator state", () => {
     } as ComponentRegistry;
     const releaseCommit = "2".repeat(40);
     const accepted = await acceptReadyEvent({ schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready", issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit }, {
-      store: new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} }), registry, appId: 42, expectedActor: "lenso-app[bot]",
+      store: new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} }), registry, environment: "production", appId: 42, expectedActor: "lenso-app[bot]",
       now: () => new Date("2026-07-11T00:00:00Z"), nonce: () => "dispatch-nonce-1",
       github: {
         async readAtReleaseCommit() { return { actor: "lenso-app[bot]", appId: 42, planBytes, plan, planSha256: planSha, sourceCommitRepository: plan.repository, releaseCommitRepository: plan.repository, releaseCommitContainsSourceCommit: true, workflowSha256: plan.publisher.workflowSha256, sharedRevision: plan.publisher.sharedRevision, sharedBundleSha256: plan.publisher.sharedBundleSha256, runner: plan.publisher.runner, node: plan.publisher.node, npm: plan.publisher.npm, rust: plan.publisher.rust, branchProtected: true, generatedFilesValid: true, externalDependenciesVisible: true }; },
@@ -171,6 +172,7 @@ describe("atomic coordinator state", () => {
       "cargo:lenso",
       "cargo:lenso-service",
     ]);
+    expect(accepted.state.environment).toBe("production");
   });
   it("runs ready and exact receipts through a two-phase plan to verified", async () => {
     const identity = {
@@ -211,7 +213,7 @@ describe("atomic coordinator state", () => {
     const releaseCommit = "2".repeat(40);
     const readyEvent = { schema: "lenso.release-event.v1" as const, eventId: digest("e"), eventType: "lenso-plan-ready" as const, issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit };
     let current = (await acceptReadyEvent(readyEvent, {
-      store, registry, appId: 42, expectedActor: "lenso-app[bot]",
+      store, registry, environment: "production", appId: 42, expectedActor: "lenso-app[bot]",
       now: () => new Date("2026-07-11T00:00:00Z"), nonce: () => `dispatch-nonce-${++nonce}`,
       github: {
         async readAtReleaseCommit() { return { actor: "lenso-app[bot]", appId: 42, planBytes, plan, planSha256: planSha, sourceCommitRepository: plan.repository, releaseCommitRepository: plan.repository, releaseCommitContainsSourceCommit: true, workflowSha256: plan.publisher.workflowSha256, sharedRevision: plan.publisher.sharedRevision, sharedBundleSha256: plan.publisher.sharedBundleSha256, runner: plan.publisher.runner, node: plan.publisher.node, npm: plan.publisher.npm, rust: plan.publisher.rust, branchProtected: true, generatedFilesValid: true, externalDependenciesVisible: true }; },
@@ -259,6 +261,15 @@ describe("atomic coordinator state", () => {
     );
     expect(() => planStatePath("../lenso", digest("a"))).toThrow("repository");
     expect(() => assertPlanState(state())).not.toThrow();
+    const missingActiveEnvironment = state();
+    delete missingActiveEnvironment.environment;
+    expect(() => assertPlanState(missingActiveEnvironment)).toThrow("active state environment is required");
+    const legacy = state();
+    delete legacy.environment;
+    legacy.status = "blocked";
+    legacy.reason = "historical blocked plan";
+    expect(() => assertPlanState(legacy)).not.toThrow();
+    expect(() => assertLegalTransition(state(), { ...state(), environment: "shadow" })).toThrow("immutable environment rewrite");
   });
   it("round-trips hosted artifact package and occupancy identities", () => {
     const value = state();

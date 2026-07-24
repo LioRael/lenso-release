@@ -4,9 +4,16 @@
   "title": "Lenso immutable release plan state",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["ready", "publishing"] } }, "required": ["status"] },
+      "then": { "required": ["environment"] }
+    }
+  ],
   "required": ["schema", "repository", "planId", "planSha256", "sourceCommit", "releaseCommit", "status", "reason", "evidence", "packages", "receipts", "attempts", "outbox", "occupancyKeys", "executionRef", "revision", "previousBlobSha", "createdAt", "updatedAt"],
   "properties": {
     "schema": { "const": "lenso.plan-state.v1" },
+    "environment": { "enum": ["shadow", "production"] },
     "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
     "planId": { "$ref": "#/$defs/sha256" },
     "planSha256": { "$ref": "#/$defs/sha256" },

@@ -63,7 +63,7 @@ async function githubContent(token: string, path: string): Promise<ObjectValue> 
   return object(JSON.parse(atob(body.content.replaceAll("\n", ""))), "authoritative release state");
 }
 
-async function requireAuthoritativeBinding(token: string, binding: ObjectValue): Promise<void> {
+async function requireAuthoritativeBinding(token: string, binding: ObjectValue): Promise<"shadow" | "production"> {
   const repository = string(binding.repository, "binding.repository");
   const planId = string(binding.planId, "binding.planId");
   const eventId = string(binding.eventId, "binding.eventId");
@@ -77,6 +77,9 @@ async function requireAuthoritativeBinding(token: string, binding: ObjectValue):
     throw new Error("preflight binding is not authorized by active release state");
   if (canonical(dispatch.packages as Json) !== canonical(binding.packages as Json)) throw new Error("preflight package selection is not authorized by release outbox");
   if (typeof inputs.packages_json !== "string" || canonical(JSON.parse(inputs.packages_json) as Json) !== canonical(binding.packages as Json)) throw new Error("preflight dispatch inputs do not authorize package selection");
+  if (state.environment !== "shadow" && state.environment !== "production")
+    throw new Error("authoritative release state environment is missing or invalid");
+  return state.environment;
 }
 
 export async function assertExistingArtifactMatches(
@@ -118,6 +121,12 @@ export async function assertExistingArtifactMatches(
     throw new Error(`existing shadow artifact digest mismatch: ${id}@${version}`);
 }
 
+export function existingArtifactVerificationRequired(environment: string): boolean {
+  if (environment === "shadow") return true;
+  if (environment === "production") return false;
+  throw new Error("stored release environment is invalid");
+}
+
 async function dispatch(request: Request, eventType: "lenso-plan-ready" | "lenso-publish-receipt"): Promise<Response> {
   const event = object(await request.json(), "release event");
   if (event.eventType !== eventType || event.schema !== "lenso.release-event.v1") throw new Error("release event type mismatch");
@@ -146,14 +155,14 @@ async function issuePreflight(request: Request, env: CoordinatorEnv): Promise<Re
   const githubToken = await requireInstallation(request, repository);
   const bindingDigest = string(body.bindingDigest, "bindingDigest");
   if (bindingDigest !== await canonicalSha256(binding as Json)) throw new Error("preflight binding digest mismatch");
-  await requireAuthoritativeBinding(githubToken, binding);
+  const environment = await requireAuthoritativeBinding(githubToken, binding);
   const eventId = string(binding.eventId, "binding.eventId");
   const now = new Date();
   const proofId = await canonicalSha256({ eventId, bindingDigest } as Json);
   const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
   const issuedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + 4 * 60_000).toISOString();
-  const bindingJson = canonical(binding as Json);
+  const bindingJson = canonical({ ...binding, environment } as Json);
   await env.DB.prepare("INSERT INTO preflight_proofs (proof_id, event_id, repository, binding_digest, token, issued_at, expires_at, consumed_at, binding_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8) ON CONFLICT(proof_id) DO UPDATE SET token=excluded.token, issued_at=excluded.issued_at, expires_at=excluded.expires_at, binding_json=excluded.binding_json WHERE preflight_proofs.consumed_at IS NULL AND preflight_proofs.expires_at <= ?9")
     .bind(proofId, eventId, repository, bindingDigest, token, issuedAt, expiresAt, bindingJson, now.toISOString()).run();
   const row = await env.DB.prepare("SELECT token, issued_at, expires_at FROM preflight_proofs WHERE proof_id=?1 AND event_id=?2 AND binding_digest=?3").bind(proofId, eventId, bindingDigest).first() as { token: string; issued_at: string; expires_at: string } | null;
@@ -174,6 +183,8 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
   await requireInstallation(request, row.repository);
   if (!row.binding_json) throw new Error("preflight proof binding is missing");
   const binding = object(JSON.parse(row.binding_json), "stored binding");
+  const environment = string(binding.environment, "binding.environment");
+  const verifyExistingArtifact = existingArtifactVerificationRequired(environment);
   for (const key of ["eventId", "nonce", "planId", "releaseCommit", "ref"])
     if (facts[key] !== binding[key]) throw new Error("preflight consumption binding mismatch");
   const selected = Array.isArray(binding.packages) ? binding.packages.map((item) => object(item, "binding package")) : [];
@@ -191,7 +202,8 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
     const cargoDigest = artifact.cargoMetadataSha256;
     if (kind === "cargo" ? !cargoMetadata || cargoDigest !== await canonicalSha256(cargoMetadata as Json) : cargoMetadata !== null || cargoDigest !== null)
       throw new Error("Cargo upload metadata binding mismatch");
-    await assertExistingArtifactMatches(env, row.repository, artifact);
+    if (verifyExistingArtifact)
+      await assertExistingArtifactMatches(env, row.repository, artifact);
   }
   const consumedAt = new Date().toISOString();
   const result = await env.DB.prepare("UPDATE preflight_proofs SET consumed_at=?2 WHERE proof_id=?1 AND consumed_at IS NULL AND token=?3 AND binding_digest=?4 AND binding_json=?5 AND expires_at>?2")

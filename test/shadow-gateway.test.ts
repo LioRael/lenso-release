@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { npmPublication, parseCargoUpload } from "../shadow-gateway/src/protocol.js";
-import { assertExistingArtifactMatches, canonical, canonicalSha256, signAuthorization } from "../shadow-gateway/src/coordinator.js";
+import { assertExistingArtifactMatches, canonical, canonicalSha256, existingArtifactVerificationRequired, signAuthorization } from "../shadow-gateway/src/coordinator.js";
 
 describe("shadow gateway protocols", () => {
   it("parses the Cargo publish wire format without changing artifact bytes", () => {
@@ -68,5 +68,11 @@ describe("shadow gateway protocols", () => {
     await expect(assertExistingArtifactMatches(env, "LioRael/lenso-cli", artifact)).resolves.toBeUndefined();
     await expect(assertExistingArtifactMatches(env, "LioRael/lenso-cli", { ...artifact, sha256: `sha256:${"b".repeat(64)}` })).rejects.toThrow("digest mismatch");
     await expect(assertExistingArtifactMatches({ ...env, ARTIFACTS: { async get() { return null; } } }, "LioRael/lenso-cli", artifact)).rejects.toThrow("bytes are missing");
+  });
+
+  it("checks existing artifacts only for authoritative shadow plans", () => {
+    expect(existingArtifactVerificationRequired("shadow")).toBe(true);
+    expect(existingArtifactVerificationRequired("production")).toBe(false);
+    expect(() => existingArtifactVerificationRequired("staging")).toThrow("environment is invalid");
   });
 });

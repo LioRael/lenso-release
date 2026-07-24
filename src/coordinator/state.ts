@@ -116,9 +116,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("state must be an object");
   const state = value as Record<string, unknown>;
-  exactKeys(
-    state,
-    [
+  const stateKeys = [
       "schema",
       "repository",
       "planId",
@@ -138,11 +136,26 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
       "previousBlobSha",
       "createdAt",
       "updatedAt",
-    ],
+    ];
+  if (Object.hasOwn(state, "environment")) stateKeys.push("environment");
+  exactKeys(
+    state,
+    stateKeys,
     "state",
   );
   if (state.schema !== "lenso.plan-state.v1")
     throw new TypeError("state schema mismatch");
+  if (
+    state.environment !== undefined &&
+    state.environment !== "shadow" &&
+    state.environment !== "production"
+  )
+    throw new TypeError("state environment invalid");
+  if (
+    state.environment === undefined &&
+    (state.status === "ready" || state.status === "publishing")
+  )
+    throw new TypeError("active state environment is required");
   normalizeRepository(String(state.repository));
   planDigestHex(String(state.planId));
   if (!SHA256.test(String(state.planSha256)))
@@ -366,6 +379,7 @@ export function assertLegalTransition(
   assertPlanState(previous);
   assertPlanState(next);
   for (const field of [
+    "environment",
     "repository",
     "planId",
     "planSha256",

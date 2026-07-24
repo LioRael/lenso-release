@@ -121,6 +121,7 @@ export type PlanDispatchOutbox = {
 };
 export type PlanStateV1 = {
   schema: "lenso.plan-state.v1";
+  environment?: "shadow" | "production";
   repository: string;
   planId: Sha256;
   planSha256: Sha256;
