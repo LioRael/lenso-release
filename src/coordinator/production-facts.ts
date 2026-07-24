@@ -84,6 +84,44 @@ export async function checkedGithubAsset(request: typeof fetch, url: string, tok
     throw new TypeError("GitHub asset redirect target is not trusted");
   return request(target, { redirect: "error", headers: { accept: "application/octet-stream" } });
 }
+function assertShadowGithubApi(url: string, gateway: string): void {
+  const parsed = new URL(url);
+  const configured = new URL(gateway);
+  const prefix = `${configured.pathname.replace(/\/+$/u, "")}/repos/`;
+  if (
+    configured.protocol !== "https:" ||
+    parsed.protocol !== "https:" ||
+    parsed.origin !== configured.origin ||
+    !parsed.pathname.startsWith(prefix)
+  )
+    throw new TypeError("shadow GitHub request must target the configured gateway");
+}
+export async function checkedShadowGithubJson(
+  request: typeof fetch,
+  url: string,
+  gateway: string,
+  token: string,
+): Promise<Record<string, unknown>> {
+  assertShadowGithubApi(url, gateway);
+  const response = await request(url, { redirect: "error", headers: headers(token) });
+  if (!response.ok) throw new Error(`shadow GitHub observation ${response.status}`);
+  if (response.url) assertShadowGithubApi(response.url, gateway);
+  return await response.json() as Record<string, unknown>;
+}
+export async function checkedShadowGithubAsset(
+  request: typeof fetch,
+  url: string,
+  gateway: string,
+  token: string,
+): Promise<Response> {
+  assertShadowGithubApi(url, gateway);
+  const response = await request(url, {
+    redirect: "error",
+    headers: { ...headers(token), accept: "application/octet-stream" },
+  });
+  if (response.url) assertShadowGithubApi(response.url, gateway);
+  return response;
+}
 function nonce() {
   return crypto.randomUUID();
 }
@@ -486,17 +524,28 @@ export async function createCoordinatorHandlers(
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
           } else {
-            const release = await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+            const release = shadow
+              ? await checkedShadowGithubJson(
+                  request,
+                  `${tagApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`,
+                  input.env.LENSO_SHADOW_GITHUB_API_URL!,
+                  token,
+                )
+              : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
             if (release.draft !== true || typeof release.created_at !== "string") return null;
             const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
             const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
             if (!asset?.url || !asset.browser_download_url || !checksumAsset?.url) return null;
-            const artifact = await checkedGithubAsset(request, String(asset.url), token);
+            const artifact = shadow
+              ? await checkedShadowGithubAsset(request, String(asset.url), input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
+              : await checkedGithubAsset(request, String(asset.url), token);
             if (!artifact.ok) return null;
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = sha256(packedBytes);
-            const checksum = await checkedGithubAsset(request, String(checksumAsset.url), token);
+            const checksum = shadow
+              ? await checkedShadowGithubAsset(request, String(checksumAsset.url), input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
+              : await checkedGithubAsset(request, String(checksumAsset.url), token);
             const expectedChecksum = `${nativeIntegrity.slice("sha256:".length)}  ${packageName}.tar.gz\n`;
             if (!checksum.ok || Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) return null;
             publishedAt = String(release.created_at);
