@@ -826,7 +826,7 @@ export async function createCoordinatorHandlers(
           },
         },
         now(),
-        nonce(),
+        nonce,
         input.config.appId,
       );
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
