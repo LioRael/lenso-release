@@ -669,38 +669,44 @@ export async function createCoordinatorHandlers(
             subject = null;
           }
           if (!subject && recoveryRun) {
-            try {
-              const historical = await provenanceVerifier.verify({
-                artifactBytes: packedBytes,
-                subjectName,
-                digest: packedDigest,
-                repository,
-                workflow: context.workflow,
-                ref: defaultBranch,
-                sha: String(workflow.head_sha),
-                runId,
-                githubToken: token,
-                allowAnySource: true,
-              });
-              if (historical?.source) {
-                const historicalRun = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}`, token);
-                const jobsResponse = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}/jobs?per_page=100`, token);
-                const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
-                const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(historical.source.sha)}...${encodeURIComponent(defaultHead)}`, token);
-                if (
-                  historicalRun.head_branch === historical.source.ref &&
-                  historicalRun.head_sha === historical.source.sha &&
-                  trustedRecoveryProvenanceRun(
-                    historicalRun,
-                    jobs,
-                    comparison,
-                    repository,
-                    defaultBranch,
-                  )
-                ) subject = { name: historical.name, digest: historical.digest };
+            const historicalNames = packageId.startsWith("npm:")
+              ? [subjectName, `lenso-${packageName}-${packageVersion}.tgz`]
+              : [subjectName];
+            for (const historicalName of historicalNames) {
+              try {
+                const historical = await provenanceVerifier.verify({
+                  artifactBytes: packedBytes,
+                  subjectName: historicalName,
+                  digest: packedDigest,
+                  repository,
+                  workflow: context.workflow,
+                  ref: defaultBranch,
+                  sha: String(workflow.head_sha),
+                  runId,
+                  githubToken: token,
+                  allowAnySource: true,
+                });
+                if (historical?.source) {
+                  const historicalRun = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}`, token);
+                  const jobsResponse = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}/jobs?per_page=100`, token);
+                  const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+                  const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(historical.source.sha)}...${encodeURIComponent(defaultHead)}`, token);
+                  if (
+                    historicalRun.head_branch === historical.source.ref &&
+                    historicalRun.head_sha === historical.source.sha &&
+                    trustedRecoveryProvenanceRun(
+                      historicalRun,
+                      jobs,
+                      comparison,
+                      repository,
+                      defaultBranch,
+                    )
+                  ) subject = { name: historical.name, digest: historical.digest };
+                }
+              } catch {
+                subject = null;
               }
-            } catch {
-              subject = null;
+              if (subject) break;
             }
           }
           if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow history");
