@@ -697,7 +697,7 @@ export async function createCoordinatorHandlers(
                     repository,
                     defaultBranch,
                   )
-                ) subject = historical;
+                ) subject = { name: historical.name, digest: historical.digest };
               }
             } catch {
               subject = null;
