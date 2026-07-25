@@ -683,6 +683,19 @@ export async function retireFailedShadowPlan(
   if (dispatched.length === 0)
     throw new Error("failed dispatch retirement requires a dispatched workflow");
   const received = new Set(state.receipts.map(({ packageId, version }) => `${packageId}@${version}`));
+  const verifiedByAnotherPlan = new Set(
+    Object.values(initial.plans)
+      .filter((candidate) =>
+        candidate.planId !== state.planId &&
+        candidate.status === "verified" &&
+        candidate.environment === "shadow"
+      )
+      .flatMap((candidate) =>
+        candidate.receipts
+          .filter(({ environment }) => environment === "shadow")
+          .map(({ packageId, version }) => `${packageId}@${version}`)
+      ),
+  );
   for (const entry of dispatched) {
     const run = await facts.observeRun(entry);
     const receivedCount = entry.packages.filter(({ id, version }) => received.has(`${id}@${version}`)).length;
@@ -697,12 +710,16 @@ export async function retireFailedShadowPlan(
     ) throw new Error("dispatched workflow is not conclusively failed");
   }
   for (const pkg of state.packages) {
-    const hasReceipt = received.has(`${pkg.id}@${pkg.version}`);
+    const key = `${pkg.id}@${pkg.version}`;
+    const hasReceipt = received.has(key);
+    const hasPriorVerifiedReceipt = verifiedByAnotherPlan.has(key);
     const exists = await facts.packageVersionExists(pkg.id, pkg.version);
-    if (hasReceipt !== exists)
+    if (hasReceipt !== exists && !(exists && hasPriorVerifiedReceipt))
       throw new Error(hasReceipt
         ? `received shadow package is missing: ${pkg.id}@${pkg.version}`
         : `unreceived package version already exists: ${pkg.id}@${pkg.version}`);
+    if (!exists && hasPriorVerifiedReceipt)
+      throw new Error(`previously verified shadow package is missing: ${pkg.id}@${pkg.version}`);
   }
 
   let result!: PlanStateV1;
