@@ -152,7 +152,8 @@ export async function runHandleEventCli(
     }
     if (argv.length === 1 && argv[0] === "--recover-active") {
       if (!handlers.recoverActive) throw new TypeError("active recovery is not configured");
-      await handlers.recoverActive();
+      const result = await handlers.recoverActive();
+      process.stdout.write(`${JSON.stringify(result)}\n`);
       return HANDLE_EVENT_EXIT.ok;
     }
     const value = await readEventArgument(argv);
