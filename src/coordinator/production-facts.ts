@@ -631,24 +631,29 @@ export async function createCoordinatorHandlers(
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
-          const subject = shadow
-            ? await (async () => {
-                const response = await request(expected.provenanceUrl, { redirect: "error" });
-                if (!response.ok) return null;
-                const value = await response.json() as Record<string, unknown>;
-                return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
-              })()
-            : await provenanceVerifier.verify({
-                artifactBytes: packedBytes,
-                subjectName,
-                digest: packedDigest,
-                repository,
-                workflow: context.workflow,
-                ref: String(workflow.head_branch),
-                sha: String(workflow.head_sha),
-                runId,
-                githubToken: token,
-              });
+          let subject;
+          try {
+            subject = shadow
+              ? await (async () => {
+                  const response = await request(expected.provenanceUrl, { redirect: "error" });
+                  if (!response.ok) return null;
+                  const value = await response.json() as Record<string, unknown>;
+                  return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
+                })()
+              : await provenanceVerifier.verify({
+                  artifactBytes: packedBytes,
+                  subjectName,
+                  digest: packedDigest,
+                  repository,
+                  workflow: context.workflow,
+                  ref: String(workflow.head_branch),
+                  sha: String(workflow.head_sha),
+                  runId,
+                  githubToken: token,
+                });
+          } catch {
+            throw new IncompleteEvidenceError("verified artifact provenance check is temporarily unavailable");
+          }
           if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow");
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
