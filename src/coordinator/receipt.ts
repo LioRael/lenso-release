@@ -16,6 +16,30 @@ export type ReceiptObserver = { observe(context: ReceiptObservationContext, pack
 export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; dependenciesVisible?(plan: ReleasePlanV1, packageIds: string[]): Promise<boolean>; environment: ComponentReceiptV1["environment"]; recovery?: boolean; now(): Date; nonce(): string; appId: number };
 
 const equal = (a: unknown, b: unknown) => canonicalBytes(a as never).equals(canonicalBytes(b as never));
+function normalizeLegacyRecoveryReceipt(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const receipt = value as Record<string, unknown>;
+  const subjectValue = receipt.provenanceSubject;
+  if (typeof subjectValue !== "object" || subjectValue === null || Array.isArray(subjectValue)) return value;
+  const subject = subjectValue as Record<string, unknown>;
+  if (!Object.hasOwn(subject, "source")) return value;
+  if (Object.keys(subject).sort().join(",") !== "digest,name,source") return value;
+  const sourceValue = subject.source;
+  if (typeof sourceValue !== "object" || sourceValue === null || Array.isArray(sourceValue)) return value;
+  const source = sourceValue as Record<string, unknown>;
+  if (
+    Object.keys(source).sort().join(",") !== "ref,runId,sha" ||
+    source.ref !== "main" ||
+    !/^[1-9][0-9]*$/u.test(String(source.runId)) ||
+    !/^[0-9a-f]{40}$/u.test(String(source.sha))
+  ) return value;
+  const { receiptId: _legacyReceiptId, ...legacyIdentity } = receipt;
+  const identity = {
+    ...legacyIdentity,
+    provenanceSubject: { name: subject.name, digest: subject.digest },
+  };
+  return { ...identity, receiptId: sha256(identity as never) };
+}
 function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { eventType: "lenso-publish-receipt" }>, observed: ReceiptObservation, state: PlanStateV1): void {
   if (sha256(observed.registry.packedBytes) !== receipt.packedSha256 || observed.registry.nativeIntegrity !== receipt.registryIntegrity || observed.registry.url !== receipt.registryUrl || observed.registry.publishedAt !== receipt.publishedAt) throw new Error("registry contradiction");
   if (observed.provenance.url !== receipt.provenanceUrl || !equal(observed.provenance.subject, receipt.provenanceSubject)) throw new Error("provenance contradiction");
@@ -25,7 +49,7 @@ function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { ev
   const exactExecution = run.ref === state.executionRef.name && run.sha === state.releaseCommit;
   if (run.url !== receipt.workflowUrl || run.repository !== state.repository || (!exactExecution && run.recovery !== true) || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
   const tagReceipt = observed.tag.receipt;
-  const tagContainsReceipt = equal(tagReceipt, receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(candidate, receipt)));
+  const tagContainsReceipt = equal(normalizeLegacyRecoveryReceipt(tagReceipt), receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(normalizeLegacyRecoveryReceipt(candidate), receipt)));
   if (!observed.tag.annotated || !observed.tag.immutable || observed.tag.targetSha !== state.releaseCommit || observed.tag.url !== receipt.tagUrl || !tagContainsReceipt) throw new Error("annotated tag contradiction");
 }
 async function block(deps: ReceiptDependencies, path: string, eventId: Sha256, reason: string): Promise<StoredPlanState> {
@@ -82,7 +106,9 @@ export async function recoverLostReceipt(repository: string, planId: string, pac
   const exactExecution = observed.workflow.ref === state.executionRef.name && observed.workflow.sha === state.releaseCommit;
   if (observed.workflow.repository !== repository || (!exactExecution && observed.workflow.recovery !== true) || observed.workflow.runName !== `lenso-publish-requested:${requestId}` || observed.workflow.workflowPath !== outbox.workflow) return null;
   const identity = { schema: "lenso.component-receipt.v1" as const, environment: deps.environment, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
-  let receipt = observed.tag.receipt as ComponentReceiptV1 | null;
+  let receipt = observed.tag.receipt === null
+    ? null
+    : normalizeLegacyRecoveryReceipt(observed.tag.receipt) as ComponentReceiptV1;
   if (receipt === null) {
     receipt = { ...identity, receiptId: sha256(identity as never) as Sha256 };
     await deps.observer.createAnnotatedTag(repository, receipt);
