@@ -187,12 +187,26 @@ describe("production coordinator adapters", () => {
     expect(invocation?.args).toContain("--source-ref");
     expect(invocation?.args).toContain("--source-digest");
     expect(JSON.stringify(invocation)).not.toMatch(/token|secret|shell/iu);
+    const attempted = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{
+      verificationResult: {
+        ...exact,
+        signature: {
+          certificate: {
+            ...exactCertificate,
+            runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/1`,
+          },
+        },
+      },
+    }]) }));
+    await expect(attempted.verify(expected)).resolves.toEqual({ name: expected.subjectName, digest });
     const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { ...exactCertificate, sourceRepositoryURI: `https://github.com/${expected.repository}-suffix`, runInvocationURI: `https://github.com/${expected.repository}/actions/runs/420` } } } }]) }));
     await expect(wrong.verify(expected)).resolves.toBeNull();
     for (const certificate of [
       { ...exactCertificate, buildSignerURI: `${exactCertificate.buildSignerURI}-suffix` },
       { ...exactCertificate, sourceRepositoryDigest: `${expected.sha}0` },
       { ...exactCertificate, sourceRepositoryRef: `${sourceRef}/extra` },
+      { ...exactCertificate, runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/0` },
+      { ...exactCertificate, runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/1/extra` },
       [exactCertificate],
       null,
     ]) {
