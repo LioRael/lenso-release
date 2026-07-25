@@ -20,6 +20,12 @@ export type ProvenanceVerifier = {
 };
 type ExecFile = (file: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>;
 
+function exactRunInvocation(value: unknown, runUrl: string): boolean {
+  return value === runUrl
+    || (typeof value === "string"
+      && new RegExp(`^${runUrl.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}/attempts/[1-9][0-9]*$`, "u").test(value));
+}
+
 const execute: ExecFile = (file, args, options) => new Promise((resolve, reject) => {
   nodeExecFile(file, [...args], { shell: false, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: options.env }, (error, stdout) => {
     if (error) reject(new Error("official GitHub attestation verification failed", { cause: error }));
@@ -73,7 +79,10 @@ export class GhAttestationVerifier implements ProvenanceVerifier {
           identity.sourceRepositoryDigest === expected.sha &&
           identity.sourceRepositoryRef === sourceRef &&
           identity.buildSignerURI === `https://github.com/${expected.repository}/${expected.workflow}@${sourceRef}` &&
-          identity.runInvocationURI === `https://github.com/${expected.repository}/actions/runs/${expected.runId}`
+          exactRunInvocation(
+            identity.runInvocationURI,
+            `https://github.com/${expected.repository}/actions/runs/${expected.runId}`,
+          )
         ) return { name: expected.subjectName, digest: expected.digest };
       }
       return null;
