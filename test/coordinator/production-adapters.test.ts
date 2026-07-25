@@ -306,6 +306,27 @@ describe("production coordinator adapters", () => {
     });
   });
 
+  it("reuses unexpired tokens for the same repository and permissions", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      token: "cached",
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    }));
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const provider = new GithubAppTokenProvider(1, key, 2, request as typeof fetch);
+    await expect(Promise.all([
+      provider.tokenFor("LioRael/lenso", { metadata: "read", actions: "read" }),
+      provider.tokenFor("LioRael/lenso", { actions: "read", metadata: "read" }),
+    ])).resolves.toEqual(["cached", "cached"]);
+    await expect(
+      provider.tokenFor("LioRael/lenso", { actions: "write", metadata: "read" }),
+    ).resolves.toBe("cached");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("does not require or return a static coordinator token", () => {
     const parsed = parseCoordinatorEnvironment({
       GITHUB_REPOSITORY: "LioRael/lenso-release",
