@@ -661,6 +661,50 @@ describe("atomic coordinator state", () => {
     }, new Date());
     expect(partiallyRetired.state).toMatchObject({ status: "blocked", receipts: withReceipt.receipts, occupancyKeys: [] });
 
+    const prior = structuredClone(withReceipt);
+    prior.planId = digest("d");
+    prior.environment = "shadow";
+    prior.status = "verified";
+    prior.reason = null;
+    prior.packages[0]!.requestEventId = prior.outbox[0]!.eventId;
+    prior.receipts[0] = {
+      ...prior.receipts[0]!,
+      planId: prior.planId,
+    };
+    prior.outbox = [];
+    prior.occupancyKeys = [];
+    prior.executionRef = {
+      name: `release-execution/${"d".repeat(64)}`,
+      tip: prior.releaseCommit,
+      protected: true,
+    };
+    const preexistingSnapshot = snapshot(failed);
+    preexistingSnapshot.plans[planStatePath(prior.repository, prior.planId)] = prior;
+    const preexistingRetired = await retireFailedShadowPlan(
+      new MemoryStore(preexistingSnapshot),
+      failed.repository,
+      failed.planId,
+      digest("f"),
+      "shadow",
+      {
+        async observeRun() {
+          return {
+            runUrl: failed.outbox[0]!.runUrl!,
+            status: "completed",
+            conclusion: "failure",
+          };
+        },
+        async packageVersionExists() { return true; },
+      },
+      new Date(),
+    );
+    expect(preexistingRetired.state).toMatchObject({
+      status: "blocked",
+      reason: "retired failed shadow dispatch",
+      receipts: [],
+      occupancyKeys: [],
+    });
+
     for (const [mode, receipts, conclusion, exists, message] of [
       ["production", [], "failure", false, "shadow mode"],
       ["shadow", [], "success", false, "conclusively failed"],
