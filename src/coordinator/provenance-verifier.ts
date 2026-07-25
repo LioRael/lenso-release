@@ -14,9 +14,14 @@ export type ProvenanceExpectation = {
   sha: string;
   runId: string;
   githubToken: string;
+  allowAnySource?: boolean;
 };
 export type ProvenanceVerifier = {
-  verify(expectation: ProvenanceExpectation): Promise<{ name: string; digest: string } | null>;
+  verify(expectation: ProvenanceExpectation): Promise<{
+    name: string;
+    digest: string;
+    source?: { ref: string; sha: string; runId: string };
+  } | null>;
 };
 type ExecFile = (file: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => Promise<{ stdout: string }>;
 
@@ -35,7 +40,7 @@ const execute: ExecFile = (file, args, options) => new Promise((resolve, reject)
 
 export class GhAttestationVerifier implements ProvenanceVerifier {
   constructor(private readonly execFile: ExecFile = execute) {}
-  async verify(expected: ProvenanceExpectation): Promise<{ name: string; digest: string } | null> {
+  async verify(expected: ProvenanceExpectation): ReturnType<ProvenanceVerifier["verify"]> {
     const directory = await mkdtemp(join(tmpdir(), "lenso-attestation-"));
     const artifact = join(directory, "artifact");
     try {
@@ -46,15 +51,17 @@ export class GhAttestationVerifier implements ProvenanceVerifier {
       );
       try { await handle.writeFile(expected.artifactBytes); }
       finally { await handle.close(); }
-      const { stdout } = await this.execFile("gh", [
+      const args = [
         "attestation", "verify", artifact,
         "--repo", expected.repository,
         "--signer-workflow", `${expected.repository}/${expected.workflow}`,
-        "--source-ref", `refs/heads/${expected.ref}`,
-        "--source-digest", expected.sha,
+        ...(!expected.allowAnySource
+          ? ["--source-ref", `refs/heads/${expected.ref}`, "--source-digest", expected.sha]
+          : []),
         "--predicate-type", "https://slsa.dev/provenance/v1",
         "--format", "json",
-      ], { env: { ...process.env, GH_TOKEN: expected.githubToken } });
+      ];
+      const { stdout } = await this.execFile("gh", args, { env: { ...process.env, GH_TOKEN: expected.githubToken } });
       const entries = JSON.parse(stdout) as unknown;
       if (!Array.isArray(entries)) return null;
       for (const entry of entries) {
@@ -70,20 +77,36 @@ export class GhAttestationVerifier implements ProvenanceVerifier {
         const timestamps = result?.verifiedTimestamps;
         if (certificate === null || typeof certificate !== "object" || Array.isArray(certificate)) continue;
         const identity = certificate as Record<string, unknown>;
-        const sourceRef = `refs/heads/${expected.ref}`;
+        const sourceRef = String(identity.sourceRepositoryRef);
+        const sourceSha = String(identity.sourceRepositoryDigest);
+        const invocation = String(identity.runInvocationURI);
+        const invocationMatch = new RegExp(
+          `^https://github\\.com/${expected.repository.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}/actions/runs/([1-9][0-9]*)(?:/attempts/[1-9][0-9]*)?$`,
+          "u",
+        ).exec(invocation);
+        const exactSource = sourceRef === `refs/heads/${expected.ref}`
+          && sourceSha === expected.sha
+          && exactRunInvocation(
+            identity.runInvocationURI,
+            `https://github.com/${expected.repository}/actions/runs/${expected.runId}`,
+          );
         if (
           statement?.predicateType === "https://slsa.dev/provenance/v1" &&
           subject &&
           Array.isArray(timestamps) && timestamps.length > 0 &&
           identity.sourceRepositoryURI === `https://github.com/${expected.repository}` &&
-          identity.sourceRepositoryDigest === expected.sha &&
-          identity.sourceRepositoryRef === sourceRef &&
+          /^[0-9a-f]{40}$/u.test(sourceSha) &&
+          sourceRef.startsWith("refs/heads/") &&
           identity.buildSignerURI === `https://github.com/${expected.repository}/${expected.workflow}@${sourceRef}` &&
-          exactRunInvocation(
-            identity.runInvocationURI,
-            `https://github.com/${expected.repository}/actions/runs/${expected.runId}`,
-          )
-        ) return { name: expected.subjectName, digest: expected.digest };
+          invocationMatch &&
+          (expected.allowAnySource || exactSource)
+        ) return {
+          name: expected.subjectName,
+          digest: expected.digest,
+          ...(expected.allowAnySource
+            ? { source: { ref: sourceRef.slice("refs/heads/".length), sha: sourceSha, runId: invocationMatch[1]! } }
+            : {}),
+        };
       }
       return null;
     } catch (error) {
