@@ -201,7 +201,7 @@ export async function scanActiveRecovery(
       const key = `${state.repository}:${state.planId}:${pkg.id}:${pkg.version}`;
       try { await recover(state, pkg); recovered.push(key); }
       catch (error) {
-        if (error instanceof IncompleteEvidenceError) incomplete.push(key);
+        if (error instanceof IncompleteEvidenceError) incomplete.push(`${key}: ${error.message}`);
         else throw error;
       }
     }
@@ -621,11 +621,13 @@ export async function createCoordinatorHandlers(
               }
             }
           }
-          if (!workflow) return null;
+          if (!workflow) throw new IncompleteEvidenceError("successful exact or reviewed recovery workflow is not visible");
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`)
+            throw new IncompleteEvidenceError("workflow URL does not match the accepted execution");
+          if (workflow.status !== "completed" || workflow.conclusion !== "success")
+            throw new IncompleteEvidenceError("workflow has not completed successfully");
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
@@ -647,7 +649,7 @@ export async function createCoordinatorHandlers(
                 runId,
                 githubToken: token,
               });
-          if (!subject) return null;
+          if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow");
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
           tagWrite = { githubApi: tagApi, token, tagName, immutable };
