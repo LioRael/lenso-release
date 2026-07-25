@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedRecoveryProvenanceRun, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -88,6 +88,8 @@ describe("production coordinator adapters", () => {
       merge_base_commit: { sha },
     };
     expect(trustedRecoveryRun(run, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(true);
+    expect(trustedRecoveryProvenanceRun(run, jobs, comparison, "LioRael/lenso", "main")).toBe(true);
+    expect(trustedRecoveryProvenanceRun({ ...run, display_title: "unbound-recovery" }, jobs, comparison, "LioRael/lenso", "main")).toBe(false);
     expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
@@ -199,6 +201,16 @@ describe("production coordinator adapters", () => {
       },
     }]) }));
     await expect(attempted.verify(expected)).resolves.toEqual({ name: expected.subjectName, digest });
+    const historical = new GhAttestationVerifier(async (_file, args) => {
+      expect(args).not.toContain("--source-ref");
+      expect(args).not.toContain("--source-digest");
+      return { stdout: JSON.stringify([{ verificationResult: exact }]) };
+    });
+    await expect(historical.verify({ ...expected, allowAnySource: true })).resolves.toEqual({
+      name: expected.subjectName,
+      digest,
+      source: { ref: expected.ref, sha: expected.sha, runId: expected.runId },
+    });
     const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { ...exactCertificate, sourceRepositoryURI: `https://github.com/${expected.repository}-suffix`, runInvocationURI: `https://github.com/${expected.repository}/actions/runs/420` } } } }]) }));
     await expect(wrong.verify(expected)).resolves.toBeNull();
     for (const certificate of [

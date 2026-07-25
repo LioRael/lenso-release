@@ -188,6 +188,18 @@ export function trustedRecoveryRun(
     && mergeBase?.sha === run.head_sha;
 }
 
+export function trustedRecoveryProvenanceRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  comparison: Record<string, unknown>,
+  repository: string,
+  defaultBranch: string,
+): boolean {
+  const match = /^lenso-publish-requested:(sha256:[0-9a-f]{64})$/u.exec(String(run.display_title));
+  return Boolean(match) &&
+    trustedRecoveryRun(run, jobs, comparison, repository, defaultBranch, match![1]!);
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -591,11 +603,13 @@ export async function createCoordinatorHandlers(
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
           let workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
           let recoveryRun = false;
+          let defaultBranch = "";
+          let defaultHead = "";
           if ((!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") && !shadow) {
             const repositoryMetadata = await githubJson(githubApi, token);
-            const defaultBranch = String(repositoryMetadata.default_branch);
+            defaultBranch = String(repositoryMetadata.default_branch);
             const defaultRef = await githubJson(`${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
-            const defaultHead = String((defaultRef.object as Record<string, unknown>).sha);
+            defaultHead = String((defaultRef.object as Record<string, unknown>).sha);
             const candidates = runs.filter((run) =>
               run.event === "workflow_dispatch"
               && run.display_title === `lenso-publish-requested:${context.eventId}`
@@ -652,9 +666,44 @@ export async function createCoordinatorHandlers(
                   githubToken: token,
                 });
           } catch {
-            throw new IncompleteEvidenceError("verified artifact provenance check is temporarily unavailable");
+            subject = null;
           }
-          if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow");
+          if (!subject && recoveryRun) {
+            try {
+              const historical = await provenanceVerifier.verify({
+                artifactBytes: packedBytes,
+                subjectName,
+                digest: packedDigest,
+                repository,
+                workflow: context.workflow,
+                ref: defaultBranch,
+                sha: String(workflow.head_sha),
+                runId,
+                githubToken: token,
+                allowAnySource: true,
+              });
+              if (historical?.source) {
+                const historicalRun = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}`, token);
+                const jobsResponse = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}/jobs?per_page=100`, token);
+                const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+                const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(historical.source.sha)}...${encodeURIComponent(defaultHead)}`, token);
+                if (
+                  historicalRun.head_branch === historical.source.ref &&
+                  historicalRun.head_sha === historical.source.sha &&
+                  trustedRecoveryProvenanceRun(
+                    historicalRun,
+                    jobs,
+                    comparison,
+                    repository,
+                    defaultBranch,
+                  )
+                ) subject = historical;
+              }
+            } catch {
+              subject = null;
+            }
+          }
+          if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow history");
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
           tagWrite = { githubApi: tagApi, token, tagName, immutable };
