@@ -158,6 +158,36 @@ export function executionRefProtectionIsImmutable(value: unknown): boolean {
     enabled("allow_deletions", false);
 }
 
+export function trustedRecoveryRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  comparison: Record<string, unknown>,
+  repository: string,
+  defaultBranch: string,
+  eventId: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const baseCommit = comparison.base_commit as Record<string, unknown> | undefined;
+  const mergeBase = comparison.merge_base_commit as Record<string, unknown> | undefined;
+  const recovery = jobs.find((job) => job.name === "recover");
+  const publish = jobs.find((job) => job.name === "publish");
+  return run.event === "workflow_dispatch"
+    && run.display_title === `lenso-publish-requested:${eventId}`
+    && runRepository?.full_name === repository
+    && run.head_branch === defaultBranch
+    && typeof run.head_sha === "string"
+    && /^[0-9a-f]{40}$/u.test(run.head_sha)
+    && run.status === "completed"
+    && run.conclusion === "success"
+    && recovery?.status === "completed"
+    && recovery.conclusion === "success"
+    && publish?.status === "completed"
+    && publish.conclusion === "skipped"
+    && (comparison.status === "ahead" || comparison.status === "identical")
+    && baseCommit?.sha === run.head_sha
+    && mergeBase?.sha === run.head_sha;
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -537,7 +567,9 @@ export async function createCoordinatorHandlers(
                   token,
                 )
               : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
-            if (release.draft !== true || typeof release.created_at !== "string") return null;
+            if (typeof release.draft !== "boolean"
+              || (shadow && release.draft !== true)
+              || typeof release.created_at !== "string") return null;
             const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
             const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
@@ -555,13 +587,44 @@ export async function createCoordinatorHandlers(
             registryUrl = String(asset.browser_download_url);
           }
           const packedDigest = sha256(packedBytes);
-          const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
+          const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&per_page=100`, token);
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
-          const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
+          let workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
+          let recoveryRun = false;
+          if ((!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") && !shadow) {
+            const repositoryMetadata = await githubJson(githubApi, token);
+            const defaultBranch = String(repositoryMetadata.default_branch);
+            const defaultRef = await githubJson(`${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
+            const defaultHead = String((defaultRef.object as Record<string, unknown>).sha);
+            const candidates = runs.filter((run) =>
+              run.event === "workflow_dispatch"
+              && run.display_title === `lenso-publish-requested:${context.eventId}`
+              && run.head_branch === defaultBranch
+              && /^[0-9a-f]{40}$/u.test(String(run.head_sha))
+              && (run.repository as Record<string, unknown> | undefined)?.full_name === repository
+              && run.status === "completed"
+              && run.conclusion === "success");
+            const preferred = candidates.sort((left, right) =>
+              String(left.html_url) === expected.workflowUrl ? -1
+                : String(right.html_url) === expected.workflowUrl ? 1
+                  : Number(right.id) - Number(left.id));
+            workflow = undefined;
+            for (const candidate of preferred) {
+              const runId = String(candidate.id);
+              const jobsResponse = await githubJson(`${githubApi}/actions/runs/${runId}/jobs?per_page=100`, token);
+              const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+              const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(String(candidate.head_sha))}...${encodeURIComponent(defaultHead)}`, token);
+              if (trustedRecoveryRun(candidate, jobs, comparison, repository, defaultBranch, context.eventId)) {
+                workflow = candidate;
+                recoveryRun = true;
+                break;
+              }
+            }
+          }
           if (!workflow) return null;
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if (runUrl !== expected.workflowUrl || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
+          if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
           if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
@@ -573,7 +636,17 @@ export async function createCoordinatorHandlers(
                 const value = await response.json() as Record<string, unknown>;
                 return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
               })()
-            : await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
+            : await provenanceVerifier.verify({
+                artifactBytes: packedBytes,
+                subjectName,
+                digest: packedDigest,
+                repository,
+                workflow: context.workflow,
+                ref: String(workflow.head_branch),
+                sha: String(workflow.head_sha),
+                runId,
+                githubToken: token,
+              });
           if (!subject) return null;
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
@@ -615,6 +688,7 @@ export async function createCoordinatorHandlers(
               sha: String(workflow.head_sha),
               runName: String(workflow.display_title),
               workflowPath: context.workflow,
+              ...(recoveryRun ? { recovery: true as const } : {}),
             },
             tag: {
               url: expectedTagUrl,

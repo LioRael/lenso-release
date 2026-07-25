@@ -491,7 +491,7 @@ describe("atomic coordinator state", () => {
     expect(retry.state).toMatchObject({ status: "blocked", reason: "dispatch outcome unknown" });
     expect(retry.state.occupancyKeys.length).toBeGreaterThan(0);
   });
-  it("reconstructs a lost receipt and creates a missing annotated tag without publishing", async () => {
+  it("reconstructs a lost receipt from a reviewed recovery run without publishing", async () => {
     const identity = {
       schema: "lenso.release-plan.v1" as const,
       repository: "LioRael/lenso",
@@ -517,7 +517,7 @@ describe("atomic coordinator state", () => {
     const observation = () => ({
       registry: { packedBytes: bytes, nativeIntegrity: packed.slice(7), url: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", publishedAt: "2026-07-11T00:02:00Z" },
       provenance: { url: "https://github.com/LioRael/lenso/attestations/1", subject: { name: "lenso-contracts-1.0.0.crate", digest: packed } },
-      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/7", repository: value.repository, ref: value.executionRef.name, sha: value.releaseCommit, runName: `lenso-publish-requested:${value.packages[0]!.requestEventId!}`, workflowPath: value.outbox[0]!.workflow },
+      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/8", repository: value.repository, ref: "main", sha: "2".repeat(40), runName: `lenso-publish-requested:${value.packages[0]!.requestEventId!}`, workflowPath: value.outbox[0]!.workflow, recovery: true as const },
       tag: { url: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", annotated: tagReceipt !== null, immutable: tagReceipt !== null, targetSha: value.releaseCommit, receipt: tagReceipt },
     });
     const recovered = await recoverLostReceipt(value.repository, value.planId, value.packages[0]!.id, value.packages[0]!.version, {

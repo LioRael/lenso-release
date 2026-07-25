@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -64,6 +64,33 @@ describe("production coordinator adapters", () => {
     expect(executionRefProtectionIsImmutable(exact)).toBe(true);
     expect(executionRefProtectionIsImmutable({ ...exact, allow_deletions: { enabled: true } })).toBe(false);
     expect(executionRefProtectionIsImmutable({ ...exact, enforce_admins: null })).toBe(false);
+  });
+  it("accepts only successful reviewed recovery jobs from protected main history", () => {
+    const sha = "2".repeat(40);
+    const eventId = `sha256:${"a".repeat(64)}`;
+    const run = {
+      id: 42,
+      event: "workflow_dispatch",
+      display_title: `lenso-publish-requested:${eventId}`,
+      head_branch: "main",
+      head_sha: sha,
+      repository: { full_name: "LioRael/lenso" },
+      status: "completed",
+      conclusion: "success",
+    };
+    const jobs = [
+      { name: "recover", status: "completed", conclusion: "success" },
+      { name: "publish", status: "completed", conclusion: "skipped" },
+    ];
+    const comparison = {
+      status: "ahead",
+      base_commit: { sha },
+      merge_base_commit: { sha },
+    };
+    expect(trustedRecoveryRun(run, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(true);
+    expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+    expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
+    expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
   });
 
   it("follows only trusted GitHub asset redirects without forwarding authorization", async () => {
