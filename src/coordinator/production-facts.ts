@@ -646,27 +646,29 @@ export async function createCoordinatorHandlers(
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
           let subject;
-          try {
-            subject = shadow
-              ? await (async () => {
-                  const response = await request(expected.provenanceUrl, { redirect: "error" });
-                  if (!response.ok) return null;
-                  const value = await response.json() as Record<string, unknown>;
-                  return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
-                })()
-              : await provenanceVerifier.verify({
-                  artifactBytes: packedBytes,
-                  subjectName,
-                  digest: packedDigest,
-                  repository,
-                  workflow: context.workflow,
-                  ref: String(workflow.head_branch),
-                  sha: String(workflow.head_sha),
-                  runId,
-                  githubToken: token,
-                });
-          } catch {
-            subject = null;
+          if (!recoveryRun) {
+            try {
+              subject = shadow
+                ? await (async () => {
+                    const response = await request(expected.provenanceUrl, { redirect: "error" });
+                    if (!response.ok) return null;
+                    const value = await response.json() as Record<string, unknown>;
+                    return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
+                  })()
+                : await provenanceVerifier.verify({
+                    artifactBytes: packedBytes,
+                    subjectName,
+                    digest: packedDigest,
+                    repository,
+                    workflow: context.workflow,
+                    ref: String(workflow.head_branch),
+                    sha: String(workflow.head_sha),
+                    runId,
+                    githubToken: token,
+                  });
+            } catch {
+              subject = null;
+            }
           }
           if (!subject && recoveryRun) {
             const historicalNames = packageId.startsWith("npm:")
