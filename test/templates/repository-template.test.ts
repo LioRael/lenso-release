@@ -170,6 +170,21 @@ describe("transactional template synchronization", () => {
     await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed], deletePaths: [removed] })).resolves.toMatchObject({ schema: "lenso.repository-template.v1" });
     await expect(lstat(join(target, removed))).rejects.toMatchObject({ code: "ENOENT" });
   }, 20_000);
+
+  it("preserves only exact reviewed repository variants", async () => {
+    const target = await temp(); const installed = await syncRepositoryTemplate({ source: template, target });
+    const path = ".lenso-release/shadow.json"; const bytes = Buffer.from('{"schema":"lenso.release-mode.v1","mode":"shadow","allowedModes":["shadow","production"]}\n');
+    const reviewed = { path, sha256: sha256(bytes) };
+    await writeFile(join(target, path), bytes);
+
+    await expect(syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed] })).rejects.toThrow(`managed file drift: ${path}`);
+    await expect(syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed], preserveFiles: [{ path, sha256: `sha256:${"0".repeat(64)}` }] })).rejects.toThrow(`managed file drift: ${path}`);
+    const upgraded = await syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed], preserveFiles: [reviewed] });
+
+    expect(await readFile(join(target, path))).toEqual(bytes);
+    expect(upgraded.files.find((file) => file.path === path)).toEqual(reviewed);
+    expect(JSON.parse(await readFile(join(target, ".lenso-release/template-manifest.json"), "utf8"))).toEqual(upgraded);
+  }, 20_000);
 });
 
 async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string; releaseCommit: string; manifest: any }> {
