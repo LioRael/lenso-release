@@ -77,6 +77,16 @@ async function requireAuthoritativeBinding(token: string, binding: ObjectValue):
     throw new Error("preflight binding is not authorized by active release state");
   if (canonical(dispatch.packages as Json) !== canonical(binding.packages as Json)) throw new Error("preflight package selection is not authorized by release outbox");
   if (typeof inputs.packages_json !== "string" || canonical(JSON.parse(inputs.packages_json) as Json) !== canonical(binding.packages as Json)) throw new Error("preflight dispatch inputs do not authorize package selection");
+  const selected = Array.isArray(binding.packages) ? binding.packages.map((item) => object(item, "binding package")) : [];
+  const statePackages = Array.isArray(state.packages) ? state.packages.map((item) => object(item, "state package")) : [];
+  const expectedRegistries = Object.fromEntries(selected
+    .filter(({ id }) => String(id).startsWith("oci:"))
+    .map(({ id, version }) => {
+      const authoritative = statePackages.find((item) => item.id === id && item.version === version);
+      if (!authoritative || typeof authoritative.registryPath !== "string") throw new Error("authoritative OCI registry destination is missing");
+      return [String(id), authoritative.registryPath];
+    }));
+  if (canonical(expectedRegistries as Json) !== canonical(object(binding.registries, "binding.registries") as Json)) throw new Error("preflight registry destinations are not authorized by release state");
   if (state.environment !== "shadow" && state.environment !== "production")
     throw new Error("authoritative release state environment is missing or invalid");
   return state.environment;
@@ -224,7 +234,8 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
     if (kind === "oci") {
       const metadata = object(artifact.ociMetadata, "artifact.ociMetadata");
       const archive = attachments[0] ? object(attachments[0], "OCI archive attachment") : null;
-      if (attachments.length !== 1 || !archive || !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(String(metadata.registryRepository)) || !/^sha256:[0-9a-f]{64}$/u.test(String(metadata.manifestDigest)) || metadata.archiveSha256 !== archive.sha256) throw new Error("OCI authorization binding mismatch");
+      const registries = object(binding.registries, "stored binding registries");
+      if (attachments.length !== 1 || !archive || metadata.registryRepository !== registries[id] || !/^sha256:[0-9a-f]{64}$/u.test(String(metadata.manifestDigest)) || metadata.archiveSha256 !== archive.sha256) throw new Error("OCI authorization binding mismatch");
     } else if (attachments.length !== 0 || artifact.ociMetadata !== null && artifact.ociMetadata !== undefined) throw new Error("unexpected OCI authorization binding");
     if (verifyExistingArtifact)
       await assertExistingArtifactMatches(env, row.repository, artifact);

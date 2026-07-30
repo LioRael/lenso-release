@@ -2,7 +2,7 @@ import { createHmac, sign as asymmetricSign, timingSafeEqual, type KeyObject } f
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 import type { Sha256 } from "../contracts/types.js";
 
-export type PreflightBinding = { eventId: string; nonce: string; planId: string; planSha256: string; repository: string; releaseCommit: string; ref: string; workflowSha256: string; runtimeManifestSha256: string; packages: JsonValue; generated: JsonValue };
+export type PreflightBinding = { eventId: string; nonce: string; planId: string; planSha256: string; repository: string; releaseCommit: string; ref: string; workflowSha256: string; runtimeManifestSha256: string; packages: JsonValue; generated: JsonValue; registries: Record<string, string> };
 export type AuthorizedAttachment = { role: "oci-archive"; path: string; sha256: Sha256; size: number; ino: number; mode: 256 };
 export type AuthorizedOciMetadata = { registryRepository: string; manifestDigest: Sha256; archiveSha256: Sha256 };
 export type AuthorizedArtifact = { id: string; name: string; version: string; kind: "npm" | "cargo" | "artifact" | "oci"; path: string; sha256: Sha256; size: number; ino: number; mode: 256; cargoMetadata: JsonValue | null; cargoMetadataSha256: Sha256 | null; attachments?: AuthorizedAttachment[]; ociMetadata?: AuthorizedOciMetadata | null };
@@ -46,7 +46,10 @@ export class PreflightAuthority {
   constructor(private readonly store: AtomicPreflightStore, private readonly secret: Uint8Array, private readonly authorizationKey: KeyObject, private readonly now = () => new Date()) { if (secret.length < 32 || authorizationKey.type !== "private") throw new Error("preflight signing key is invalid"); }
   async issue(binding: PreflightBinding, bindingDigest: string, authenticate: () => Promise<boolean>): Promise<Omit<StoredProof, "binding" | "status"> & { schema: "lenso.publisher-preflight-proof.v1" }> {
     if (!await authenticate()) throw new Error("preflight requester authentication failed");
-    if (bindingDigest !== sha256(binding as unknown as JsonValue) || !/^sha256:[0-9a-f]{64}$/u.test(binding.eventId) || !/^sha256:[0-9a-f]{64}$/u.test(binding.planId) || !/^sha256:[0-9a-f]{64}$/u.test(binding.planSha256) || !/^[0-9a-f]{40}$/u.test(binding.releaseCommit) || binding.ref !== `release-execution/${binding.planId.slice(7)}`) throw new Error("invalid preflight binding");
+    const selected = binding.packages as Array<{ id?: unknown }>;
+    const expectedRegistryIds = selected.filter(({ id }) => typeof id === "string" && id.startsWith("oci:")).map(({ id }) => id as string).sort();
+    const registryIds = Object.keys(binding.registries ?? {}).sort();
+    if (bindingDigest !== sha256(binding as unknown as JsonValue) || !/^sha256:[0-9a-f]{64}$/u.test(binding.eventId) || !/^sha256:[0-9a-f]{64}$/u.test(binding.planId) || !/^sha256:[0-9a-f]{64}$/u.test(binding.planSha256) || !/^[0-9a-f]{40}$/u.test(binding.releaseCommit) || binding.ref !== `release-execution/${binding.planId.slice(7)}` || JSON.stringify(registryIds) !== JSON.stringify(expectedRegistryIds) || registryIds.some((id) => !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(binding.registries[id]!) || binding.registries[id]!.includes(".."))) throw new Error("invalid preflight binding");
     return transact(this.store, (snapshot) => {
       const duplicate = Object.values(snapshot.proofs).find(({ binding: saved }) => saved.eventId === binding.eventId);
       if (duplicate) { if (duplicate.bindingDigest !== bindingDigest || duplicate.binding.nonce !== binding.nonce) throw new Error("event preflight identity conflict"); return this.publicProof(duplicate); }
@@ -75,7 +78,7 @@ export class PreflightAuthority {
         const attachments = artifact.attachments ?? [];
         if (attachments.some((attachment) => attachment.role !== "oci-archive" || !attachment.path.startsWith(`.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(attachment.sha256) || !Number.isSafeInteger(attachment.size) || attachment.size <= 0 || !Number.isSafeInteger(attachment.ino) || attachment.ino <= 0 || attachment.mode !== 0o400)) throw new Error("invalid canonical artifact attachment");
         if (artifact.kind === "oci") {
-          if (attachments.length !== 1 || !artifact.ociMetadata || !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(artifact.ociMetadata.registryRepository) || !/^sha256:[0-9a-f]{64}$/u.test(artifact.ociMetadata.manifestDigest) || artifact.ociMetadata.archiveSha256 !== attachments[0]!.sha256) throw new Error("OCI authorization binding mismatch");
+          if (attachments.length !== 1 || !artifact.ociMetadata || artifact.ociMetadata.registryRepository !== stored.binding.registries[artifact.id] || !/^sha256:[0-9a-f]{64}$/u.test(artifact.ociMetadata.manifestDigest) || artifact.ociMetadata.archiveSha256 !== attachments[0]!.sha256) throw new Error("OCI authorization binding mismatch");
         } else if (attachments.length !== 0 || artifact.ociMetadata !== null && artifact.ociMetadata !== undefined) throw new Error("unexpected OCI authorization binding");
       }
       const authorization: PublishAuthorization = { schema: "lenso.publisher-authorization.v1", proofId: stored.proofId, bindingDigest: stored.bindingDigest, eventId: stored.binding.eventId, nonce: stored.binding.nonce, planId: stored.binding.planId, releaseCommit: stored.binding.releaseCommit, ref: stored.binding.ref, expiresAt: stored.expiresAt, artifacts };

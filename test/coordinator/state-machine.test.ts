@@ -62,6 +62,7 @@ function state(): PlanStateV1 {
       {
         id: "cargo:lenso-contracts",
         version: "1.0.0",
+        registryPath: null,
         phase: 0,
         status: "dispatched",
         requestEventId: digest("c"),
@@ -274,6 +275,7 @@ describe("atomic coordinator state", () => {
   it("round-trips OCI package and occupancy identities", () => {
     const value = state();
     value.packages[0]!.id = "oci:lenso-console-service";
+    value.packages[0]!.registryPath = "liorael/lenso-console";
     value.outbox[0]!.packages[0]!.id = "oci:lenso-console-service";
     value.outbox[0]!.inputs.packages_json = JSON.stringify([
       { id: "oci:lenso-console-service", version: "1.0.0" },
@@ -574,11 +576,21 @@ describe("atomic coordinator state", () => {
         occupancyKeys: previous.occupancyKeys.map((key) => key.startsWith("plan:") ? `plan:LioRael/lenso-cli:${previous.planId}` : key),
       }),
     ).toThrow("immutable");
+    const registryPrevious = state();
+    registryPrevious.packages[0]!.id = "oci:lenso-console-service";
+    registryPrevious.packages[0]!.registryPath = "liorael/lenso-console";
+    registryPrevious.outbox[0]!.packages[0]!.id = "oci:lenso-console-service";
+    registryPrevious.outbox[0]!.inputs.packages_json = JSON.stringify(registryPrevious.outbox[0]!.packages);
+    registryPrevious.occupancyKeys = [`package:oci:lenso-console-service:1.0.0`, `plan:${registryPrevious.repository}:${registryPrevious.planId}`].sort();
+    const registryRewrite = structuredClone(registryPrevious);
+    registryRewrite.packages[0]!.registryPath = "attacker/console";
+    expect(() => assertLegalTransition(registryPrevious, registryRewrite)).toThrow("immutable package plan rewrite");
     expect(
       newlyReadyPackages([
         {
           id: "cargo:a",
           version: "1.0.0",
+          registryPath: null,
           phase: 0,
           status: "dispatched",
           requestEventId: digest("c"),
@@ -586,6 +598,7 @@ describe("atomic coordinator state", () => {
         {
           id: "cargo:b",
           version: "1.0.0",
+          registryPath: null,
           phase: 1,
           status: "pending",
           requestEventId: null,

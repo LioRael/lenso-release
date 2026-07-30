@@ -72,6 +72,12 @@ The participating component repositories are `lenso`, `lenso-cli`,
 Do not manually dispatch `publish.yml`. Its inputs are coordinator-issued evidence,
 not operator-authored release parameters.
 
+For OCI components, the coordinator also persists the reviewed `registryPath` in
+the immutable package state. Repository preflight must match its local OCI
+configuration to that path, and proof consumption must reject any artifact whose
+registry destination differs. This comparison happens before registry upload;
+receipt-time observation is not a substitute for destination authorization.
+
 ## Shadow mode
 
 Shadow mode is the default until production activation is approved. Each component

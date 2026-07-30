@@ -100,6 +100,7 @@ export type PlanStateAttempt = {
 export type PlanStatePackage = {
   id: RegistryPackageId;
   version: string;
+  registryPath: string | null;
   phase: number;
   status: "pending" | "dispatched" | "received";
   requestEventId: Sha256 | null;
