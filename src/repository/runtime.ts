@@ -327,6 +327,8 @@ async function requestJson(url: string, init?: RequestInit): Promise<{ response:
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
   return { response, body };
 }
+
+const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/LioRael/lenso-release)";
 async function npmObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
   const encoded = name.replace("/", "%2f");
@@ -348,14 +350,15 @@ async function npmObservation(name: string, version: string): Promise<RegistryOb
 }
 async function cargoObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_CRATES_API_URL ?? "https://crates.io";
-  const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`);
+  const headers = { "user-agent": CRATES_IO_USER_AGENT };
+  const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`, { headers });
   if (response.status === 404) return { exists: false };
   if (!response.ok) fail(`crates registry observation ${response.status}`);
   const crate = body.version as Record<string, unknown> | undefined;
   const checksum = String(crate?.checksum ?? "");
   const publishedAt = String(crate?.created_at ?? "");
   const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
-  const artifact = await fetch(download, { redirect: "error" });
+  const artifact = await fetch(download, { headers, redirect: "error" });
   if (!artifact.ok || !checksum || !publishedAt) fail("crates registry observation incomplete");
   return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
 }
@@ -520,7 +523,7 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
 export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
   const json = canonicalBytes(upload); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
   const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]); const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
-  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length) }, body });
+  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length), "user-agent": CRATES_IO_USER_AGENT }, body });
   if (!response.ok) fail(`crates exact archive upload ${response.status}`);
 }
 async function createAttestation(artifactPath: string, artifactBytes: Uint8Array, environment: RuntimeEnvironment): Promise<string> {
