@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { npmPublication, parseCargoUpload } from "../shadow-gateway/src/protocol.js";
+import { npmPublication, ociDigest, ociReference, ociRepository, parseCargoUpload } from "../shadow-gateway/src/protocol.js";
 import { assertExistingArtifactMatches, canonical, canonicalSha256, existingArtifactVerificationRequired, signAuthorization } from "../shadow-gateway/src/coordinator.js";
 
 describe("shadow gateway protocols", () => {
@@ -35,6 +35,15 @@ describe("shadow gateway protocols", () => {
     header.writeUInt32LE(2, 0);
     header.writeUInt32LE(0, 4);
     expect(() => parseCargoUpload(Buffer.concat([header.subarray(0, 4), Buffer.from("{}"), header.subarray(4), Buffer.from("x")]))).toThrow("length mismatch");
+  });
+
+  it("accepts only canonical OCI registry identities", () => {
+    expect(ociRepository("liorael/lenso-console-service")).toBe("liorael/lenso-console-service");
+    expect(ociReference("0.2.0")).toBe("0.2.0");
+    expect(ociDigest(`sha256:${"a".repeat(64)}`)).toBe(`sha256:${"a".repeat(64)}`);
+    for (const invalid of ["LioRael/console", "../console", "console//service"]) expect(() => ociRepository(invalid)).toThrow();
+    for (const invalid of ["latest/evil", "", "sha256:ABC"]) expect(() => ociReference(invalid)).toThrow();
+    expect(() => ociDigest("sha256:short")).toThrow();
   });
 
   it("canonicalizes and digests coordinator bindings deterministically", async () => {

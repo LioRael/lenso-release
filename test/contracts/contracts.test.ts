@@ -113,6 +113,14 @@ const artifactReceipt = {
     digest: sha("e"),
   },
 };
+const ociReceipt = {
+  ...receipt,
+  receiptId: sha("b"),
+  packageId: "oci:lenso-console-service",
+  registryIntegrity: sha("e"),
+  registryUrl: "https://ghcr.io/v2/liorael/lenso-console-service/manifests/0.1.2",
+  provenanceSubject: { name: "lenso-console-service.oci.tar", digest: sha("e") },
+};
 
 const release = {
   schema: "lenso.system-release.v1",
@@ -420,6 +428,8 @@ describe("public release contracts", () => {
     expect(() => assertComponentReceipt({ ...npmReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
     expect(() => assertComponentReceipt(artifactReceipt)).not.toThrow();
     expect(() => assertComponentReceipt({ ...artifactReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
+    expect(() => assertComponentReceipt(ociReceipt)).not.toThrow();
+    expect(() => assertComponentReceipt({ ...ociReceipt, registryIntegrity: "e".repeat(64) })).toThrow();
     expect(() => assertSystemRelease({
       ...release,
       packages: [{ ...release.packages[0], registryIntegrity: npmIntegrity }],

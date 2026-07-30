@@ -12,7 +12,7 @@ export const COMPONENT_REPOSITORIES = [
   "LioRael/lenso-runtime-console"
 ] as const;
 
-export const COMPONENT_REGISTRIES = ["crates-io", "github-release", "npm"] as const;
+export const COMPONENT_REGISTRIES = ["crates-io", "ghcr", "github-release", "npm"] as const;
 export const RELEASE_GROUPS = [
   "foundation",
   "modules",
@@ -29,6 +29,7 @@ export type ComponentId =
   | `cargo:${string}`
   | `npm:@lenso/${string}`
   | `artifact:${string}`
+  | `oci:${string}`
   | `catalog:${string}`;
 
 export type Component = {
@@ -60,7 +61,7 @@ const PACKAGE_KEYS = new Set([
 const REPOSITORY_SET = new Set<string>(COMPONENT_REPOSITORIES);
 const REGISTRY_SET = new Set<string>(COMPONENT_REGISTRIES);
 const RELEASE_GROUP_SET = new Set<string>(RELEASE_GROUPS);
-const COMPONENT_ID = /^(?:cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*|catalog:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
+const COMPONENT_ID = /^(?:cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*|oci:[a-z0-9]+(?:-[a-z0-9]+)*|catalog:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
 
 function fail(message: string): never {
   throw new TypeError(`invalid component registry: ${message}`);
@@ -124,7 +125,7 @@ function parseComponent(value: unknown, index: number): Component {
     ? "crates-io"
     : id.startsWith("npm:")
       ? "npm"
-      : "github-release";
+      : id.startsWith("oci:") ? "ghcr" : "github-release";
   if (registry !== expectedRegistry) {
     fail(`${id} registry ${registry} is inconsistent with its ID`);
   }

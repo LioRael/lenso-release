@@ -33,7 +33,7 @@ change as the code. Do not silently infer a new procedure.
 | Component repository | Builds and tests exact artifacts, owns registry OIDC, publishes, and emits a signed receipt. |
 | `lenso-release` | Validates intent and GitHub facts, coordinates exact refs, consumes one-use proofs, and reconciles receipts. It has no registry credential. |
 | GitHub App | Creates release PRs and exact execution refs and dispatches narrowly scoped repository workflows. |
-| Shadow Gateway | Emulates npm, Cargo, GitHub Release/tag, and attestation APIs using isolated R2 and D1 state. It never forwards an artifact to production. |
+| Shadow Gateway | Emulates npm, Cargo, OCI Distribution, GitHub Release/tag, and attestation APIs using isolated R2 and D1 state. It never forwards an artifact to production. |
 | Catalog worker | Mirrors immutable release records and moves reviewed channel pointers. |
 
 The participating component repositories are `lenso`, `lenso-cli`,
@@ -83,6 +83,7 @@ LENSO_SHADOW_NPM_REGISTRY_URL=https://lenso-release-shadow-gateway.lenso.workers
 LENSO_SHADOW_CRATES_API_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/cargo
 LENSO_SHADOW_CRATES_UPLOAD_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/cargo/api/v1/crates/new
 LENSO_SHADOW_GITHUB_API_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/github
+LENSO_SHADOW_OCI_REGISTRY_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/oci
 LENSO_SHADOW_ATTESTATION_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/attestations
 ```
 

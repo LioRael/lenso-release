@@ -35,9 +35,9 @@ packages:
 `;
 
 const expectedInventory = {
-  "artifact:lenso-runtime-console": [
+  "oci:lenso-console-service": [
     "LioRael/lenso-runtime-console",
-    "github-release",
+    "ghcr",
     "console",
     true,
     true
@@ -331,15 +331,15 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module",
     "cargo:lenso-worker"
   ],
-  "cargo:lenso-cli": ["artifact:lenso-runtime-console", "cargo:lenso", "cargo:lenso-service"],
-  "npm:@lenso/cli": ["artifact:lenso-runtime-console", "cargo:lenso", "cargo:lenso-cli"],
+  "cargo:lenso-cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-service"],
+  "npm:@lenso/cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-cli"],
   "npm:@lenso/auth-console": ["npm:@lenso/runtime-console-api"],
   "npm:@lenso/auth-device-console": ["npm:@lenso/runtime-console-api"],
   "npm:@lenso/auth-provider-console": ["npm:@lenso/runtime-console-api"],
   "npm:@lenso/organization-console": ["npm:@lenso/runtime-console-api"],
   "npm:@lenso/service-kit": ["npm:@lenso/remote-module-kit"],
   "catalog:lenso-official-module-catalog": [
-    "artifact:lenso-runtime-console",
+    "oci:lenso-console-service",
     "cargo:lenso-module-audit-log",
     "cargo:lenso-module-auth",
     "cargo:lenso-module-auth-anonymous",

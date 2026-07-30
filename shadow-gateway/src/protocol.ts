@@ -52,3 +52,20 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
   const owned = Uint8Array.from(bytes);
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", owned.buffer))].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
+
+export function ociDigest(value: string): string {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw new Error("invalid OCI digest");
+  return value;
+}
+
+export function ociRepository(value: string): string {
+  if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(value) || value.includes(".."))
+    throw new Error("invalid OCI repository");
+  return value;
+}
+
+export function ociReference(value: string): string {
+  if (!/^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|sha256:[0-9a-f]{64})$/u.test(value))
+    throw new Error("invalid OCI reference");
+  return value;
+}

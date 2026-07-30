@@ -271,15 +271,15 @@ describe("atomic coordinator state", () => {
     expect(() => assertPlanState(legacy)).not.toThrow();
     expect(() => assertLegalTransition(state(), { ...state(), environment: "shadow" })).toThrow("immutable environment rewrite");
   });
-  it("round-trips hosted artifact package and occupancy identities", () => {
+  it("round-trips OCI package and occupancy identities", () => {
     const value = state();
-    value.packages[0]!.id = "artifact:lenso-runtime-console";
-    value.outbox[0]!.packages[0]!.id = "artifact:lenso-runtime-console";
+    value.packages[0]!.id = "oci:lenso-console-service";
+    value.outbox[0]!.packages[0]!.id = "oci:lenso-console-service";
     value.outbox[0]!.inputs.packages_json = JSON.stringify([
-      { id: "artifact:lenso-runtime-console", version: "1.0.0" },
+      { id: "oci:lenso-console-service", version: "1.0.0" },
     ]);
     value.occupancyKeys = [
-      "package:artifact:lenso-runtime-console:1.0.0",
+      "package:oci:lenso-console-service:1.0.0",
       `plan:LioRael/lenso:${value.planId}`,
     ].sort();
     const artifactSnapshot: ReleaseStateSnapshot = {
@@ -287,7 +287,7 @@ describe("atomic coordinator state", () => {
       plans: { [planStatePath(value.repository, value.planId)]: value },
       activeRepositories: { [value.repository]: value.planId },
       occupiedPackages: {
-        "package:artifact:lenso-runtime-console:1.0.0": value.planId,
+        "package:oci:lenso-console-service:1.0.0": value.planId,
       },
     };
     expect(() => assertReleaseStateSnapshot(artifactSnapshot)).not.toThrow();

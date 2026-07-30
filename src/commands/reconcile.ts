@@ -8,6 +8,7 @@ import { loadComponents } from "../config/components.js";
 import { observeCrateVersion } from "../registry/crates.js";
 import { observeNpmVersion } from "../registry/npm.js";
 import { observeGithubArtifact, observeGithubTag } from "../registry/github.js";
+import { observeOciImage } from "../registry/oci.js";
 import { compatibleDigests, isCanonicalNpmIntegrity, isRfc3339, SEMVER } from "../registry/validation.js";
 
 type Failure = { failure: string; detail: string };
@@ -252,7 +253,7 @@ async function sourceVersion(root: string, id: string): Promise<VersionObservati
         if (manifest.name === name && typeof manifest.version === "string") return manifest.version;
       } catch { /* continue to the next checkout manifest */ }
     }
-  } else if (kind === "artifact" && name === "lenso-runtime-console") {
+  } else if ((kind === "artifact" && name === "lenso-runtime-console") || (kind === "oci" && name === "lenso-console-service")) {
     for (const path of await findFiles(root, "package.json")) {
       try {
         const manifest = JSON.parse(await readFile(path, "utf8")) as { name?: unknown; version?: unknown };
@@ -313,10 +314,11 @@ async function liveSnapshot(): Promise<ReconciliationSnapshot> {
     const component = componentRegistry.packages[id]!;
     if (!component.publishable || id.startsWith("catalog:")) registry[id] = { notApplicable: true };
     else if (id.startsWith("artifact:") && version) registry[id] = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { token: process.env.GITHUB_TOKEN });
+    else if (id.startsWith("oci:") && version) registry[id] = await observeOciImage(id.slice("oci:".length), version);
     else if (id.startsWith("npm:") && version) registry[id] = await observeNpmVersion(id.slice(4), version);
     else if (id.startsWith("cargo:") && version) registry[id] = await observeCrateVersion(id.slice(6), version);
     else registry[id] = { failure: "unavailable", detail: "required registry observation could not be performed" };
-    if ((id.startsWith("npm:") || id.startsWith("cargo:") || id.startsWith("artifact:")) && version && component.publishable) {
+    if ((id.startsWith("npm:") || id.startsWith("cargo:") || id.startsWith("artifact:") || id.startsWith("oci:")) && version && component.publishable) {
       const packageName = id.slice(id.indexOf(":") + 1);
       const tagName = (id === "cargo:lenso-cli" || id === "npm:@lenso/cli") ? `lenso-cli@${version}` : `${packageName}@${version}`;
       tag[id] = await observeGithubTag(component.repository, tagName, id, version, { token: process.env.GITHUB_TOKEN });

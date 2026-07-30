@@ -102,6 +102,8 @@ export async function observeGithubTag(repository: string, tag: string, packageI
         ? typeof receipt?.registryIntegrity === "string" && /^[a-f0-9]{64}$/u.test(receipt.registryIntegrity)
         : packageId.startsWith("artifact:")
           ? typeof receipt?.registryIntegrity === "string" && /^sha256:[a-f0-9]{64}$/u.test(receipt.registryIntegrity)
+          : packageId.startsWith("oci:")
+            ? typeof receipt?.registryIntegrity === "string" && /^sha256:[a-f0-9]{64}$/u.test(receipt.registryIntegrity)
           : false;
     if (receipt?.schema !== "lenso.component-receipt.v1" || receipt.packageId !== packageId || receipt.version !== version ||
         typeof receipt.registryIntegrity !== "string" || typeof receipt.publishedAt !== "string" || !isRfc3339(receipt.publishedAt) ||
