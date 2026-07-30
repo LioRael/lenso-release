@@ -262,6 +262,7 @@ describe("production coordinator adapters", () => {
     const eventId = `sha256:${"b".repeat(64)}`;
     let reads = 0;
     let posts = 0;
+    const waits: number[] = [];
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "POST") {
         posts++;
@@ -280,7 +281,10 @@ describe("production coordinator adapters", () => {
         conclusion: null,
       }] }), { status: 200, headers: { "content-type": "application/json" } });
     });
-    const run = await new GithubWorkflowDispatcher(request as typeof fetch).dispatch({
+    const run = await new GithubWorkflowDispatcher(
+      request as typeof fetch,
+      async (milliseconds) => { waits.push(milliseconds); },
+    ).dispatch({
       repository: "LioRael/lenso",
       workflow: ".github/workflows/publish.yml",
       ref: `release-execution/${"b".repeat(64)}`,
@@ -288,6 +292,7 @@ describe("production coordinator adapters", () => {
     }, eventId, "token");
     expect(run.runUrl).toBe("https://github.com/LioRael/lenso/actions/runs/99");
     expect(posts).toBe(1);
+    expect(waits).toEqual([1_000, 2_000]);
   });
 
   it("mints a token for only the requested repository and permissions", async () => {

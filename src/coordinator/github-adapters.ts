@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { canonicalBytes } from "../core/canonical.js";
 import type {
@@ -17,6 +18,8 @@ import {
 } from "./state.js";
 
 type Fetch = typeof fetch;
+type Pause = (milliseconds: number) => Promise<unknown>;
+const WORKFLOW_VISIBILITY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000] as const;
 function encode(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
@@ -240,7 +243,10 @@ export class GithubSnapshotStore implements GitStateStore {
 }
 
 export class GithubWorkflowDispatcher implements WorkflowDispatcher {
-  constructor(private readonly request: Fetch = fetch) {}
+  constructor(
+    private readonly request: Fetch = fetch,
+    private readonly pause: Pause = delay,
+  ) {}
   async findByEventId(
     context: DispatchRunContext,
     eventId: string,
@@ -298,7 +304,8 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       },
     );
     if (!response.ok) throw new Error(`workflow dispatch ${response.status}`);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (const waitMs of WORKFLOW_VISIBILITY_DELAYS_MS) {
+      if (waitMs > 0) await this.pause(waitMs);
       const observed = await this.findByEventId({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, appToken);
       if (observed) return observed;
     }
