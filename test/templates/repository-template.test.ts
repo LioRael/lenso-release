@@ -153,6 +153,23 @@ describe("transactional template synchronization", () => {
     await expect(syncRepositoryTemplate({ source: template, target })).rejects.toThrow("symlink is forbidden");
     await expect(lstat(join(outside, "workflows/publish.yml"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("requires explicit managed-file deletions and rolls them back atomically", async () => {
+    const target = await temp(); const source = await temp();
+    await cp(template, source, { recursive: true });
+    const removed = "scripts/release-mode.mjs";
+    const installed = await syncRepositoryTemplate({ source: template, target });
+    const original = await readFile(join(target, removed));
+    await rm(join(source, removed));
+
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed] })).rejects.toThrow(`explicit migration: ${removed}`);
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed], deletePaths: [removed], failAfterWrites: installed.files.length + 1 })).rejects.toThrow("injected sync failure");
+    expect(await readFile(join(target, removed))).toEqual(original);
+    expect(JSON.parse(await readFile(join(target, ".lenso-release/template-manifest.json"), "utf8"))).toEqual(installed);
+
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed], deletePaths: [removed] })).resolves.toMatchObject({ schema: "lenso.repository-template.v1" });
+    await expect(lstat(join(target, removed))).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
 });
 
 async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string; releaseCommit: string; manifest: any }> {
