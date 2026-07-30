@@ -100,8 +100,10 @@ function selectedFixedGroup(config, selected) {
         fail(`fixed group ${name} versions must match`);
     return { name, version: selected[0].version };
 }
-async function verifyReviewedComponents(cwd, plan) {
+async function reviewedRegistryBindings(cwd, plan) {
     const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
+    const config = parseJson(await safeRead(cwd, ".lenso-release/config.json"), "repository config");
+    const registries = {};
     for (const item of plan.packages) {
         const component = registry.packages[item.id];
         if (!component || component.repository !== plan.repository || !component.publishable || component.releaseGroup !== item.releaseGroup || component.userFacing !== item.userFacing)
@@ -109,7 +111,14 @@ async function verifyReviewedComponents(cwd, plan) {
         const allowed = new Set(component.dependencies);
         if (item.dependencies.some(({ id }) => !allowed.has(id)))
             fail(`unreviewed dependency edge: ${item.id}`);
+        if (item.id.startsWith("oci:")) {
+            const configured = config.ociImages?.[item.id]?.registryRepository;
+            if (!component.registryPath || configured !== component.registryPath)
+                fail(`unreviewed OCI registry destination: ${item.id}`);
+            registries[item.id] = component.registryPath;
+        }
     }
+    return registries;
 }
 export async function preflight(environment) {
     if (process.env.LENSO_RELEASE_MODE !== "shadow" && process.env.LENSO_RELEASE_MODE !== "production")
@@ -154,7 +163,7 @@ export async function preflight(environment) {
     for (const generated of plan.generatedFiles)
         if (hash(await safeRead(environment.cwd, generated.path)) !== generated.sha256)
             fail(`generated file mismatch: ${generated.path}`);
-    await verifyReviewedComponents(environment.cwd, plan);
+    await reviewedRegistryBindings(environment.cwd, plan);
     return plan;
 }
 async function gateBinding(environment) {
@@ -166,6 +175,7 @@ async function gateBinding(environment) {
         workflowSha256: hash(await safeRead(environment.cwd, environment.workflowPath)),
         runtimeManifestSha256: hash(await safeRead(environment.cwd, ".lenso-release/runtime/manifest.json")),
         packages: environment.packages, generated: generated,
+        registries: await reviewedRegistryBindings(environment.cwd, plan),
     };
     return { plan, binding, digest: sha256(binding) };
 }
