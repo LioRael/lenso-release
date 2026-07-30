@@ -1,5 +1,8 @@
 schema: lenso.component-registry.v1
-internalPackages: []
+internalPackages:
+  - cargo:lenso-platform-runtime-observability
+  - cargo:lenso-platform-runtime-operations
+  - cargo:lenso-platform-system-plane
 packages:
   - id: cargo:lenso-contracts
     repository: LioRael/lenso
@@ -67,6 +70,35 @@ packages:
     userFacing: true
     publishable: true
     dependencies: [cargo:lenso-contracts]
+  - id: cargo:lenso-platform-system-plane
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: false
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-service
+  - id: cargo:lenso-platform-runtime-observability
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: false
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-system-plane
+      - cargo:lenso-service
+  - id: cargo:lenso-platform-runtime-operations
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: false
+    publishable: true
+    dependencies:
+      - cargo:lenso-platform-core
+      - cargo:lenso-platform-system-plane
+      - cargo:lenso-service
   - id: cargo:lenso-autonomous-service
     repository: LioRael/lenso
     registry: crates-io
@@ -78,6 +110,9 @@ packages:
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
       - cargo:lenso-platform-runtime
+      - cargo:lenso-platform-runtime-observability
+      - cargo:lenso-platform-runtime-operations
+      - cargo:lenso-platform-system-plane
       - cargo:lenso-service
   - id: cargo:lenso-module-story
     repository: LioRael/lenso
@@ -355,6 +390,7 @@ packages:
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
       - cargo:lenso-worker
+      - cargo:lenso-service
   - id: cargo:lenso-operator
     repository: LioRael/lenso
     registry: crates-io
