@@ -6,7 +6,13 @@ import { dirname, join, relative, resolve } from "node:path";
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 
 export type TemplateManifest = { schema: "lenso.repository-template.v1"; sourceRevision: string; files: { path: string; sha256: string }[] };
-export type SyncOptions = { source: string; target: string; trustedPreviousManifests?: readonly TemplateManifest[]; failAfterWrites?: number };
+export type SyncOptions = {
+  source: string;
+  target: string;
+  trustedPreviousManifests?: readonly TemplateManifest[];
+  deletePaths?: readonly string[];
+  failAfterWrites?: number;
+};
 
 function fail(message: string): never { throw new Error(`template sync: ${message}`); }
 function pathIsSafe(path: string): boolean { return Boolean(path) && !path.startsWith("/") && !path.includes("\\") && path.split("/").every((part) => part !== "" && part !== "." && part !== ".."); }
@@ -76,11 +82,21 @@ export async function syncRepositoryTemplate(options: SyncOptions): Promise<Temp
   const incomingFiles = await sourceFiles(source);
   const incoming: TemplateManifest = { schema: "lenso.repository-template.v1", sourceRevision: runtime.sourceRevision, files: incomingFiles.map(({ path, sha256: digest }) => ({ path, sha256: digest })) };
   const current = await installedManifest(target);
+  const incomingPaths = new Set(incoming.files.map(({ path }) => path));
+  const requestedDeletions = options.deletePaths ?? [];
+  const deletionPaths = new Set(requestedDeletions);
+  if (deletionPaths.size !== requestedDeletions.length || requestedDeletions.some((path) => !pathIsSafe(path))) fail("invalid explicit deletion migration");
   if (current) {
     const trusted = options.trustedPreviousManifests ?? [];
     if (!trusted.some((entry) => manifestEqual(entry, current))) fail("installed manifest is not in the trusted upgrade catalog");
     for (const file of current.files) if (sha256(await readNoFollow(target, file.path)) !== file.sha256) fail(`managed file drift: ${file.path}`);
+    const currentPaths = new Set(current.files.map(({ path }) => path));
+    for (const path of deletionPaths) {
+      if (!currentPaths.has(path) || incomingPaths.has(path)) fail(`invalid explicit deletion path: ${path}`);
+    }
+    for (const old of current.files) if (!incomingPaths.has(old.path) && !deletionPaths.has(old.path)) fail(`template deletion requires an explicit migration: ${old.path}`);
   } else {
+    if (deletionPaths.size > 0) fail("explicit deletion migration requires an installed manifest");
     for (const file of incoming.files) {
       try { await lstat(join(target, file.path)); fail(`refusing to take over existing path: ${file.path}`); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -107,9 +123,10 @@ export async function syncRepositoryTemplate(options: SyncOptions): Promise<Temp
       await rename(join(transaction, "next", file.path), destination); writes += 1;
       if (options.failAfterWrites === writes) throw new Error("injected sync failure");
     }
-    if (current) {
-      const incomingPaths = new Set(incoming.files.map(({ path }) => path));
-      for (const old of current.files) if (!incomingPaths.has(old.path)) fail(`template deletion requires an explicit migration: ${old.path}`);
+    for (const path of deletionPaths) {
+      const destination = join(target, path); const backup = join(transaction, "backup", path);
+      await mkdir(dirname(backup), { recursive: true }); await rename(destination, backup); backups.set(destination, backup); writes += 1;
+      if (options.failAfterWrites === writes) throw new Error("injected sync failure");
     }
     return incoming;
   } catch (error) {
