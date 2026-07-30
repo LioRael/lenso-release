@@ -40,6 +40,7 @@ export type Component = {
   userFacing: boolean;
   publishable: boolean;
   dependencies: ComponentId[];
+  registryPath?: string;
 };
 
 export type ComponentRegistry = {
@@ -56,8 +57,10 @@ const PACKAGE_KEYS = new Set([
   "releaseGroup",
   "userFacing",
   "publishable",
-  "dependencies"
+  "dependencies",
+  "registryPath"
 ]);
+const PACKAGE_REQUIRED_KEYS = new Set([...PACKAGE_KEYS].filter((key) => key !== "registryPath"));
 const REPOSITORY_SET = new Set<string>(COMPONENT_REPOSITORIES);
 const REGISTRY_SET = new Set<string>(COMPONENT_REGISTRIES);
 const RELEASE_GROUP_SET = new Set<string>(RELEASE_GROUPS);
@@ -74,11 +77,11 @@ function record(value: unknown, context: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(value: Record<string, unknown>, allowed: Set<string>, context: string): void {
+function exactKeys(value: Record<string, unknown>, allowed: Set<string>, context: string, required = allowed): void {
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) fail(`${context} has unknown field ${key}`);
   }
-  for (const key of allowed) {
+  for (const key of required) {
     if (!(key in value)) fail(`${context} is missing ${key}`);
   }
 }
@@ -112,7 +115,7 @@ function uniqueIds(values: unknown[], context: string): ComponentId[] {
 
 function parseComponent(value: unknown, index: number): Component {
   const raw = record(value, `packages[${index}]`);
-  exactKeys(raw, PACKAGE_KEYS, `packages[${index}]`);
+  exactKeys(raw, PACKAGE_KEYS, `packages[${index}]`, PACKAGE_REQUIRED_KEYS);
   const id = componentId(raw.id, `packages[${index}].id`);
   const repository = string(raw.repository, `${id}.repository`);
   const registry = string(raw.registry, `${id}.registry`);
@@ -129,6 +132,8 @@ function parseComponent(value: unknown, index: number): Component {
   if (registry !== expectedRegistry) {
     fail(`${id} registry ${registry} is inconsistent with its ID`);
   }
+  const registryPath = raw.registryPath === undefined ? undefined : string(raw.registryPath, `${id}.registryPath`);
+  if (id.startsWith("oci:") ? !registryPath || !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(registryPath) || registryPath.includes("..") : registryPath !== undefined) fail(`${id} has an inconsistent registryPath`);
 
   const publishable = boolean(raw.publishable, `${id}.publishable`);
   if ((id === "cargo:lenso-operator") === publishable) {
@@ -142,7 +147,8 @@ function parseComponent(value: unknown, index: number): Component {
     releaseGroup: releaseGroup as ReleaseGroup,
     userFacing: boolean(raw.userFacing, `${id}.userFacing`),
     publishable,
-    dependencies: uniqueIds(array(raw.dependencies, `${id}.dependencies`), `${id}.dependencies`)
+    dependencies: uniqueIds(array(raw.dependencies, `${id}.dependencies`), `${id}.dependencies`),
+    ...(registryPath ? { registryPath } : {})
   };
 }
 

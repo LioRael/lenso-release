@@ -87,7 +87,8 @@ LENSO_SHADOW_OCI_REGISTRY_URL=https://lenso-release-shadow-gateway.lenso.workers
 LENSO_SHADOW_ATTESTATION_URL=https://lenso-release-shadow-gateway.lenso.workers.dev/attestations
 ```
 
-`LENSO_SHADOW_NPM_TOKEN` and `LENSO_SHADOW_CARGO_TOKEN` are repository secrets.
+`LENSO_SHADOW_NPM_TOKEN`, `LENSO_SHADOW_CARGO_TOKEN`, and
+`LENSO_SHADOW_OCI_TOKEN` are repository secrets.
 Agents may check that a secret name exists but must never print or retrieve its
 value. A successful shadow release must prove exact npm and Cargo bytes, GitHub
 release assets or annotated tags where applicable, attestation retrieval, receipt

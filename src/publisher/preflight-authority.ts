@@ -3,7 +3,9 @@ import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 import type { Sha256 } from "../contracts/types.js";
 
 export type PreflightBinding = { eventId: string; nonce: string; planId: string; planSha256: string; repository: string; releaseCommit: string; ref: string; workflowSha256: string; runtimeManifestSha256: string; packages: JsonValue; generated: JsonValue };
-export type AuthorizedArtifact = { id: string; name: string; version: string; kind: "npm" | "cargo" | "artifact"; path: string; sha256: Sha256; size: number; ino: number; mode: 256; cargoMetadata: JsonValue | null; cargoMetadataSha256: Sha256 | null };
+export type AuthorizedAttachment = { role: "oci-archive"; path: string; sha256: Sha256; size: number; ino: number; mode: 256 };
+export type AuthorizedOciMetadata = { registryRepository: string; manifestDigest: Sha256; archiveSha256: Sha256 };
+export type AuthorizedArtifact = { id: string; name: string; version: string; kind: "npm" | "cargo" | "artifact" | "oci"; path: string; sha256: Sha256; size: number; ino: number; mode: 256; cargoMetadata: JsonValue | null; cargoMetadataSha256: Sha256 | null; attachments?: AuthorizedAttachment[]; ociMetadata?: AuthorizedOciMetadata | null };
 export type PublishAuthorization = { schema: "lenso.publisher-authorization.v1"; proofId: Sha256; bindingDigest: Sha256; eventId: string; nonce: string; planId: string; releaseCommit: string; ref: string; expiresAt: string; artifacts: AuthorizedArtifact[] };
 export type StoredProof = { proofId: Sha256; bindingDigest: Sha256; binding: PreflightBinding; issuedAt: string; expiresAt: string; token: string; status: "issued" | "consumed" };
 export type AuthoritySnapshot = { revision: number; proofs: Record<string, StoredProof>; nonces: Record<string, string> };
@@ -67,9 +69,14 @@ export class PreflightAuthority {
       if (artifacts.length === 0 || artifacts.length !== (stored.binding.packages as unknown[]).length) throw new Error("artifact authorization selection mismatch");
       for (const [index, artifact] of artifacts.entries()) {
         const selected = (stored.binding.packages as Array<{ id: string; version: string }>)[index]; const expectedName = artifact.id.startsWith("npm:@lenso/") ? artifact.id.slice("npm:@lenso/".length) : artifact.id.slice(artifact.id.indexOf(":") + 1);
-        const expectedKind = artifact.id.startsWith("npm:") ? "npm" : artifact.id.startsWith("cargo:") ? "cargo" : "artifact";
+        const expectedKind = artifact.id.startsWith("npm:") ? "npm" : artifact.id.startsWith("cargo:") ? "cargo" : artifact.id.startsWith("oci:") ? "oci" : "artifact";
         if (!selected || artifact.id !== selected.id || artifact.version !== selected.version || artifact.name !== expectedName || artifact.kind !== expectedKind || !artifact.path.startsWith(`.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(artifact.sha256) || !Number.isSafeInteger(artifact.size) || artifact.size <= 0 || !Number.isSafeInteger(artifact.ino) || artifact.ino <= 0 || artifact.mode !== 0o400) throw new Error("invalid canonical artifact authorization");
         if (artifact.kind === "cargo" ? artifact.cargoMetadata === null || artifact.cargoMetadataSha256 !== sha256(artifact.cargoMetadata as JsonValue) : artifact.cargoMetadata !== null || artifact.cargoMetadataSha256 !== null) throw new Error("Cargo upload metadata binding mismatch");
+        const attachments = artifact.attachments ?? [];
+        if (attachments.some((attachment) => attachment.role !== "oci-archive" || !attachment.path.startsWith(`.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(attachment.sha256) || !Number.isSafeInteger(attachment.size) || attachment.size <= 0 || !Number.isSafeInteger(attachment.ino) || attachment.ino <= 0 || attachment.mode !== 0o400)) throw new Error("invalid canonical artifact attachment");
+        if (artifact.kind === "oci") {
+          if (attachments.length !== 1 || !artifact.ociMetadata || !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(artifact.ociMetadata.registryRepository) || !/^sha256:[0-9a-f]{64}$/u.test(artifact.ociMetadata.manifestDigest) || artifact.ociMetadata.archiveSha256 !== attachments[0]!.sha256) throw new Error("OCI authorization binding mismatch");
+        } else if (attachments.length !== 0 || artifact.ociMetadata !== null && artifact.ociMetadata !== undefined) throw new Error("unexpected OCI authorization binding");
       }
       const authorization: PublishAuthorization = { schema: "lenso.publisher-authorization.v1", proofId: stored.proofId, bindingDigest: stored.bindingDigest, eventId: stored.binding.eventId, nonce: stored.binding.nonce, planId: stored.binding.planId, releaseCommit: stored.binding.releaseCommit, ref: stored.binding.ref, expiresAt: stored.expiresAt, artifacts };
       const signature = asymmetricSign(null, canonicalBytes(authorization as unknown as JsonValue), this.authorizationKey).toString("base64url"); stored.status = "consumed"; return { accepted: true, eventId: stored.binding.eventId, proofId: stored.proofId, authorization, signature };

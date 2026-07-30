@@ -37,7 +37,8 @@ export async function observeOciImage(
   const registryPrefix = registry.pathname.replace(/\/+$/u, "");
   const repository = options.repository ?? `liorael/${name}`;
   if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(repository)) throw new TypeError("invalid OCI repository");
-  const canonicalUrl = options.canonicalUrl ?? `https://github.com/LioRael/lenso-runtime-console/pkgs/container/${encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+  const registryName = repository.split("/").at(-1)!;
+  const canonicalUrl = options.canonicalUrl ?? `https://github.com/LioRael/lenso-runtime-console/pkgs/container/${encodeURIComponent(registryName)}/${encodeURIComponent(version)}`;
   const endpoint = new URL(`${registryPrefix}/v2/${repository}/manifests/${encodeURIComponent(version)}`, registry.origin);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);

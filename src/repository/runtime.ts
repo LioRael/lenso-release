@@ -13,10 +13,13 @@ import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 import type { AuthorizedArtifact, PublishAuthorization } from "../publisher/preflight-authority.js";
+import { inspectOciReleaseArtifact, type OciReleaseArtifact } from "./oci-release-artifact.js";
+import { publishOciImage } from "./oci-registry-publisher.js";
+import { observeOciImage } from "../registry/oci.js";
 
 const execFile = promisify(execFileCallback);
 const OID = /^[0-9a-f]{40}$/u;
-const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
+const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*|oci:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 
 type RuntimeManifest = {
@@ -38,6 +41,7 @@ type RepositoryConfig = {
   aliases?: Record<string, string>;
   ignore?: string[];
   artifacts?: Record<string, { path: string }>;
+  ociImages?: Record<string, { archivePath: string; installManifestPath: string; registryRepository: string }>;
   fixedGroups?: Record<string, string[]>;
 };
 export type RuntimeEnvironment = {
@@ -65,6 +69,8 @@ type PreflightProof = {
   token: string;
 };
 type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; authorization: PublishAuthorization; signature: string };
+type PackedArtifact = { path: string; bytes: Buffer; oci?: OciReleaseArtifact & { archivePath: string } };
+type SealedArtifact = { path: string; bytes: Buffer; cargoMetadata: JsonValue | null; oci: (OciReleaseArtifact & { archivePath: string }) | null };
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
@@ -221,9 +227,18 @@ export async function consumePreflightProof(environment: RuntimeEnvironment): Pr
     if (!info.isFile() || info.nlink !== 1) fail("sealed artifact is not an isolated regular file");
     if (item.id.startsWith("npm:")) await execFile("npm", ["publish", destination, "--dry-run", "--ignore-scripts"], { cwd: environment.cwd });
     const name = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
-    const kind = item.id.startsWith("npm:") ? "npm" : item.id.startsWith("cargo:") ? "cargo" : "artifact";
+    const kind = item.id.startsWith("npm:") ? "npm" : item.id.startsWith("cargo:") ? "cargo" : item.id.startsWith("oci:") ? "oci" : "artifact";
     const cargoMetadata = kind === "cargo" ? await cargoWireMetadataFromCrate(destination, name, item.version) : null;
-    artifacts.push({ id: item.id, name, version: item.version, kind, path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino, mode: 0o400, cargoMetadata, cargoMetadataSha256: cargoMetadata ? sha256(cargoMetadata) as Sha256 : null });
+    const attachments: NonNullable<AuthorizedArtifact["attachments"]> = [];
+    if (packed.oci) {
+      const archiveDestination = join(artifactDirectory, basename(packed.oci.archivePath));
+      if (archiveDestination === destination) fail("OCI archive and install manifest filenames must differ");
+      await copyFile(packed.oci.archivePath, archiveDestination, constants.COPYFILE_EXCL); await chmod(archiveDestination, 0o400);
+      const archiveInfo = await stat(archiveDestination);
+      if (!archiveInfo.isFile() || archiveInfo.nlink !== 1) fail("sealed OCI archive is not an isolated regular file");
+      attachments.push({ role: "oci-archive", path: relative(environment.cwd, archiveDestination), sha256: hash(packed.oci.archiveBytes), size: archiveInfo.size, ino: archiveInfo.ino, mode: 0o400 });
+    }
+    artifacts.push({ id: item.id, name, version: item.version, kind, path: relative(environment.cwd, destination), sha256: hash(packed.bytes), size: info.size, ino: info.ino, mode: 0o400, cargoMetadata, cargoMetadataSha256: cargoMetadata ? sha256(cargoMetadata) as Sha256 : null, attachments, ociMetadata: packed.oci ? { registryRepository: packed.oci.registryRepository, manifestDigest: packed.oci.manifestDigest, archiveSha256: hash(packed.oci.archiveBytes) } : null });
   }
   const endpoint = process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL; if (!endpoint) fail("coordinator proof consumption endpoint is required");
   const facts = { eventId: environment.eventId, nonce: environment.nonce, planId: environment.planId, releaseCommit: environment.releaseCommit, ref: environment.refName };
@@ -294,16 +309,26 @@ async function writeSealedMarker(cwd: string, marker: SealedMarker): Promise<voi
   const path = join(cwd, ".lenso-release/preflight-marker.json"); const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
   try { await handle.writeFile(Buffer.concat([canonicalBytes(marker as unknown as JsonValue), Buffer.from("\n")])); await handle.sync(); } finally { await handle.close(); }
 }
-async function consumeSealedMarker(environment: RuntimeEnvironment): Promise<{ plan: ReleasePlanV1; artifacts: Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }> }> {
+async function consumeSealedMarker(environment: RuntimeEnvironment): Promise<{ plan: ReleasePlanV1; artifacts: Map<string, SealedArtifact> }> {
   const { plan, digest } = await gateBinding(environment); const path = join(environment.cwd, ".lenso-release/preflight-marker.json");
   let bytes: Buffer; try { bytes = await safeRead(environment.cwd, ".lenso-release/preflight-marker.json"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") fail("sealed marker is missing or already consumed"); throw error; }
   const marker = parseJson<SealedMarker>(bytes, "sealed marker"); if (marker.schema !== "lenso.publisher-sealed-marker.v1") fail("sealed marker binding is invalid");
   verifyAuthorization(marker.authorization, marker.signature, digest, environment, marker.authorization.artifacts);
-  const artifacts = new Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }>();
+  const artifacts = new Map<string, SealedArtifact>();
   for (const binding of marker.authorization.artifacts) {
     const artifactBytes = await safeRead(environment.cwd, binding.path); const info = await stat(join(environment.cwd, binding.path));
     if (info.ino !== binding.ino || info.size !== binding.size || info.mode % 0o1000 !== 0o400 || info.nlink !== 1 || hash(artifactBytes) !== binding.sha256) fail("sealed artifact changed after OIDC authorization");
-    artifacts.set(`${binding.id}\0${binding.version}`, { path: join(environment.cwd, binding.path), bytes: artifactBytes, cargoMetadata: binding.cargoMetadata });
+    let oci: SealedArtifact["oci"] = null;
+    if (binding.kind === "oci") {
+      const attachment = binding.attachments?.[0];
+      if (!attachment || !binding.ociMetadata) fail("sealed OCI authorization is incomplete");
+      const archiveBytes = await safeRead(environment.cwd, attachment.path); const archiveInfo = await stat(join(environment.cwd, attachment.path));
+      if (archiveInfo.ino !== attachment.ino || archiveInfo.size !== attachment.size || archiveInfo.mode % 0o1000 !== 0o400 || archiveInfo.nlink !== 1 || hash(archiveBytes) !== attachment.sha256) fail("sealed OCI archive changed after OIDC authorization");
+      const inspected = inspectOciReleaseArtifact({ archiveBytes, installManifestBytes: artifactBytes, registryRepository: binding.ociMetadata.registryRepository, sourceCommit: environment.releaseCommit, version: binding.version });
+      if (inspected.manifestDigest !== binding.ociMetadata.manifestDigest || hash(archiveBytes) !== binding.ociMetadata.archiveSha256) fail("sealed OCI graph contradicts authorization");
+      oci = { ...inspected, archivePath: join(environment.cwd, attachment.path) };
+    }
+    artifacts.set(`${binding.id}\0${binding.version}`, { path: join(environment.cwd, binding.path), bytes: artifactBytes, cargoMetadata: binding.cargoMetadata, oci });
   }
   if (artifacts.size !== environment.packages.length) fail("sealed artifact selection mismatch"); await rm(path, { force: true }); return { plan, artifacts };
 }
@@ -381,6 +406,31 @@ async function artifactObservation(name: string, version: string, environment: R
   if (Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) fail("hosted artifact checksum contradicts archive");
   return { exists: true, bytes, integrity: hash(bytes), url: asset.browser_download_url, publishedAt: body.created_at };
 }
+async function releaseAssetObservation(assetName: string, version: string, environment: RuntimeEnvironment): Promise<{ exists: false } | { exists: true; bytes: Buffer; url: string }> {
+  const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com"; const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
+  const response = await fetch(`${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`, { headers, redirect: "error" });
+  if (response.status === 404) return { exists: false };
+  if (!response.ok) fail(`release asset observation ${response.status}`);
+  const release = await response.json() as { draft?: boolean; assets?: Array<{ name?: string; url?: string; browser_download_url?: string }> };
+  if (release.draft !== true) fail("release asset must remain in the reviewed draft");
+  const asset = release.assets?.find(({ name }) => name === assetName); if (!asset) return { exists: false };
+  if (!asset.url || !asset.browser_download_url) fail("release asset metadata is incomplete");
+  const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+  if (!download.ok) fail(`release asset download ${download.status}`);
+  return { exists: true, bytes: Buffer.from(await download.arrayBuffer()), url: asset.browser_download_url };
+}
+async function ociObservation(name: string, version: string, artifact: SealedArtifact, environment: RuntimeEnvironment): Promise<RegistryObservation> {
+  if (!artifact.oci) fail("sealed OCI image graph is missing");
+  const registry = process.env.LENSO_OCI_REGISTRY_URL ?? "https://ghcr.io";
+  const observed = await observeOciImage(name, version, { registry, repository: artifact.oci.registryRepository });
+  if ("missing" in observed) return { exists: false };
+  if ("failure" in observed) fail(`OCI registry observation ${observed.failure}: ${observed.detail}`);
+  if (observed.digest !== artifact.oci.manifestDigest) fail("OCI registry manifest contradicts the sealed image");
+  const manifest = await releaseAssetObservation(basename(artifact.path), version, environment);
+  if (!manifest.exists) return { exists: false };
+  if (!manifest.bytes.equals(artifact.bytes)) fail("remote Console install manifest contradicts the sealed manifest");
+  return { exists: true, bytes: manifest.bytes, integrity: observed.digest, url: observed.canonicalUrl, publishedAt: observed.publishedAt };
+}
 async function npmWorkspaceDirectory(cwd: string, name: string): Promise<string> {
   const matches: string[] = [];
   const visit = async (directory: string): Promise<void> => {
@@ -400,7 +450,7 @@ async function npmWorkspaceDirectory(cwd: string, name: string): Promise<string>
   if (matches.length !== 1) fail(`npm workspace package is missing or ambiguous: ${name}`);
   return matches[0]!;
 }
-async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ path: string; bytes: Buffer }> {
+async function packedArtifact(cwd: string, item: PublishSelection): Promise<PackedArtifact> {
   if (item.id.startsWith("npm:")) {
     if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) fail("npm token fallback is forbidden");
     const name = item.id.slice(4);
@@ -426,6 +476,15 @@ async function packedArtifact(cwd: string, item: PublishSelection): Promise<{ pa
     const manifest = JSON.parse((await execFile("tar", ["-xOf", path, "./manifest.json"])).stdout) as { name?: string; version?: string };
     if (manifest.name !== item.id.slice("artifact:".length) || manifest.version !== item.version) fail("hosted artifact manifest identity mismatch");
     return { path, bytes };
+  }
+  if (item.id.startsWith("oci:")) {
+    const config = parseJson<RepositoryConfig>(await safeRead(cwd, ".lenso-release/config.json"), "repository config");
+    const image = config.ociImages?.[item.id];
+    if (!image) fail(`OCI image configuration is missing: ${item.id}`);
+    safeRelative(image.archivePath); safeRelative(image.installManifestPath);
+    const archiveBytes = await safeRead(cwd, image.archivePath); const installManifestBytes = await safeRead(cwd, image.installManifestPath);
+    const inspected = inspectOciReleaseArtifact({ archiveBytes, installManifestBytes, registryRepository: image.registryRepository, sourceCommit: (await execFile("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim(), version: item.version });
+    return { path: join(cwd, image.installManifestPath), bytes: installManifestBytes, oci: { ...inspected, archivePath: join(cwd, image.archivePath) } };
   }
   const name = item.id.slice(6);
   const path = join(cwd, "target/package", `${name}-${item.version}.crate`);
@@ -455,7 +514,7 @@ export function publicationOrder(plan: ReleasePlanV1, selected: PublishSelection
   for (const item of selected) visit(item);
   return ordered;
 }
-async function publishOnce(environment: RuntimeEnvironment, item: PublishSelection, artifact: { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }): Promise<void> {
+async function publishOnce(environment: RuntimeEnvironment, item: PublishSelection, artifact: SealedArtifact): Promise<void> {
   if (item.id.startsWith("npm:")) {
     const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
     const npmAuth = npmRegistryAuthentication(process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org");
@@ -480,6 +539,12 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
   } else if (item.id.startsWith("cargo:")) {
     if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN) fail("official crates.io token is required without fallback");
     if (!artifact.cargoMetadata) fail("signed Cargo upload metadata missing"); await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata);
+  } else if (item.id.startsWith("oci:")) {
+    if (!artifact.oci) fail("sealed OCI image graph is missing");
+    const token = process.env.LENSO_OCI_TOKEN; if (!token) fail("OCI registry credential is required");
+    const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
+    await publishOciImage({ artifact: artifact.oci, registry: process.env.LENSO_OCI_REGISTRY_URL ?? "https://ghcr.io", version: item.version, credential: shadow ? { bearer: token } : { username: process.env.GITHUB_ACTOR ?? "github-actions", password: token } });
+    await ensureDraftReleaseAsset(environment, item.version, basename(artifact.path), artifact.bytes, `Lenso Console ${item.version}`);
   } else {
     const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
     const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
@@ -517,6 +582,25 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
     await ensureAsset(`${assetName}.sha256`, checksum, "text/plain");
   }
 }
+async function ensureDraftReleaseAsset(environment: RuntimeEnvironment, version: string, assetName: string, bytes: Uint8Array, title: string): Promise<void> {
+  const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+  const releaseUrl = `${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`;
+  let response = await fetch(releaseUrl, { headers, redirect: "error" });
+  if (response.status === 404) response = await fetch(`${api}/repos/${environment.repository}/releases`, { method: "POST", headers, redirect: "error", body: JSON.stringify({ tag_name: `v${version}`, target_commitish: environment.releaseCommit, name: title, draft: true, prerelease: false }) });
+  if (!response.ok) fail(`draft release creation ${response.status}`);
+  const release = await response.json() as { draft?: boolean; target_commitish?: string; upload_url?: string; assets?: Array<{ name?: string; url?: string }> };
+  if (release.draft !== true || release.target_commitish !== environment.releaseCommit) fail("draft release identity mismatch");
+  const existing = release.assets?.find(({ name }) => name === assetName);
+  if (existing?.url) {
+    const downloaded = await fetch(existing.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+    if (!downloaded.ok || !Buffer.from(await downloaded.arrayBuffer()).equals(Buffer.from(bytes))) fail("draft release asset contradicts the sealed bytes");
+    return;
+  }
+  const uploadBase = release.upload_url?.replace(/\{.*$/u, ""); if (!uploadBase) fail("draft release upload URL is missing");
+  const uploaded = await fetch(`${uploadBase}?name=${encodeURIComponent(assetName)}`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json", "content-length": String(bytes.length) }, body: Buffer.from(bytes) });
+  if (!uploaded.ok) fail(`draft release asset upload ${uploaded.status}`);
+}
 export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
   const json = canonicalBytes(upload); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
   const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]); const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
@@ -548,15 +632,14 @@ async function createAttestation(artifactPath: string, artifactBytes: Uint8Array
     return url;
   } finally { if (cleanup) await rm(cleanup, { recursive: true, force: true }); }
 }
-function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment, tagName?: string): ComponentReceiptV1 {
+function receiptFor(plan: ReleasePlanV1, item: PublishSelection, observation: Required<Omit<RegistryObservation, "exists">>, provenanceUrl: string, environment: RuntimeEnvironment, subjectName: string, tagName?: string): ComponentReceiptV1 {
   const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
-  const artifactName = item.id.startsWith("artifact:") ? `${componentName}.tar.gz` : `${componentName}-${item.version}.${item.id.startsWith("npm:") ? "tgz" : "crate"}`;
   const identity = {
     schema: "lenso.component-receipt.v1" as const, environment: process.env.LENSO_RELEASE_MODE as "shadow" | "production",
     planId: plan.planId, packageId: item.id as ComponentReceiptV1["packageId"], version: item.version,
     repository: plan.repository, sourceCommit: environment.releaseCommit,
     packedSha256: hash(observation.bytes), registryIntegrity: observation.integrity, registryUrl: observation.url,
-    provenanceUrl, provenanceSubject: { name: artifactName, digest: hash(observation.bytes) },
+    provenanceUrl, provenanceSubject: { name: subjectName, digest: hash(observation.bytes) },
     workflowUrl: environment.runUrl,
     tagUrl: `https://github.com/${environment.repository}/releases/tag/${encodeURIComponent(tagName ?? `${componentName}@${item.version}`)}`,
     publishedAt: observation.publishedAt,
@@ -579,9 +662,11 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
   const receipts: ComponentReceiptV1[] = [];
   for (const item of publicationOrder(plan, environment.packages)) {
     const name = item.id.slice(item.id.indexOf(":") + 1);
+    const artifact = artifacts.get(`${item.id}\0${item.version}`); if (!artifact) fail("sealed artifact is missing");
     const observe = () => item.id.startsWith("npm:")
       ? npmObservation(name, item.version)
-      : item.id.startsWith("cargo:") ? cargoObservation(name, item.version) : artifactObservation(name, item.version, environment);
+      : item.id.startsWith("cargo:") ? cargoObservation(name, item.version)
+        : item.id.startsWith("oci:") ? ociObservation(name, item.version, artifact, environment) : artifactObservation(name, item.version, environment);
     let observed = await observe();
     if (observed.exists) {
       const recovered = await readExistingReceipt(item, environment, fixedGroup);
@@ -590,7 +675,6 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
         if (!fixedGroup) await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
       }
     }
-    const artifact = artifacts.get(`${item.id}\0${item.version}`); if (!artifact) fail("sealed artifact is missing");
     if (!observed.exists) {
       await publishOnce(environment, item, artifact);
       observed = await observe();
@@ -598,7 +682,7 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
     }
     if (hash(observed.bytes!) !== hash(artifact.bytes)) fail("registry archive differs from packed archive");
     const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
-    const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment, fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
+    const receipt = receiptFor(plan, item, observed as Required<Omit<RegistryObservation, "exists">>, provenanceUrl, environment, basename(artifact.path), fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
     assertComponentReceipt(receipt);
     if (!fixedGroup) await createImmutableTag(receipt, environment);
     if (!fixedGroup) await dispatchReceipt(receipt, environment);
@@ -612,7 +696,7 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
 }
 async function createFixedGroupRelease(
   group: { name: string; version: string }, receipts: ComponentReceiptV1[],
-  artifacts: Map<string, { path: string; bytes: Buffer; cargoMetadata: JsonValue | null }>, environment: RuntimeEnvironment,
+  artifacts: Map<string, SealedArtifact>, environment: RuntimeEnvironment,
 ): Promise<void> {
   const tag = `${group.name}@${group.version}`;
   const identity = { schema: "lenso.fixed-group-receipt.v1", group: group.name, version: group.version, receipts };

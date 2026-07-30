@@ -266,10 +266,11 @@ export async function createCoordinatorHandlers(
   const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
     if (id.startsWith("oci:")) {
       const name = id.slice("oci:".length);
+      const component = registry.packages[id]; if (!component?.registryPath) return false;
       const observation = await observeOciImage(name, version, {
         fetch: request,
         registry: shadow ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL : "https://ghcr.io",
-        repository: `liorael/${name}`,
+        repository: component.registryPath,
       });
       return "version" in observation && observation.version === version;
     }
@@ -540,10 +541,19 @@ export async function createCoordinatorHandlers(
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
           } else if (packageId.startsWith("oci:")) {
-            // OCI receipts require the upcoming composite authorization contract
-            // to bind both the image graph and installer manifest. Until then,
-            // fail closed instead of treating the image as a hosted archive.
-            return null;
+            const component = registry.packages[packageId]; if (!component?.registryPath) throw new Error("OCI registry path is not reviewed");
+            const image = await observeOciImage(packageName, packageVersion, { fetch: request, registry: shadow ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL : "https://ghcr.io", repository: component.registryPath });
+            if (!("version" in image)) return null;
+            const release = shadow
+              ? await checkedShadowGithubJson(request, `${tagApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
+              : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+            if (release.draft !== true || !Array.isArray(release.assets)) return null;
+            const asset = (release.assets as Record<string, unknown>[]).find(({ name }) => name === "lenso-console-release.json");
+            if (!asset?.url || !asset.browser_download_url || expected.provenanceSubject.name !== "lenso-console-release.json") return null;
+            packedBytes = new Uint8Array(await (async () => {
+              const response = await readGithubAsset(String(asset.url)); if (!response.ok) throw new IncompleteEvidenceError("Console install manifest evidence incomplete"); return response.arrayBuffer();
+            })());
+            nativeIntegrity = image.digest; publishedAt = image.publishedAt; registryUrl = image.canonicalUrl;
           } else {
             const release = shadow
               ? await checkedShadowGithubJson(
@@ -582,7 +592,7 @@ export async function createCoordinatorHandlers(
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
-              : packageId.startsWith("oci:") ? `${packageName}.oci.tar` : `${packageName}.tar.gz`;
+              : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
           const subject = shadow
             ? await (async () => {
                 const response = await request(expected.provenanceUrl, { redirect: "error" });
@@ -817,7 +827,8 @@ export async function createCoordinatorHandlers(
             }
             if (id.startsWith("oci:")) {
               const name = id.slice("oci:".length);
-              const observation = await observeOciImage(name, version, { fetch: request, registry: input.env.LENSO_SHADOW_OCI_REGISTRY_URL, repository: `liorael/${name}` });
+              const component = registry.packages[id]; if (!component?.registryPath) throw new TypeError(`unknown OCI package ${id}`);
+              const observation = await observeOciImage(name, version, { fetch: request, registry: input.env.LENSO_SHADOW_OCI_REGISTRY_URL, repository: component.registryPath });
               if ("missing" in observation) return false;
               if ("failure" in observation) throw new Error(`shadow OCI observation ${observation.failure}`);
               return true;

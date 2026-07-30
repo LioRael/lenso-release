@@ -12,7 +12,7 @@
     "shadow:deploy": "wrangler deploy --config shadow-gateway/wrangler.jsonc",
     "shadow:typecheck": "tsc --noEmit -p shadow-gateway/tsconfig.json",
     "shadow:types": "wrangler types --config shadow-gateway/wrangler.jsonc shadow-gateway/worker-configuration.d.ts",
-    "test": "vitest run",
+    "test": "vitest run test",
     "typecheck": "tsc --noEmit && pnpm shadow:typecheck"
   },
   "dependencies": {

@@ -314,7 +314,7 @@ async function liveSnapshot(): Promise<ReconciliationSnapshot> {
     const component = componentRegistry.packages[id]!;
     if (!component.publishable || id.startsWith("catalog:")) registry[id] = { notApplicable: true };
     else if (id.startsWith("artifact:") && version) registry[id] = await observeGithubArtifact(component.repository, id.slice("artifact:".length), version, { token: process.env.GITHUB_TOKEN });
-    else if (id.startsWith("oci:") && version) registry[id] = await observeOciImage(id.slice("oci:".length), version);
+    else if (id.startsWith("oci:") && version && component.registryPath) registry[id] = await observeOciImage(id.slice("oci:".length), version, { repository: component.registryPath });
     else if (id.startsWith("npm:") && version) registry[id] = await observeNpmVersion(id.slice(4), version);
     else if (id.startsWith("cargo:") && version) registry[id] = await observeCrateVersion(id.slice(6), version);
     else registry[id] = { failure: "unavailable", detail: "required registry observation could not be performed" };

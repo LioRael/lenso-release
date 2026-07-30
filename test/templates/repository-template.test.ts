@@ -80,7 +80,9 @@ describe("repository template workflow contracts", () => {
     expect(source.indexOf("cli.js consume-preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
     expect(workflow.permissions).toEqual({});
-    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
+    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write", packages: "write" });
+    expect(source).toContain("pnpm run --if-present release:artifacts");
+    expect(source).toContain("LENSO_OCI_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_OCI_TOKEN || github.token }}");
   });
 
   it("uses scoped App authentication and prioritizes fresh intent over a retained plan", async () => {

@@ -365,6 +365,7 @@ packages:
   - id: oci:lenso-console-service
     repository: LioRael/lenso-runtime-console
     registry: ghcr
+    registryPath: liorael/lenso-console
     releaseGroup: console
     userFacing: true
     publishable: true
