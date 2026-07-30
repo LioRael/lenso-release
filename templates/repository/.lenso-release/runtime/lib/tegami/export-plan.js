@@ -472,7 +472,7 @@ async function verifyExisting(options, plan, packages) {
         if (!pkg || !metadata || pkg.version !== item.nextVersion || metadata.releaseGroup !== item.releaseGroup || metadata.userFacing !== item.userFacing) {
             fail("persisted plan does not match current workspace");
         }
-        observations.set(item.id, item.id.startsWith("artifact:")
+        observations.set(item.id, item.id.startsWith("artifact:") || item.id.startsWith("oci:")
             ? []
             : await observeDependencies(options.cwd, pkg, options.components, planned, false));
     }
@@ -532,7 +532,7 @@ export async function exportReleasePlan(options) {
             const pkg = captured.get(sourceId(options, item.id));
             if (!pkg)
                 fail(`Tegami package ${sourceId(options, item.id)} was not captured`);
-            observations.set(item.id, item.id.startsWith("artifact:")
+            observations.set(item.id, item.id.startsWith("artifact:") || item.id.startsWith("oci:")
                 ? []
                 : await observeDependencies(options.cwd, pkg, options.components, planned));
         }

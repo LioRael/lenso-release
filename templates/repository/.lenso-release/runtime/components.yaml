@@ -362,9 +362,10 @@ packages:
     userFacing: true
     publishable: false
     dependencies: []
-  - id: artifact:lenso-runtime-console
+  - id: oci:lenso-console-service
     repository: LioRael/lenso-runtime-console
-    registry: github-release
+    registry: ghcr
+    registryPath: liorael/lenso-console
     releaseGroup: console
     userFacing: true
     publishable: true
@@ -376,7 +377,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
-      - artifact:lenso-runtime-console
+      - oci:lenso-console-service
       - cargo:lenso
       - cargo:lenso-service
   - id: npm:@lenso/cli
@@ -386,7 +387,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
-      - artifact:lenso-runtime-console
+      - oci:lenso-console-service
       - cargo:lenso
       - cargo:lenso-cli
   - id: catalog:lenso-official-module-catalog
@@ -396,7 +397,7 @@ packages:
     userFacing: true
     publishable: true
     dependencies:
-      - artifact:lenso-runtime-console
+      - oci:lenso-console-service
       - cargo:lenso-module-audit-log
       - cargo:lenso-module-auth
       - cargo:lenso-module-auth-anonymous
