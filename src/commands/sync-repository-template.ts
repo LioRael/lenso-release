@@ -6,10 +6,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
 
 export type TemplateManifest = { schema: "lenso.repository-template.v1"; sourceRevision: string; files: { path: string; sha256: string }[] };
+export type ReviewedTemplateFile = { path: string; sha256: string };
 export type SyncOptions = {
   source: string;
   target: string;
   trustedPreviousManifests?: readonly TemplateManifest[];
+  preserveFiles?: readonly ReviewedTemplateFile[];
   deletePaths?: readonly string[];
   failAfterWrites?: number;
 };
@@ -80,29 +82,42 @@ export async function syncRepositoryTemplate(options: SyncOptions): Promise<Temp
   const runtime = JSON.parse((await readNoFollow(source, ".lenso-release/runtime/manifest.json")).toString("utf8")) as { sourceRevision?: string };
   if (!runtime.sourceRevision || !/^[0-9a-f]{40}$/u.test(runtime.sourceRevision)) fail("template runtime has no trusted revision");
   const incomingFiles = await sourceFiles(source);
-  const incoming: TemplateManifest = { schema: "lenso.repository-template.v1", sourceRevision: runtime.sourceRevision, files: incomingFiles.map(({ path, sha256: digest }) => ({ path, sha256: digest })) };
   const current = await installedManifest(target);
-  const incomingPaths = new Set(incoming.files.map(({ path }) => path));
+  const incomingPaths = new Set(incomingFiles.map(({ path }) => path));
+  const requestedPreservations = options.preserveFiles ?? [];
+  const preservedFiles = new Map(requestedPreservations.map((file) => [file.path, file.sha256]));
+  if (preservedFiles.size !== requestedPreservations.length || requestedPreservations.some((file) => !file || !pathIsSafe(file.path) || !/^sha256:[0-9a-f]{64}$/u.test(file.sha256))) fail("invalid reviewed file preservation");
   const requestedDeletions = options.deletePaths ?? [];
   const deletionPaths = new Set(requestedDeletions);
   if (deletionPaths.size !== requestedDeletions.length || requestedDeletions.some((path) => !pathIsSafe(path))) fail("invalid explicit deletion migration");
   if (current) {
     const trusted = options.trustedPreviousManifests ?? [];
     if (!trusted.some((entry) => manifestEqual(entry, current))) fail("installed manifest is not in the trusted upgrade catalog");
-    for (const file of current.files) if (sha256(await readNoFollow(target, file.path)) !== file.sha256) fail(`managed file drift: ${file.path}`);
     const currentPaths = new Set(current.files.map(({ path }) => path));
+    for (const [path] of preservedFiles) if (!currentPaths.has(path) || !incomingPaths.has(path) || deletionPaths.has(path)) fail(`invalid reviewed file path: ${path}`);
+    for (const file of current.files) {
+      const bytes = await readNoFollow(target, file.path); const digest = sha256(bytes); const reviewed = preservedFiles.get(file.path);
+      if (digest !== file.sha256 && digest !== reviewed) fail(`managed file drift: ${file.path}`);
+      if (reviewed && digest !== reviewed) fail(`reviewed file drift: ${file.path}`);
+      if (reviewed) {
+        const incomingFile = incomingFiles.find(({ path }) => path === file.path)!;
+        incomingFile.bytes = bytes; incomingFile.sha256 = digest;
+      }
+    }
     for (const path of deletionPaths) {
       if (!currentPaths.has(path) || incomingPaths.has(path)) fail(`invalid explicit deletion path: ${path}`);
     }
     for (const old of current.files) if (!incomingPaths.has(old.path) && !deletionPaths.has(old.path)) fail(`template deletion requires an explicit migration: ${old.path}`);
   } else {
+    if (preservedFiles.size > 0) fail("reviewed file preservation requires an installed manifest");
     if (deletionPaths.size > 0) fail("explicit deletion migration requires an installed manifest");
-    for (const file of incoming.files) {
+    for (const file of incomingFiles) {
       try { await lstat(join(target, file.path)); fail(`refusing to take over existing path: ${file.path}`); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       await assertSafeParents(target, file.path, true);
     }
   }
+  const incoming: TemplateManifest = { schema: "lenso.repository-template.v1", sourceRevision: runtime.sourceRevision, files: incomingFiles.map(({ path, sha256: digest }) => ({ path, sha256: digest })) };
   for (const file of incoming.files) await assertSafeParents(target, file.path, true); // all validation precedes mutation
   const transaction = await mkdtemp(join(tmpdir(), "lenso-template-sync-"));
   const backups = new Map<string, string | null>();
