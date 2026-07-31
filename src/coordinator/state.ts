@@ -650,8 +650,8 @@ export async function supersedeFailedProductionPartialRecovery(
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (!previous || !["in-flight", "dispatched"].includes(previous.status))
     throw new Error("partial recovery dispatch is not supersedable");
-  if (previous.recovery!.workflowCommit === workflowCommit)
-    throw new Error("partial recovery workflow commit did not change");
+  if (previous.recovery!.workflowCommit === workflowCommit && previous.workflow === ".github/workflows/publish.yml")
+    throw new Error("partial recovery workflow identity did not change");
   const observed = await facts.observeRun(previous);
   const abandoned = previous.status === "in-flight" && previous.runUrl === null &&
     Boolean(previous.leaseExpiresAt && previous.leaseExpiresAt <= now.toISOString()) && observed === null;
@@ -672,7 +672,7 @@ export async function supersedeFailedProductionPartialRecovery(
   } as const;
   const eventId = sha256(identity as unknown as JsonValue) as Sha256;
   const entry: PlanDispatchOutbox = {
-    eventId, nonce, ref: previous.ref, workflow: previous.workflow,
+    eventId, nonce, ref: previous.ref, workflow: ".github/workflows/publish.yml",
     recovery: { ...previous.recovery!, workflowCommit },
     packages: previous.packages,
     inputs: { event_id: eventId, plan_id: state.planId, plan_sha256: state.planSha256, release_commit: state.releaseCommit, packages_json: JSON.stringify(previous.packages), nonce },
