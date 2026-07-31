@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -162,15 +162,74 @@ packages:
 Exercise a partial follow-up release.
 `);
 
+    const historicalChangelog = await readFile(join(cwd, "crates/core/CHANGELOG.md"), "utf8");
     const partial = await exportReleasePlan({
       cwd, repository: "LioRael/fixture", sourceCommit: "2".repeat(40), publisher, components,
     });
 
     expect(partial.packages.map(({ id }) => id)).toEqual(["cargo:fixture-core"]);
     expect(partial.generatedFiles.map(({ path }) => path)).not.toContain("packages/console/CHANGELOG.md");
+    await expect(readFile(join(cwd, "crates/core/CHANGELOG.md"), "utf8")).resolves.toContain(historicalChangelog);
     await expect(exportReleasePlan({
       cwd, repository: "LioRael/fixture", sourceCommit: "2".repeat(40), publisher, components,
     })).resolves.toEqual(partial);
+  });
+
+  it("preserves shared changelog history across a Cargo and npm fixed group", async () => {
+    const cwd = await fixture("cargo-only");
+    await writeFile(join(cwd, "package.json"), `${JSON.stringify({ name: "@fixture/cli", version: "0.1.0" }, null, 2)}\n`);
+    await writeFile(join(cwd, "pnpm-workspace.yaml"), "packages: []\n");
+    await writeFile(join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n\nimporters:\n  .: {}\n");
+    await writeFile(join(cwd, ".tegami/release.md"), `---
+packages:
+  fixture-core: patch
+  "@fixture/cli": patch
+---
+
+### Fixes
+
+Exercise the first fixed-group release.
+`);
+    const options = { cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher, components: metadata(["cargo:fixture-core", "distribution", true], ["npm:@fixture/cli", "distribution", true]) };
+    await exportReleasePlan(options);
+    const historicalChangelog = await readFile(join(cwd, "CHANGELOG.md"), "utf8");
+    await writeFile(join(cwd, ".tegami/release.md"), `---
+packages:
+  fixture-core: patch
+  "@fixture/cli": patch
+---
+
+### Fixes
+
+Exercise the second fixed-group release.
+`);
+    await exportReleasePlan({ ...options, sourceCommit: "2".repeat(40) });
+    const changelog = await readFile(join(cwd, "CHANGELOG.md"), "utf8");
+    expect(changelog).toContain("Exercise the second fixed-group release.");
+    expect(changelog).toContain(historicalChangelog);
+  });
+
+  it("restores ignored private workspace package manifests after applying a draft", async () => {
+    const cwd = await fixture("mixed");
+    const privateDirectory = join(cwd, "packages/private-console");
+    await mkdir(privateDirectory);
+    const privateManifest = `${JSON.stringify({ name: "@fixture/private-console", version: "0.1.0", private: true, dependencies: { "@fixture/console": "workspace:*" } }, null, 2)}\n`;
+    await writeFile(join(privateDirectory, "package.json"), privateManifest);
+    await writeFile(join(cwd, ".tegami/release.md"), `---
+packages:
+  "@fixture/console": patch
+---
+
+### Fixes
+
+Exercise an ignored private dependent.
+`);
+    const plan = await exportReleasePlan({
+      cwd, repository: "LioRael/fixture", sourceCommit: "1".repeat(40), publisher,
+      ignore: ["@fixture/private-console"], components: metadata(["npm:@fixture/console", "console", true]),
+    });
+    expect(plan.packages.map(({ id }) => id)).toEqual(["npm:@fixture/console"]);
+    await expect(readFile(join(privateDirectory, "package.json"), "utf8")).resolves.toBe(privateManifest);
   });
 
   it("resolves auto-installed peer dependencies from the pnpm importer", async () => {
