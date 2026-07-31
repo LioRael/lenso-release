@@ -17,6 +17,7 @@ import {
   assertReleaseStateSnapshot,
   cancelPlan,
   recoverFailedProductionPartialPlan,
+  recoverShadowModeMismatchPlan,
   retireFailedShadowPlan,
   retryFailedShadowPlan,
   planStatePath,
@@ -167,7 +168,7 @@ describe("atomic coordinator state", () => {
       packages: Object.fromEntries(identity.packages.map(({ id, releaseGroup, userFacing }) => [id, { id, repository: identity.repository, registry: "crates-io", releaseGroup, userFacing, publishable: true, dependencies: [] }])),
     } as ComponentRegistry;
     const releaseCommit = "2".repeat(40);
-    const accepted = await acceptReadyEvent({ schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready", issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit }, {
+    const accepted = await acceptReadyEvent({ schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready", environment: "production", issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit }, {
       store: new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} }), registry, environment: "production", appId: 42, expectedActor: "lenso-app[bot]",
       now: () => new Date("2026-07-11T00:00:00Z"), nonce: () => "dispatch-nonce-1",
       github: {
@@ -180,6 +181,34 @@ describe("atomic coordinator state", () => {
       "cargo:lenso-service",
     ]);
     expect(accepted.state.environment).toBe("production");
+  });
+  it("rejects a ready event whose reviewed release mode differs", async () => {
+    const value = state();
+    const planIdentity = {
+      schema: "lenso.release-plan.v1" as const,
+      repository: value.repository,
+      sourceCommit: value.sourceCommit,
+      tegamiVersion: "1.2.5" as const,
+      publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest("b"), sharedRevision: "4".repeat(40), sharedBundleSha256: digest("c"), runner: "ubuntu-24.04", node: "24.0.0", npm: "11.7.0", rust: "1.94.0" },
+      generatedFiles: [{ path: "Cargo.lock", sha256: digest("d") }],
+      packages: [{ id: "cargo:lenso-contracts", previousVersion: "0.9.0", nextVersion: "1.0.0", bump: "major" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] }],
+    };
+    const plan = { ...planIdentity, planId: sha256(planIdentity as JsonValue) as Sha256 };
+    const planBytes = Buffer.from(JSON.stringify(plan));
+    await expect(acceptReadyEvent({
+      schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready",
+      environment: "shadow", issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123",
+      sourceRepository: value.repository, expectedAppId: 42, planId: plan.planId,
+      planUrl: "https://example.com/plan", planSha256: sha256(planBytes), releaseCommit: value.releaseCommit,
+    }, {
+      store: new MemoryStore({ headSha: "3".repeat(40), plans: {}, activeRepositories: {}, occupiedPackages: {} }),
+      registry: { schema: "lenso.component-registry.v1", internalPackages: [], packages: {} },
+      environment: "production", appId: 42, expectedActor: "lenso-app[bot]", now: () => new Date(), nonce: () => "nonce",
+      github: {
+        async readAtReleaseCommit() { return { actor: "lenso-app[bot]", appId: 42, planBytes, plan, planSha256: sha256(planBytes), sourceCommitRepository: value.repository, releaseCommitRepository: value.repository, releaseCommitContainsSourceCommit: true, workflowSha256: plan.publisher.workflowSha256, sharedRevision: plan.publisher.sharedRevision, sharedBundleSha256: plan.publisher.sharedBundleSha256, runner: plan.publisher.runner, node: plan.publisher.node, npm: plan.publisher.npm, rust: plan.publisher.rust, branchProtected: true, generatedFilesValid: true, externalDependenciesVisible: true }; },
+        async ensureExecutionRef() { throw new Error("must not create execution ref"); },
+      },
+    })).rejects.toThrow("ready release environment mismatch");
   });
   it("runs ready and exact receipts through a two-phase plan to verified", async () => {
     const identity = {
@@ -218,7 +247,7 @@ describe("atomic coordinator state", () => {
     let nonce = 0;
     const visibilityChecks: string[][] = [];
     const releaseCommit = "2".repeat(40);
-    const readyEvent = { schema: "lenso.release-event.v1" as const, eventId: digest("e"), eventType: "lenso-plan-ready" as const, issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit };
+    const readyEvent = { schema: "lenso.release-event.v1" as const, eventId: digest("e"), eventType: "lenso-plan-ready" as const, environment: "production" as const, issuedAt: "2026-07-11T00:00:00Z", nonce: "ready-nonce-123", sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId, planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit };
     let current = (await acceptReadyEvent(readyEvent, {
       store, registry, environment: "production", appId: 42, expectedActor: "lenso-app[bot]",
       now: () => new Date("2026-07-11T00:00:00Z"), nonce: () => `dispatch-nonce-${++nonce}`,
@@ -280,6 +309,32 @@ describe("atomic coordinator state", () => {
     legacy.reason = "historical blocked plan";
     expect(() => assertPlanState(legacy)).not.toThrow();
     expect(() => assertLegalTransition(state(), { ...state(), environment: "shadow" })).toThrow("immutable environment rewrite");
+  });
+  it("recovers only a successful shadow-only original dispatch from a production label", async () => {
+    const value = state();
+    value.outbox[0]!.status = "dispatched";
+    value.outbox[0]!.runUrl = "https://github.com/LioRael/lenso/actions/runs/30664174730";
+    const store = new MemoryStore(snapshot(value));
+    const recovered = await recoverShadowModeMismatchPlan(
+      store, value.repository, value.planId, "30664174730", "production",
+      {
+        async observeRun() { return { runUrl: value.outbox[0]!.runUrl!, status: "completed", conclusion: "success" }; },
+        async packageVersionExists(environment) { return environment === "shadow"; },
+      },
+      new Date("2026-08-01T00:00:00Z"),
+    );
+    expect(recovered.state.environment).toBe("shadow");
+    expect(recovered.state.outbox).toEqual(value.outbox);
+    expect(recovered.state.packages).toEqual(value.packages);
+    expect(recovered.state.attempts.at(-1)?.detail).toBe("recovered shadow publisher mode mismatch");
+    await expect(recoverShadowModeMismatchPlan(
+      new MemoryStore(snapshot(value)), value.repository, value.planId, "30664174730", "production",
+      {
+        async observeRun() { return { runUrl: value.outbox[0]!.runUrl!, status: "completed", conclusion: "success" }; },
+        async packageVersionExists() { return true; },
+      },
+      new Date("2026-08-01T00:00:00Z"),
+    )).rejects.toThrow("production package already exists");
   });
   it("round-trips OCI package and occupancy identities", () => {
     const value = state();
@@ -1121,13 +1176,22 @@ describe("atomic coordinator state", () => {
     const retry = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retry-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retryFailedShadowPlan: retry }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retry).toHaveBeenCalledOnce();
+    const recoverMode = vi.fn(async () => undefined);
+    expect(await runHandleEventCli(["--recover-shadow-mode-mismatch-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a"), "--publisher-run-id", "30664174730"], {}, async () => ({ ready, receipt, recoverShadowModeMismatchPlan: recoverMode }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(recoverMode).toHaveBeenCalledWith("LioRael/lenso", digest("a"), "30664174730");
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {
-    for (const file of ["plan-ready.yml", "publish-receipt.yml"]) {
+    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml"]) {
       const workflow = await readFile(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
-      expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u); expect(workflow).toContain("github.event_path");
-      expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ github.actor }}");
+      expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u);
+      if (file === "recover-shadow-mode-mismatch-plan.yml") {
+        expect(workflow).toContain("--publisher-run-id");
+        expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}");
+      } else {
+        expect(workflow).toContain("github.event_path");
+        expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ github.actor }}");
+      }
     }
   });
 });

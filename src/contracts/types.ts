@@ -59,7 +59,10 @@ type ReleaseEventBase = {
 };
 
 export type ReleaseEventV1 =
-  | (ReleaseEventBase & { eventType: "lenso-plan-ready" })
+  | (ReleaseEventBase & {
+      eventType: "lenso-plan-ready";
+      environment: "shadow" | "production";
+    })
   | (ReleaseEventBase & {
       eventType: "lenso-publish-requested";
       packages: EventPackage[];

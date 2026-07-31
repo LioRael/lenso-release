@@ -17,7 +17,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, recoverFailedProductionPartialPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, recoverShadowModeMismatchPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -412,6 +412,7 @@ export async function createCoordinatorHandlers(
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
+  recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
     ? new URL("../../../config/components.yaml", import.meta.url).pathname
@@ -483,6 +484,7 @@ export async function createCoordinatorHandlers(
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
     recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
+    recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string): Promise<StoredPlanState>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -1488,6 +1490,57 @@ export async function createCoordinatorHandlers(
         );
       }
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
+    },
+    async recoverShadowModeMismatchPlan(repository, planId, publisherRunId) {
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const token = await input.tokens.tokenFor(repository, { actions: "read", metadata: "read" });
+      return recoverShadowModeMismatchPlan(
+        input.store,
+        repository,
+        planId,
+        publisherRunId,
+        input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit },
+              entry.eventId,
+              token,
+            );
+          },
+          async packageVersionExists(target, pkg) {
+            if (pkg.id.startsWith("npm:")) {
+              const base = target === "shadow"
+                ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL
+                : "https://registry.npmjs.org";
+              if (!base) throw new TypeError("npm registry endpoint is missing");
+              const response = await request(`${base}/${encodeURIComponent(pkg.id.slice(4))}`, { redirect: "error" });
+              if (response.status === 404) return false;
+              if (!response.ok) throw new Error(`${target} npm observation ${response.status}`);
+              return npmPackumentContainsVersion(await response.json(), pkg.version);
+            }
+            if (pkg.id.startsWith("oci:")) {
+              if (!pkg.registryPath) throw new TypeError("OCI registry path is missing from stored plan");
+              const registryUrl = target === "shadow"
+                ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL
+                : "https://ghcr.io";
+              if (!registryUrl) throw new TypeError("OCI registry endpoint is missing");
+              const observation = await observeOciImage(pkg.id.slice(4), pkg.version, {
+                fetch: request,
+                registry: registryUrl,
+                repository: pkg.registryPath,
+              });
+              if ("missing" in observation) return false;
+              if ("failure" in observation) throw new Error(`${target} OCI observation ${observation.failure}`);
+              return true;
+            }
+            throw new Error(`mode mismatch recovery does not support ${pkg.id}`);
+          },
+        },
+        now(),
+      );
     },
   };
   return handlers;

@@ -34,6 +34,8 @@ export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
   "authorized production break-glass recovery";
 export const RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
   "retried authorized production break-glass recovery";
+export const RECOVERED_SHADOW_MODE_MISMATCH =
+  "recovered shadow publisher mode mismatch";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -411,8 +413,19 @@ export function assertLegalTransition(
 ): void {
   assertPlanState(previous);
   assertPlanState(next);
+  const appendedAttempts = next.attempts.slice(previous.attempts.length);
+  const modeMismatchRecovery = appendedAttempts.find(({ kind, outcome, detail }) =>
+    kind === "recovery" && outcome === "accepted" && detail === RECOVERED_SHADOW_MODE_MISMATCH
+  );
+  if (
+    previous.environment !== next.environment &&
+    !(
+      previous.environment === "production" && next.environment === "shadow" &&
+      modeMismatchRecovery && previous.status === "publishing" && next.status === "publishing" &&
+      previous.receipts.length === 0 && next.receipts.length === 0
+    )
+  ) throw new TypeError("immutable environment rewrite");
   for (const field of [
-    "environment",
     "repository",
     "planId",
     "planSha256",
@@ -446,7 +459,6 @@ export function assertLegalTransition(
   )
     throw new TypeError("retired state is immutable");
   const statusRank = { pending: 0, dispatched: 1, received: 2 } as const;
-  const appendedAttempts = next.attempts.slice(previous.attempts.length);
   const retryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
   );
@@ -615,6 +627,110 @@ export type FailedShadowRetirementFacts = {
   } | null>;
   packageVersionExists(id: string, version: string): Promise<boolean>;
 };
+
+export type ShadowModeMismatchRecoveryFacts = {
+  observeRun(entry: PlanDispatchOutbox): Promise<{
+    runUrl: string;
+    status: string;
+    conclusion: string | null;
+  } | null>;
+  packageVersionExists(
+    environment: "shadow" | "production",
+    pkg: PlanStateV1["packages"][number],
+  ): Promise<boolean>;
+};
+
+export async function recoverShadowModeMismatchPlan(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  publisherRunId: string,
+  mode: string | undefined,
+  facts: ShadowModeMismatchRecoveryFacts,
+  now: Date,
+): Promise<StoredPlanState> {
+  if (mode !== "production")
+    throw new Error("mode mismatch recovery requires production coordinator mode");
+  if (!/^[1-9][0-9]*$/u.test(publisherRunId))
+    throw new TypeError("publisher run ID invalid");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (!state) throw new Error("plan state not found");
+  if (
+    state.environment === "shadow" &&
+    state.attempts.some(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === RECOVERED_SHADOW_MODE_MISMATCH
+    )
+  ) return { state, headSha: initial.headSha };
+  if (
+    state.environment !== "production" || state.status !== "publishing" ||
+    state.reason !== null || state.receipts.length !== 0 ||
+    state.packages.some(({ status }) => status === "received")
+  ) throw new Error("untouched production-labelled publishing plan is required");
+  if (
+    state.outbox.length !== 1 || state.outbox[0]?.status !== "dispatched" ||
+    state.outbox[0].recovery !== undefined || state.outbox[0].runUrl === null
+  ) throw new Error("exact original publisher dispatch is required");
+  const dispatch = state.outbox[0];
+  const expectedRunUrl = `https://github.com/${repository}/actions/runs/${publisherRunId}`;
+  if (dispatch.runUrl !== expectedRunUrl)
+    throw new Error("publisher run does not match stored dispatch");
+  const selected = dispatch.packages
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  const planned = state.packages
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  if (JSON.stringify(selected) !== JSON.stringify(planned))
+    throw new Error("publisher dispatch does not cover the exact plan");
+  const run = await facts.observeRun(dispatch);
+  if (
+    !run || run.runUrl !== expectedRunUrl || run.status !== "completed" ||
+    run.conclusion !== "success"
+  ) throw new Error("exact publisher run is not conclusively successful");
+  for (const pkg of state.packages) {
+    if (!await facts.packageVersionExists("shadow", pkg))
+      throw new Error(`shadow package is missing: ${pkg.id}@${pkg.version}`);
+    if (await facts.packageVersionExists("production", pkg))
+      throw new Error(`production package already exists: ${pkg.id}@${pkg.version}`);
+  }
+  const at = now.toISOString();
+  const eventId = sha256({
+    action: "recover-shadow-mode-mismatch-plan",
+    repository,
+    planId,
+    publisherRunId,
+  } as JsonValue) as Sha256;
+  const committed = await transact(store, (current) => {
+    const candidate = current.plans[path];
+    if (!candidate || candidate.revision !== state.revision)
+      throw new StateConflictError("plan changed while mode mismatch facts were observed");
+    const result: PlanStateV1 = {
+      ...candidate,
+      environment: "shadow",
+      evidence: [...candidate.evidence, {
+        kind: "shadow-mode-mismatch-recovery",
+        url: expectedRunUrl,
+        digest: eventId,
+      }],
+      attempts: [...candidate.attempts, {
+        eventId,
+        kind: "recovery",
+        at,
+        outcome: "accepted",
+        detail: RECOVERED_SHADOW_MODE_MISMATCH,
+      }],
+      revision: candidate.revision + 1,
+      updatedAt: at,
+    };
+    assertLegalTransition(candidate, result);
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: committed.plans[path]!, headSha: committed.headSha };
+}
 
 export type FailedShadowRetryFacts = {
   observeRun(entry: PlanDispatchOutbox): Promise<{

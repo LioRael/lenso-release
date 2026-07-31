@@ -72,6 +72,8 @@ function verifyReady(
 ): ReleasePlanV1 {
   assertReleasePlan(facts.plan);
   const plan = facts.plan;
+  if (event.environment !== deps.environment)
+    throw new Error("ready release environment mismatch");
   if (
     event.expectedAppId !== deps.appId ||
     facts.appId !== deps.appId ||

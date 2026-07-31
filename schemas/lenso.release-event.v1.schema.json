@@ -43,14 +43,15 @@
     "registryIntegrity": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{85}[AQgw]==$" }] },
     "planReady": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema", "eventId", "eventType", "issuedAt", "nonce", "sourceRepository", "expectedAppId", "planId", "planUrl", "planSha256", "releaseCommit"],
+      "required": ["schema", "eventId", "eventType", "issuedAt", "nonce", "sourceRepository", "expectedAppId", "planId", "planUrl", "planSha256", "releaseCommit", "environment"],
       "properties": {
         "schema": { "const": "lenso.release-event.v1" }, "eventId": { "$ref": "#/$defs/sha256" },
         "eventType": { "const": "lenso-plan-ready" }, "issuedAt": { "$ref": "#/$defs/timestamp" },
         "nonce": { "type": "string", "minLength": 12 }, "sourceRepository": { "$ref": "#/$defs/nonEmpty" },
         "expectedAppId": { "type": "integer", "minimum": 1 }, "planId": { "$ref": "#/$defs/sha256" },
         "planUrl": { "$ref": "#/$defs/httpsUrl" }, "planSha256": { "$ref": "#/$defs/sha256" },
-        "releaseCommit": { "$ref": "#/$defs/oid" }
+        "releaseCommit": { "$ref": "#/$defs/oid" },
+        "environment": { "enum": ["shadow", "production"] }
       }
     },
     "publishRequested": {

@@ -201,7 +201,7 @@ describe("publish request authentication", () => {
   it("uses the base event validator before request-specific validation", async () => {
     await expect(verify({ ...request(), unexpected: true })).rejects.toThrow("releaseEvent.unexpected is not allowed");
     const { packages: _packages, eventId: _eventId, ...readyIdentity } = request() as Extract<ReleaseEventV1, { eventType: "lenso-publish-requested" }>;
-    const ready = { ...readyIdentity, eventType: "lenso-plan-ready" as const };
+    const ready = { ...readyIdentity, eventType: "lenso-plan-ready" as const, environment: "production" as const };
     await expect(verify({ ...ready, eventId: sha256(ready as JsonValue) })).rejects.toThrow("must be lenso-publish-requested");
   });
 
