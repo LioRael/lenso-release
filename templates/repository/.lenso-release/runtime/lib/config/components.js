@@ -7,7 +7,8 @@ export const COMPONENT_REPOSITORIES = [
     "LioRael/lenso-cli",
     "LioRael/lenso-organization-module",
     "LioRael/lenso-release",
-    "LioRael/lenso-console"
+    "LioRael/lenso-console",
+    "LioRael/lenso-runtime-console"
 ];
 export const COMPONENT_REGISTRIES = ["crates-io", "ghcr", "github-release", "npm"];
 export const RELEASE_GROUPS = [
