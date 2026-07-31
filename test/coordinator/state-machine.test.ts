@@ -1041,6 +1041,18 @@ describe("atomic coordinator state", () => {
     expect(replacement.recovery).toMatchObject({ kind: "production-partial", workflowCommit: "8".repeat(40) });
     expect(superseded.state.packages.every(({ requestEventId }) => requestEventId === replacement.eventId)).toBe(true);
     expect(superseded.state.attempts.at(-1)?.detail).toBe("retried production partial recovery");
+    const replacementState = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
+    const failedRecovery = replacementState.outbox.find(({ status }) => status === "pending")!;
+    failedRecovery.status = "dispatched";
+    failedRecovery.runUrl = "https://github.com/LioRael/lenso/actions/runs/43";
+    failedRecovery.updatedAt = "2026-07-11T00:05:30.000Z";
+    const retriedFailure = await supersedeFailedProductionPartialRecovery(
+      store, failed.repository, failed.planId,
+      { async observeRun() { return { runUrl: failedRecovery.runUrl!, status: "completed", conclusion: "failure" }; } },
+      "7".repeat(40), new Date("2026-07-11T00:06:00Z"), () => "failed-run-retry", 42,
+    );
+    expect(retriedFailure.state.outbox.find(({ eventId }) => eventId === failedRecovery.eventId)).toMatchObject({ status: "dispatched", runUrl: failedRecovery.runUrl });
+    expect(retriedFailure.state.outbox.find(({ status }) => status === "pending")?.recovery).toMatchObject({ workflowCommit: "7".repeat(40) });
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));

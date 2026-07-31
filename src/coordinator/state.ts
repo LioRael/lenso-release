@@ -648,12 +648,18 @@ export async function supersedeFailedProductionPartialRecovery(
   const previous = state.outbox
     .filter(({ recovery }) => recovery?.kind === "production-partial")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
-  if (!previous || previous.status !== "in-flight" || previous.runUrl !== null || !previous.leaseExpiresAt || previous.leaseExpiresAt > now.toISOString())
-    throw new Error("partial recovery dispatch lease is not abandoned");
+  if (!previous || !["in-flight", "dispatched"].includes(previous.status))
+    throw new Error("partial recovery dispatch is not supersedable");
   if (previous.recovery!.workflowCommit === workflowCommit)
     throw new Error("partial recovery workflow commit did not change");
-  if (await facts.observeRun(previous))
-    throw new Error("partial recovery workflow run already exists");
+  const observed = await facts.observeRun(previous);
+  const abandoned = previous.status === "in-flight" && previous.runUrl === null &&
+    Boolean(previous.leaseExpiresAt && previous.leaseExpiresAt <= now.toISOString()) && observed === null;
+  const failed = previous.status === "dispatched" && previous.runUrl !== null &&
+    observed?.runUrl === previous.runUrl && observed.status === "completed" &&
+    ["failure", "cancelled"].includes(observed.conclusion ?? "");
+  if (!abandoned && !failed)
+    throw new Error("partial recovery workflow is not conclusively absent or failed");
   const at = now.toISOString();
   const nonce = nextNonce();
   const identity = {
@@ -680,7 +686,7 @@ export async function supersedeFailedProductionPartialRecovery(
       ...candidate,
       packages: candidate.packages.map((item) => ({ ...item, requestEventId: eventId })),
       attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: RETRIED_PRODUCTION_PARTIAL_RECOVERY }],
-      outbox: candidate.outbox.map((item) => item.eventId === previous.eventId ? { ...item, status: "cancelled" as const, claimOwner: null, leaseExpiresAt: null, updatedAt: at } : item).concat(entry).sort((left, right) => left.eventId.localeCompare(right.eventId)),
+      outbox: candidate.outbox.map((item) => item.eventId === previous.eventId && abandoned ? { ...item, status: "cancelled" as const, claimOwner: null, leaseExpiresAt: null, updatedAt: at } : item).concat(entry).sort((left, right) => left.eventId.localeCompare(right.eventId)),
       revision: candidate.revision + 1, updatedAt: at,
     };
     assertLegalTransition(candidate, result);
