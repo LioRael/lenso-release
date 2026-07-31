@@ -215,13 +215,15 @@ Do not use this path for a partial publication, a plan with accepted receipts, a
 non-Cargo package set, a different component repository, or an unreviewed
 break-glass workflow.
 
-For a production plan that failed after publishing only part of an atomic mixed
-package set, use the reviewed `recover-failed-production-partial-plan` workflow:
+For a production plan that failed after publishing one or more artifacts of an
+atomic mixed package set without emitting receipts, use the reviewed
+`recover-failed-production-partial-plan` workflow:
 
 1. The coordinator requires the original publisher and every prior partial
    recovery to be conclusively failed or cancelled, requires no accepted
-   receipts, and independently observes a non-empty strict subset of the planned
-   versions in public registries.
+   receipts, and independently observes a non-empty set of the planned versions
+   in public registries. The set may contain every planned version when registry
+   propagation completed after the publisher's visibility window expired.
 2. Recovery is allowed only when every Cargo package already exists. A missing
    Cargo version fails closed because crates.io trusted publishing is reserved
    for the normal reviewed publisher.
@@ -235,7 +237,9 @@ package set, use the reviewed `recover-failed-production-partial-plan` workflow:
    rebuilds every package, and matches existing registry bytes before creating
    an official GitHub provenance attestation.
 5. The component publishes only versions still absent from the registry and
-   submits receipts for both the pre-existing and newly published artifacts.
+   submits receipts for both the pre-existing and newly published artifacts. If
+   every version already exists, recovery performs byte verification and receipt
+   submission without requesting a registry credential or uploading a package.
    It never requests a Cargo credential or overwrites an immutable version.
    If publication succeeds but registry propagation exceeds the workflow's
    visibility window, do not republish. After the failed run is conclusive, the
