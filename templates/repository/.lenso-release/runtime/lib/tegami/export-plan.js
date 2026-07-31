@@ -355,6 +355,41 @@ async function restoreSnapshot(cwd, snapshot) {
         }
     }
 }
+async function restoreIgnoredPackageFiles(options, packages, snapshot) {
+    const ignored = new Set(options.ignore ?? []);
+    const restore = new Map();
+    for (const pkg of packages.values()) {
+        if (!ignored.has(pkg.id) && !ignored.has(pkg.name))
+            continue;
+        for (const path of [
+            join(pkg.path, pkg.manager === "cargo" ? "Cargo.toml" : "package.json"),
+            join(pkg.path, "CHANGELOG.md"),
+        ]) {
+            if (snapshot.has(path))
+                restore.set(path, snapshot.get(path));
+        }
+    }
+    await restoreSnapshot(options.cwd, restore);
+}
+async function preserveHistoricalChangelogs(options, releasePackages, packages, snapshot) {
+    const paths = new Set(releasePackages.map((item) => {
+        const pkg = packages.get(sourceId(options, item.id));
+        if (!pkg)
+            fail(`applied package ${item.id} was not captured`);
+        return join(pkg.path, "CHANGELOG.md");
+    }));
+    for (const path of paths) {
+        const before = snapshot.get(path);
+        if (!before || before.length === 0)
+            continue;
+        const after = await safeRead(options.cwd, path);
+        if (after.indexOf(before) !== -1)
+            continue;
+        const separator = after.length === 0 || after.toString("utf8").endsWith("\n\n") ? Buffer.alloc(0)
+            : after.toString("utf8").endsWith("\n") ? Buffer.from("\n") : Buffer.from("\n\n");
+        await restoreSnapshot(options.cwd, new Map([[path, Buffer.concat([after, separator, before])]]));
+    }
+}
 async function verifyApplied(options, releasePackages, packages) {
     const { cwd } = options;
     const lock = await lstat(join(cwd, ".tegami/publish-lock.yaml"));
@@ -527,6 +562,8 @@ export async function exportReleasePlan(options) {
     const snapshot = await snapshotWorkspace(options.cwd, captured.values());
     try {
         await draft.apply();
+        await restoreIgnoredPackageFiles(options, captured, snapshot);
+        await preserveHistoricalChangelogs(options, pending, captured, snapshot);
         const observations = new Map();
         for (const item of pending) {
             const pkg = captured.get(sourceId(options, item.id));
