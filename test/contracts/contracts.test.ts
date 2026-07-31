@@ -93,23 +93,23 @@ const npmIntegrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
 const npmReceipt = {
   ...receipt,
   receiptId: sha("c"),
-  packageId: "npm:@lenso/runtime-console-api",
+  packageId: "npm:@lenso/console-bridge",
   version: "0.5.0",
   registryIntegrity: npmIntegrity,
-  registryUrl: "https://registry.npmjs.org/@lenso/runtime-console-api/-/runtime-console-api-0.5.0.tgz",
+  registryUrl: "https://registry.npmjs.org/@lenso/console-bridge/-/console-bridge-0.5.0.tgz",
   provenanceSubject: {
-    name: "runtime-console-api-0.5.0.tgz",
+    name: "console-bridge-0.5.0.tgz",
     digest: receipt.packedSha256,
   },
 };
 const artifactReceipt = {
   ...receipt,
   receiptId: sha("a"),
-  packageId: "artifact:lenso-runtime-console",
+  packageId: "artifact:hosted-dashboard",
   registryIntegrity: sha("e"),
-  registryUrl: "https://github.com/LioRael/lenso-console/releases/download/v0.1.2/lenso-runtime-console.tar.gz",
+  registryUrl: "https://github.com/Example/hosted-dashboard/releases/download/v0.1.2/hosted-dashboard.tar.gz",
   provenanceSubject: {
-    name: "lenso-runtime-console-0.1.2.tar.gz",
+    name: "hosted-dashboard-0.1.2.tar.gz",
     digest: sha("e"),
   },
 };
@@ -438,7 +438,7 @@ describe("public release contracts", () => {
       ...release,
       packages: [{
         ...release.packages[0],
-        id: "npm:@lenso/runtime-console-api",
+        id: "npm:@lenso/console-bridge",
         registryIntegrity: npmIntegrity,
       }],
     })).not.toThrow();

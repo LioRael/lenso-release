@@ -253,12 +253,12 @@ async function sourceVersion(root: string, id: string): Promise<VersionObservati
         if (manifest.name === name && typeof manifest.version === "string") return manifest.version;
       } catch { /* continue to the next checkout manifest */ }
     }
-  } else if ((kind === "artifact" && name === "lenso-runtime-console") || (kind === "oci" && name === "lenso-console-service")) {
+  } else if (kind === "oci" && name === "lenso-console-service") {
     for (const path of await findFiles(root, "package.json")) {
       try {
         const manifest = JSON.parse(await readFile(path, "utf8")) as { name?: unknown; version?: unknown };
         if (
-          (manifest.name === "@lenso/console" || manifest.name === "@lenso/runtime-console")
+          manifest.name === "@lenso/console"
           && typeof manifest.version === "string"
         ) return manifest.version;
       } catch { /* continue */ }
