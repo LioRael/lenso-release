@@ -64,6 +64,10 @@ const PACKAGE_REQUIRED_KEYS = new Set([...PACKAGE_KEYS].filter((key) => key !== 
 const REPOSITORY_SET = new Set<string>(COMPONENT_REPOSITORIES);
 const REGISTRY_SET = new Set<string>(COMPONENT_REGISTRIES);
 const RELEASE_GROUP_SET = new Set<string>(RELEASE_GROUPS);
+const NON_PUBLISHABLE_COMPONENTS = new Set<ComponentId>([
+  "cargo:lenso-operator",
+  "cargo:provider-fixture"
+]);
 const COMPONENT_ID = /^(?:cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0-9]+)*|artifact:[a-z0-9]+(?:-[a-z0-9]+)*|oci:[a-z0-9]+(?:-[a-z0-9]+)*|catalog:[a-z0-9]+(?:-[a-z0-9]+)*)$/u;
 
 function fail(message: string): never {
@@ -136,7 +140,7 @@ function parseComponent(value: unknown, index: number): Component {
   if (id.startsWith("oci:") ? !registryPath || !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(registryPath) || registryPath.includes("..") : registryPath !== undefined) fail(`${id} has an inconsistent registryPath`);
 
   const publishable = boolean(raw.publishable, `${id}.publishable`);
-  if ((id === "cargo:lenso-operator") === publishable) {
+  if (NON_PUBLISHABLE_COMPONENTS.has(id) === publishable) {
     fail(`${id} has an inconsistent publishable value`);
   }
 
