@@ -28,6 +28,8 @@ const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
 export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
   "authorized production break-glass recovery";
+export const RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
+  "retried authorized production break-glass recovery";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -442,7 +444,10 @@ export function assertLegalTransition(
   const breakGlassAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" &&
     outcome === "accepted" &&
-    detail === AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY
+    (
+      detail === AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY ||
+      detail === RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY
+    )
   );
   const retryOutbox = retryAttempt
     ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)

@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -93,6 +93,42 @@ describe("production coordinator adapters", () => {
     expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+  });
+  it("retries only an exact conclusively failed recovery run", () => {
+    const sha = "2".repeat(40);
+    const eventId = `sha256:${"a".repeat(64)}`;
+    const run = {
+      event: "workflow_dispatch",
+      path: ".github/workflows/publish.yml",
+      display_title: `lenso-publish-requested:${eventId}`,
+      head_branch: "main",
+      head_sha: sha,
+      repository: { full_name: "LioRael/lenso" },
+      status: "completed",
+      conclusion: "failure",
+    };
+    const jobs = [
+      { name: "recover", status: "completed", conclusion: "failure" },
+      { name: "publish", status: "completed", conclusion: "skipped" },
+    ];
+    expect(trustedFailedRecoveryRun(
+      run,
+      jobs,
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      "main",
+      sha,
+      eventId,
+    )).toBe(true);
+    expect(trustedFailedRecoveryRun(
+      { ...run, conclusion: "cancelled" },
+      jobs,
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      "main",
+      sha,
+      eventId,
+    )).toBe(false);
   });
   it("binds production break-glass evidence to the exact legacy release run", () => {
     const releaseCommit = "2".repeat(40);

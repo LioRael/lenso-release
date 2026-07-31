@@ -19,7 +19,10 @@ import {
 import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
-import { authorizeProductionBreakGlassRecovery } from "./break-glass-recovery.js";
+import {
+  authorizeProductionBreakGlassRecovery,
+  retryProductionBreakGlassRecovery,
+} from "./break-glass-recovery.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -188,6 +191,32 @@ export function trustedRecoveryRun(
     && (comparison.status === "ahead" || comparison.status === "identical")
     && baseCommit?.sha === run.head_sha
     && mergeBase?.sha === run.head_sha;
+}
+
+export function trustedFailedRecoveryRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  workflow: string,
+  branch: string,
+  workflowCommit: string,
+  eventId: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const recovery = jobs.find((job) => job.name === "recover");
+  const publish = jobs.find((job) => job.name === "publish");
+  return run.event === "workflow_dispatch" &&
+    run.path === workflow &&
+    run.display_title === `lenso-publish-requested:${eventId}` &&
+    runRepository?.full_name === repository &&
+    run.head_branch === branch &&
+    run.head_sha === workflowCommit &&
+    run.status === "completed" &&
+    run.conclusion === "failure" &&
+    recovery?.status === "completed" &&
+    recovery.conclusion === "failure" &&
+    publish?.status === "completed" &&
+    publish.conclusion === "skipped";
 }
 
 export function trustedRecoveryProvenanceRun(
@@ -967,29 +996,110 @@ export async function createCoordinatorHandlers(
       const snapshot = await input.store.readSnapshot();
       const state = snapshot.plans[planStatePath(repository, planId)];
       if (!state) throw new Error("plan state not found");
-      const existing = state.outbox.find(
-        (entry) =>
-          entry.recovery?.kind === "production-break-glass" &&
-          entry.recovery.authorizedRunUrl ===
-            `https://github.com/${repository}/actions/runs/${breakGlassRunId}`,
-      );
-      if (existing) {
-        return runDispatchOutbox(
-          input.store,
-          repository,
-          planId,
-          input.dispatcher,
-          input.tokens,
-          now,
-        );
-      }
-
       const token = await input.tokens.tokenFor(repository, {
         actions: "read",
         contents: "read",
         metadata: "read",
       });
       const githubApi = `https://api.github.com/repos/${repository}`;
+      const authorizedRunUrl =
+        `https://github.com/${repository}/actions/runs/${breakGlassRunId}`;
+      const existing = state.outbox
+        .filter(
+          (entry) =>
+            entry.recovery?.kind === "production-break-glass" &&
+            entry.recovery.authorizedRunUrl === authorizedRunUrl,
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (existing) {
+        if (existing.status !== "dispatched" || existing.runUrl === null) {
+          return runDispatchOutbox(
+            input.store,
+            repository,
+            planId,
+            input.dispatcher,
+            input.tokens,
+            now,
+          );
+        }
+        const failedRunId =
+          /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)$/u
+            .exec(existing.runUrl)?.[1];
+        if (!failedRunId)
+          throw new Error("recovery workflow URL is invalid");
+        const [failedRun, failedJobsResponse, repositoryMetadata] =
+          await Promise.all([
+            githubJson(`${githubApi}/actions/runs/${failedRunId}`, token),
+            githubJson(
+              `${githubApi}/actions/runs/${failedRunId}/jobs?per_page=100`,
+              token,
+            ),
+            githubJson(githubApi, token),
+          ]);
+        const failedJobs = Array.isArray(failedJobsResponse.jobs)
+          ? failedJobsResponse.jobs as Record<string, unknown>[]
+          : [];
+        if (
+          !trustedFailedRecoveryRun(
+            failedRun,
+            failedJobs,
+            repository,
+            existing.workflow,
+            existing.ref,
+            existing.recovery!.workflowCommit,
+            existing.eventId,
+          )
+        )
+          throw new Error(
+            "existing break-glass recovery is not conclusively failed",
+          );
+        const defaultBranch = String(repositoryMetadata.default_branch);
+        const defaultRef = await githubJson(
+          `${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+          token,
+        );
+        const workflowCommit = String(
+          (defaultRef.object as Record<string, unknown>).sha,
+        );
+        if (!/^[0-9a-f]{40}$/u.test(workflowCommit))
+          throw new Error("recovery workflow commit is invalid");
+        const planBytes = await githubBytes(
+          repository,
+          planPath,
+          state.releaseCommit,
+          token,
+        );
+        const plan = JSON.parse(
+          Buffer.from(planBytes).toString("utf8"),
+        ) as ReleasePlanV1;
+        assertReleasePlan(plan);
+        const retried = await retryProductionBreakGlassRecovery(
+          input.store,
+          {
+            repository,
+            planId: planId as `sha256:${string}`,
+            plan,
+            defaultBranch,
+            workflowCommit,
+            authorizedRunUrl,
+            authorizedRunSha256:
+              existing.recovery!.authorizedRunSha256,
+            now: now(),
+            nonce: nonce(),
+            appId: input.config.appId,
+          },
+          existing.eventId,
+        );
+        return runDispatchOutbox(
+          input.store,
+          retried.state.repository,
+          retried.state.planId,
+          input.dispatcher,
+          input.tokens,
+          now,
+        );
+      }
+
       const run = await githubJson(
         `${githubApi}/actions/runs/${breakGlassRunId}`,
         token,
