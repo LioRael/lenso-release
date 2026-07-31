@@ -72,7 +72,7 @@ jobs:
           pnpm run --if-present build
       - name: Resolve authoritative failed run
         id: failed-run
-        env: &recovery-environment
+        env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
           INPUT_PLAN_ID: ${{ inputs.plan_id }}
           INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
@@ -95,7 +95,18 @@ jobs:
           path: recovery-candidate/vendor
           merge-multiple: true
       - name: Rebuild and verify the partial package set
-        env: *recovery-environment
+        env:
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          LENSO_WORKFLOW_PATH: .github/workflows/recover-partial-production.yml
+          RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js recover-partial-prepare
       - name: Attest verified recovery archives
         id: recovery-attestation
@@ -107,7 +118,17 @@ jobs:
         id: crates-auth
       - name: Publish only missing packages and submit receipts
         env:
-          <<: *recovery-environment
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          LENSO_WORKFLOW_PATH: .github/workflows/recover-partial-production.yml
+          RUNNER_IMAGE: ubuntu-24.04
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
