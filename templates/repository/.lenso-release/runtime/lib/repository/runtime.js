@@ -1173,7 +1173,7 @@ export async function recoverPublished(environment) {
             reviewed: hash(artifact.bytes),
             registry: hash(observed.bytes),
         });
-        const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
+        const receipt = receiptFor(plan, item, observed, provenanceUrl, environment, basename(artifact.path));
         assertComponentReceipt(receipt);
         await createImmutableTag(receipt, environment);
         await dispatchReceipt(receipt, environment);

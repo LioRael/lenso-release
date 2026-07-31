@@ -1107,6 +1107,7 @@ export async function recoverPublished(
       observed as Required<Omit<RegistryObservation, "exists">>,
       provenanceUrl,
       environment,
+      basename(artifact.path),
     );
     assertComponentReceipt(receipt);
     await createImmutableTag(receipt, environment);
