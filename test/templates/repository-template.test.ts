@@ -33,6 +33,41 @@ afterEach(async () => {
 });
 async function temp(): Promise<string> { const path = await mkdtemp(join(tmpdir(), "lenso-template-test-")); temporary.push(path); return path; }
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+function cargoLockArchive(checksum: string, suffix = ""): Buffer {
+  const content = Buffer.from(`version = 4\nchecksum = "${checksum}"\n${suffix}`);
+  const header = Buffer.alloc(512);
+  const octal = (value: number, offset: number, length: number): void => {
+    header.write(
+      `${value.toString(8).padStart(length - 1, "0")}\0`,
+      offset,
+      length,
+      "ascii",
+    );
+  };
+  header.write("fixture-1.0.0/Cargo.lock", 0, "utf8");
+  octal(420, 100, 8);
+  octal(0, 108, 8);
+  octal(0, 116, 8);
+  octal(content.length, 124, 12);
+  octal(0, 136, 12);
+  header.fill(32, 148, 156);
+  header[156] = 48;
+  header.write("ustar\0", 257, "ascii");
+  header.write("00", 263, "ascii");
+  const checksumValue = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(
+    `${checksumValue.toString(8).padStart(6, "0")}\0 `,
+    148,
+    8,
+    "ascii",
+  );
+  const padding = Buffer.alloc(
+    Math.ceil(content.length / 512) * 512 - content.length,
+  );
+  return gzipSync(
+    Buffer.concat([header, content, padding, Buffer.alloc(1024)]),
+  );
+}
 
 describe("npm shadow registry authentication", () => {
   it("normalizes the registry and token scope to the same trailing-slash path", () => {
@@ -112,6 +147,23 @@ describe("Cargo recovery archive equivalence", () => {
       gzipSync(Buffer.from("different tar bytes"), { level: 9 }),
     )).toBe(false);
     expect(cargoArchiveEquivalent(first, Buffer.from("not gzip"))).toBe(false);
+  });
+
+  it("normalizes only an exact dependency checksum inside Cargo.lock", () => {
+    const reviewed = "a".repeat(64);
+    const registry = "b".repeat(64);
+    const reviewedArchive = cargoLockArchive(reviewed);
+    const registryArchive = cargoLockArchive(registry);
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive)).toBe(false);
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive, [{
+      reviewed: `sha256:${reviewed}`,
+      registry: `sha256:${registry}`,
+    }])).toBe(true);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed, "reviewed"),
+      cargoLockArchive(registry, "different"),
+      [{ reviewed: `sha256:${reviewed}`, registry: `sha256:${registry}` }],
+    )).toBe(false);
   });
 });
 
