@@ -141,7 +141,7 @@ function normalizeCargoLockChecksums(
       cursor = found + needle.length;
       matches += 1;
     }
-    if (matches !== 1) throw new Error("Cargo.lock checksum substitution is missing or ambiguous");
+    if (matches > 1) throw new Error("Cargo.lock checksum substitution is ambiguous");
   }
   return normalized;
 }

@@ -190,6 +190,35 @@ describe("Cargo recovery archive equivalence", () => {
       },
     ])).toBe(true);
   });
+
+  it("ignores verified prior checksums absent from the current Cargo.lock", () => {
+    const reviewed = "a".repeat(64);
+    const registry = "b".repeat(64);
+    const unrelatedReviewed = "c".repeat(64);
+    const unrelatedRegistry = "d".repeat(64);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed),
+      cargoLockArchive(registry),
+      [
+        {
+          reviewed: `sha256:${reviewed}`,
+          registry: `sha256:${registry}`,
+        },
+        {
+          reviewed: `sha256:${unrelatedReviewed}`,
+          registry: `sha256:${unrelatedRegistry}`,
+        },
+      ],
+    )).toBe(true);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed),
+      cargoLockArchive(registry),
+      [{
+        reviewed: `sha256:${unrelatedReviewed}`,
+        registry: `sha256:${unrelatedRegistry}`,
+      }],
+    )).toBe(false);
+  });
 });
 
 async function assertVendorLicenses(modules: string): Promise<void> {
