@@ -231,7 +231,9 @@ atomic mixed package set without emitting receipts, use the reviewed
    component's reviewed `publish.yml` from the current default-branch commit.
    The normal `publish` job remains restricted to the protected execution ref;
    the partial recovery job runs only on the default branch for a package set
-   containing npm or OCI artifacts.
+   containing npm or OCI artifacts. Replaying the authorization workflow resumes
+   an already recorded pending or in-flight outbox entry instead of minting a new
+   authorization; this covers temporary release-state read-after-write lag.
 4. The component resolves the authoritative failed publisher, re-downloads its
    release artifacts where required, checks out the reviewed release commit,
    rebuilds every package, and matches existing registry bytes before creating
