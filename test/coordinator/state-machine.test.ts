@@ -1035,6 +1035,7 @@ describe("atomic coordinator state", () => {
     expect(replayed.state).toEqual(recovered.state);
     const stored = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
     const abandoned = stored.outbox.find(({ recovery }) => recovery?.kind === "production-partial")!;
+    abandoned.workflow = ".github/workflows/recover-partial-production.yml";
     abandoned.status = "in-flight";
     abandoned.claimOwner = "claim";
     abandoned.leaseExpiresAt = "2026-07-11T00:04:00.000Z";
@@ -1042,11 +1043,12 @@ describe("atomic coordinator state", () => {
     const superseded = await supersedeFailedProductionPartialRecovery(
       store, failed.repository, failed.planId,
       { async observeRun() { return null; } },
-      "8".repeat(40), new Date("2026-07-11T00:05:00Z"), () => "supersede-nonce", 42,
+      "9".repeat(40), new Date("2026-07-11T00:05:00Z"), () => "supersede-nonce", 42,
     );
     expect(superseded.state.outbox.find(({ eventId }) => eventId === abandoned.eventId)).toMatchObject({ status: "cancelled", runUrl: null });
     const replacement = superseded.state.outbox.find(({ status }) => status === "pending")!;
-    expect(replacement.recovery).toMatchObject({ kind: "production-partial", workflowCommit: "8".repeat(40) });
+    expect(replacement.workflow).toBe(".github/workflows/publish.yml");
+    expect(replacement.recovery).toMatchObject({ kind: "production-partial", workflowCommit: "9".repeat(40) });
     expect(superseded.state.packages.every(({ requestEventId }) => requestEventId === replacement.eventId)).toBe(true);
     expect(superseded.state.attempts.at(-1)?.detail).toBe("retried production partial recovery");
     const replacementState = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
@@ -1060,7 +1062,10 @@ describe("atomic coordinator state", () => {
       "7".repeat(40), new Date("2026-07-11T00:06:00Z"), () => "failed-run-retry", 42,
     );
     expect(retriedFailure.state.outbox.find(({ eventId }) => eventId === failedRecovery.eventId)).toMatchObject({ status: "dispatched", runUrl: failedRecovery.runUrl });
-    expect(retriedFailure.state.outbox.find(({ status }) => status === "pending")?.recovery).toMatchObject({ workflowCommit: "7".repeat(40) });
+    expect(retriedFailure.state.outbox.find(({ status }) => status === "pending")).toMatchObject({
+      workflow: ".github/workflows/publish.yml",
+      recovery: { workflowCommit: "7".repeat(40) },
+    });
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));
