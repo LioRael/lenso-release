@@ -297,6 +297,7 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("if: ${{ hashFiles('.lenso-release/plan.json') != '' && hashFiles('.tegami/*.md') == '' }}");
     expect(source).toContain("if: ${{ hashFiles('.tegami/*.md') != '' }}");
     expect(source).toContain("if: ${{ steps.draft.outputs.created == 'true' }}");
+    expect(source).toContain("if [[ -f Cargo.toml ]]");
     expect(source).toContain("cargo fetch --locked");
     expect(source).not.toContain("cache: pnpm");
     expect(source).toContain("curl --fail-with-body --proto '=https'");
