@@ -886,32 +886,10 @@ async function createAttestation(artifactPath, artifactBytes, environment) {
             fail("shadow attestation URL is invalid");
         return result.url;
     }
-    let cleanup;
-    if (!artifactPath) {
-        cleanup = await mkdtemp(join(tmpdir(), "lenso-recovery-"));
-        artifactPath = join(cleanup, "artifact");
-        const handle = await open(artifactPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-        try {
-            await handle.writeFile(artifactBytes);
-        }
-        finally {
-            await handle.close();
-        }
-    }
-    try {
-        const token = process.env.LENSO_ATTESTATION_TOKEN;
-        if (!token)
-            fail("workflow attestation token is required");
-        const { stdout } = await execFile("gh", ["attestation", "sign", artifactPath, "--repo", environment.repository], { env: { ...process.env, GH_TOKEN: token } });
-        const url = /https:\/\/github\.com\/[^\s]+/u.exec(stdout)?.[0];
-        if (!url)
-            fail("attestation URL missing");
-        return url;
-    }
-    finally {
-        if (cleanup)
-            await rm(cleanup, { recursive: true, force: true });
-    }
+    const value = process.env.LENSO_PUBLISH_ATTESTATION_URL;
+    if (!value)
+        fail("official publish attestation URL is required");
+    return validateOfficialAttestationUrl(value, environment.repository);
 }
 function receiptFor(plan, item, observation, provenanceUrl, environment, subjectName, tagName) {
     const componentName = item.id.startsWith("npm:@lenso/") ? item.id.slice("npm:@lenso/".length) : item.id.slice(item.id.indexOf(":") + 1);
@@ -1026,7 +1004,7 @@ async function readRecoveryState(environment) {
         cause: lastError,
     });
 }
-export async function verifyRecoveryAuthorization(environment) {
+export async function verifyRecoveryAuthorization(environment, expectedKind = "production-break-glass") {
     if (process.env.LENSO_RELEASE_MODE !== "production")
         fail("break-glass recovery is production-only");
     const state = await readRecoveryState(environment);
@@ -1044,12 +1022,15 @@ export async function verifyRecoveryAuthorization(environment) {
     if (entry?.ref !== environment.refName ||
         entry.workflow !== environment.workflowPath ||
         entry.runUrl !== environment.runUrl ||
-        recovery?.kind !== "production-break-glass" ||
+        recovery?.kind !== expectedKind ||
         recovery.workflowCommit !== environment.githubSha ||
-        !/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u
-            .test(String(recovery.authorizedRunUrl)) ||
-        !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256)))
-        fail("authoritative break-glass recovery authorization mismatch");
+        (expectedKind === "production-break-glass" &&
+            (!/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.authorizedRunUrl)) ||
+                !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256)))) ||
+        (expectedKind === "production-partial" &&
+            (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.failedRunUrl)) ||
+                !Array.isArray(recovery.publishedPackages))))
+        fail("authoritative recovery authorization mismatch");
     const selected = JSON.stringify(environment.packages.map(({ id, version }) => ({ id, version })));
     if (JSON.stringify(entry.packages) !== selected ||
         entry.inputs?.event_id !==
@@ -1067,8 +1048,8 @@ export async function verifyRecoveryAuthorization(environment) {
         fail("authoritative recovery outbox payload mismatch");
     return recovery;
 }
-async function recoveryPlan(environment) {
-    await verifyRecoveryAuthorization(environment);
+async function recoveryPlan(environment, expectedKind = "production-break-glass") {
+    await verifyRecoveryAuthorization(environment, expectedKind);
     const candidateEnvironment = {
         ...environment,
         githubSha: environment.releaseCommit,
@@ -1083,7 +1064,104 @@ async function recoveryPlan(environment) {
         candidatePlan.repository !== candidateEnvironment.repository)
         fail("plan identity mismatch");
     exactSelection(candidatePlan, candidateEnvironment.packages);
+    candidateEnvironment.workflowPath = candidatePlan.publisher.workflow;
     return { candidateEnvironment, plan: candidatePlan };
+}
+async function partialRecoveryArtifacts(environment, plan, publishedPackages, writeSubjects) {
+    await stageCargoArchives(environment.cwd, plan, environment.packages);
+    const published = new Set(publishedPackages.map(({ id, version }) => `${id}\0${version}`));
+    const artifacts = new Map();
+    const subjectDirectory = join(environment.cwd, "target/recovery-attestations");
+    if (writeSubjects)
+        await mkdir(subjectDirectory, { recursive: true, mode: 0o700 });
+    for (const item of publicationOrder(plan, environment.packages)) {
+        if (!item.id.startsWith("cargo:") && !item.id.startsWith("npm:"))
+            fail("partial recovery currently supports Cargo and npm packages only");
+        const artifact = await packedArtifact(environment.cwd, item);
+        const name = item.id.slice(item.id.indexOf(":") + 1);
+        const observed = item.id.startsWith("cargo:")
+            ? await cargoObservation(name, item.version)
+            : await npmObservation(name, item.version);
+        const expectedPublished = published.has(`${item.id}\0${item.version}`);
+        if (observed.exists !== expectedPublished)
+            fail(`registry state changed after partial recovery authorization: ${item.id}`);
+        let subjectBytes = artifact.bytes;
+        if (observed.exists) {
+            if (!observed.bytes || !observed.integrity)
+                fail(`published package observation is incomplete: ${item.id}`);
+            const matches = item.id.startsWith("cargo:")
+                ? cargoArchiveEquivalent(artifact.bytes, observed.bytes)
+                : hash(artifact.bytes) === hash(observed.bytes);
+            if (!matches)
+                fail(`registry archive differs from reviewed artifact: ${item.id}`);
+            subjectBytes = Buffer.from(observed.bytes);
+        }
+        const cargoMetadata = item.id.startsWith("cargo:")
+            ? await cargoWireMetadataFromCrate(artifact.path, name, item.version)
+            : null;
+        const recovered = { path: artifact.path, bytes: subjectBytes, cargoMetadata, oci: null };
+        artifacts.set(`${item.id}\0${item.version}`, recovered);
+        if (writeSubjects) {
+            const subject = join(subjectDirectory, basename(artifact.path));
+            const handle = await open(subject, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+            try {
+                await handle.writeFile(subjectBytes);
+            }
+            finally {
+                await handle.close();
+            }
+        }
+    }
+    return artifacts;
+}
+export async function preparePartialRecovery(environment) {
+    const authorization = await verifyRecoveryAuthorization(environment, "production-partial");
+    const { candidateEnvironment, plan } = await recoveryPlan(environment, "production-partial");
+    const phases = publisherPackagePhases(candidateEnvironment.packages, plan, "recovery");
+    for (const packages of phases)
+        await preflight({ ...candidateEnvironment, packages });
+    await partialRecoveryArtifacts(environment, plan, authorization.publishedPackages, true);
+}
+export async function recoverPartialPublished(environment) {
+    const authorization = await verifyRecoveryAuthorization(environment, "production-partial");
+    const { plan } = await recoveryPlan(environment, "production-partial");
+    const artifacts = await partialRecoveryArtifacts(environment, plan, authorization.publishedPackages, false);
+    const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+    const fixedGroup = selectedFixedGroup(config, environment.packages);
+    const provenanceUrl = recoveryAttestationUrl(environment);
+    const receipts = [];
+    for (const item of publicationOrder(plan, environment.packages)) {
+        const artifact = artifacts.get(`${item.id}\0${item.version}`);
+        if (!artifact)
+            fail("recovery artifact is missing");
+        const name = item.id.slice(item.id.indexOf(":") + 1);
+        const observe = () => item.id.startsWith("cargo:") ? cargoObservation(name, item.version) : npmObservation(name, item.version);
+        let observed = await observe();
+        if (!observed.exists) {
+            await publishOnce(environment, item, artifact);
+            observed = await observe();
+        }
+        if (!observed.exists || !observed.bytes || !observed.integrity || !observed.url || !observed.publishedAt)
+            fail(`recovered package is not registry-visible: ${item.id}`);
+        const matches = item.id.startsWith("cargo:")
+            ? cargoArchiveEquivalent(artifact.bytes, observed.bytes)
+            : hash(artifact.bytes) === hash(observed.bytes);
+        if (!matches)
+            fail(`recovered registry archive differs from reviewed artifact: ${item.id}`);
+        const receipt = receiptFor(plan, item, observed, provenanceUrl, environment, basename(artifact.path), fixedGroup ? `${fixedGroup.name}@${fixedGroup.version}` : undefined);
+        assertComponentReceipt(receipt);
+        if (!fixedGroup) {
+            await createImmutableTag(receipt, environment);
+            await dispatchReceipt(receipt, environment);
+        }
+        receipts.push(receipt);
+    }
+    if (fixedGroup) {
+        await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
+        for (const receipt of receipts)
+            await dispatchReceipt(receipt, environment);
+    }
+    return receipts;
 }
 export async function prepareRecovery(environment) {
     const { candidateEnvironment, plan: candidatePlan } = await recoveryPlan(environment);
@@ -1130,7 +1208,7 @@ export async function prepareRecovery(environment) {
         }
     }
 }
-export function validateRecoveryAttestationUrl(value, repository) {
+export function validateOfficialAttestationUrl(value, repository) {
     const url = new URL(value);
     if (url.origin !== "https://github.com" ||
         url.username ||
@@ -1138,9 +1216,10 @@ export function validateRecoveryAttestationUrl(value, repository) {
         url.search ||
         url.hash ||
         !url.pathname.startsWith(`/${repository}/attestations/`))
-        fail("official recovery attestation URL is invalid");
+        fail("official attestation URL is invalid");
     return url.toString();
 }
+export const validateRecoveryAttestationUrl = validateOfficialAttestationUrl;
 function recoveryAttestationUrl(environment) {
     const value = process.env.LENSO_RECOVERY_ATTESTATION_URL;
     if (!value)

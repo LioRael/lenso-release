@@ -111,12 +111,19 @@ export type PlanDispatchOutbox = {
   nonce: string;
   ref: string;
   workflow: string;
-  recovery?: {
-    kind: "production-break-glass";
-    authorizedRunUrl: string;
-    authorizedRunSha256: Sha256;
-    workflowCommit: GitOid;
-  };
+  recovery?:
+    | {
+        kind: "production-break-glass";
+        authorizedRunUrl: string;
+        authorizedRunSha256: Sha256;
+        workflowCommit: GitOid;
+      }
+    | {
+        kind: "production-partial";
+        failedRunUrl: string;
+        workflowCommit: GitOid;
+        publishedPackages: EventPackage[];
+      };
   packages: EventPackage[];
   inputs: Record<"event_id" | "plan_id" | "plan_sha256" | "release_commit" | "packages_json" | "nonce", string>;
   status: "pending" | "in-flight" | "dispatched" | "cancelled";

@@ -1,0 +1,115 @@
+name: Recover partially published production plan
+run-name: lenso-publish-requested:${{ inputs.event_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      event_id: { required: true, type: string }
+      plan_id: { required: true, type: string }
+      plan_sha256: { required: true, type: string }
+      release_commit: { required: true, type: string }
+      packages_json: { required: true, type: string }
+      nonce: { required: true, type: string }
+permissions: {}
+concurrency:
+  group: lenso-partial-recovery-${{ inputs.plan_id }}
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b
+        id: app
+        with:
+          app-id: ${{ vars.LENSO_RELEASE_APP_ID }}
+          private-key: ${{ secrets.LENSO_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            lenso-release
+          permission-actions: read
+          permission-contents: write
+          permission-metadata: read
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: recovery-candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Enforce production recovery mode
+        env:
+          REQUESTED_MODE: ${{ vars.LENSO_RELEASE_MODE }}
+          LENSO_SHADOW_NPM_REGISTRY_URL: ${{ vars.LENSO_SHADOW_NPM_REGISTRY_URL }}
+          LENSO_SHADOW_CRATES_API_URL: ${{ vars.LENSO_SHADOW_CRATES_API_URL }}
+          LENSO_SHADOW_CRATES_UPLOAD_URL: ${{ vars.LENSO_SHADOW_CRATES_UPLOAD_URL }}
+          LENSO_SHADOW_GITHUB_API_URL: ${{ vars.LENSO_SHADOW_GITHUB_API_URL }}
+          LENSO_SHADOW_ATTESTATION_URL: ${{ vars.LENSO_SHADOW_ATTESTATION_URL }}
+        run: |
+          node scripts/release-mode.mjs >> "$GITHUB_ENV"
+          test "${REQUESTED_MODE}" = production
+      - uses: pnpm/action-setup@f2b2b233b538f500472c7274c7012f57857d8ce0
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+      - name: Install reviewed recovery toolchains
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          npm install --global npm@11.7.0
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          cd recovery-candidate
+          pnpm install --frozen-lockfile
+          pnpm run --if-present build
+      - name: Resolve authoritative failed run
+        id: failed-run
+        env: &recovery-environment
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          LENSO_WORKFLOW_PATH: .github/workflows/recover-partial-production.yml
+          RUNNER_IMAGE: ubuntu-24.04
+        run: echo "run-id=$(node .lenso-release/runtime/lib/repository/cli.js recover-partial-failed-run-id)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: github.repository == 'LioRael/lenso-cli'
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.failed-run.outputs.run-id }}
+          pattern: lenso-cli-*
+          path: recovery-candidate/vendor
+          merge-multiple: true
+      - name: Rebuild and verify the partial package set
+        env: *recovery-environment
+        run: node .lenso-release/runtime/lib/repository/cli.js recover-partial-prepare
+      - name: Attest verified recovery archives
+        id: recovery-attestation
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: ${{ github.workspace }}/recovery-candidate/target/recovery-attestations/*
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+        if: contains(inputs.packages_json, 'cargo:')
+        id: crates-auth
+      - name: Publish only missing packages and submit receipts
+        env:
+          <<: *recovery-environment
+          LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
+          LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+          NODE_AUTH_TOKEN: ""
+        run: node .lenso-release/runtime/lib/repository/cli.js recover-partial
