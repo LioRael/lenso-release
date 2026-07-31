@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { canonicalBytes } from "../core/canonical.js";
 import type {
@@ -17,6 +18,8 @@ import {
 } from "./state.js";
 
 type Fetch = typeof fetch;
+type Pause = (milliseconds: number) => Promise<unknown>;
+const WORKFLOW_VISIBILITY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000] as const;
 function encode(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
@@ -26,12 +29,26 @@ async function json(response: Response): Promise<Record<string, unknown>> {
 }
 
 export class GithubAppTokenProvider implements AppTokenProvider {
+  private readonly cache = new Map<string, { token: string; expiresAt: number }>();
+  private readonly pending = new Map<string, Promise<string>>();
+
   constructor(
     private readonly appId: number,
     private readonly privateKey: string,
     private readonly installationId: number,
     private readonly request: Fetch = fetch,
   ) {}
+  private cacheKey(
+    repository: string,
+    permissions: Record<string, "read" | "write">,
+  ): string {
+    return JSON.stringify([
+      repository,
+      Object.entries(permissions).sort(([left], [right]) =>
+        left.localeCompare(right)
+      ),
+    ]);
+  }
   private jwt(): string {
     const now = Math.floor(Date.now() / 1000);
     const unsigned = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ iat: now - 30, exp: now + 540, iss: String(this.appId) })}`;
@@ -44,6 +61,24 @@ export class GithubAppTokenProvider implements AppTokenProvider {
     permissions: Record<string, "read" | "write"> = { metadata: "read" },
   ): Promise<string> {
     normalizeRepository(repository);
+    const cacheKey = this.cacheKey(repository, permissions);
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
+    const pending = this.pending.get(cacheKey);
+    if (pending) return pending;
+    const mint = this.mint(repository, permissions, cacheKey);
+    this.pending.set(cacheKey, mint);
+    try {
+      return await mint;
+    } finally {
+      this.pending.delete(cacheKey);
+    }
+  }
+  private async mint(
+    repository: string,
+    permissions: Record<string, "read" | "write">,
+    cacheKey: string,
+  ): Promise<string> {
     const response = await this.request(
       `https://api.github.com/app/installations/${this.installationId}/access_tokens`,
       {
@@ -62,6 +97,11 @@ export class GithubAppTokenProvider implements AppTokenProvider {
     const body = await json(response);
     if (typeof body.token !== "string")
       throw new Error("GitHub App token response missing token");
+    if (typeof body.expires_at === "string") {
+      const expiresAt = Date.parse(body.expires_at);
+      if (Number.isFinite(expiresAt))
+        this.cache.set(cacheKey, { token: body.token, expiresAt });
+    }
     return body.token;
   }
 }
@@ -203,7 +243,10 @@ export class GithubSnapshotStore implements GitStateStore {
 }
 
 export class GithubWorkflowDispatcher implements WorkflowDispatcher {
-  constructor(private readonly request: Fetch = fetch) {}
+  constructor(
+    private readonly request: Fetch = fetch,
+    private readonly pause: Pause = delay,
+  ) {}
   async findByEventId(
     context: DispatchRunContext,
     eventId: string,
@@ -261,8 +304,14 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
       },
     );
     if (!response.ok) throw new Error(`workflow dispatch ${response.status}`);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const observed = await this.findByEventId({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, appToken);
+    for (const waitMs of WORKFLOW_VISIBILITY_DELAYS_MS) {
+      if (waitMs > 0) await this.pause(waitMs);
+      const observed = await this.findByEventId({
+        repository: command.repository,
+        workflow: command.workflow,
+        ref: command.ref,
+        sha: command.expectedSha ?? command.inputs.release_commit,
+      }, eventId, appToken);
       if (observed) return observed;
     }
     throw new Error(`workflow run ${eventId} is not yet visible`);

@@ -5,12 +5,18 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
+import { gunzipSync } from "node:zlib";
 
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
 import type { ComponentReceiptV1, ReleasePlanV1, Sha256 } from "../contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
-import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
+import {
+  executionRef,
+  publisherPackagePhases,
+  verifyPublisherContract,
+} from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 import type { AuthorizedArtifact, PublishAuthorization } from "../publisher/preflight-authority.js";
 import { inspectOciReleaseArtifact, type OciReleaseArtifact } from "./oci-release-artifact.js";
@@ -74,6 +80,105 @@ type SealedArtifact = { path: string; bytes: Buffer; cargoMetadata: JsonValue | 
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
+type CargoArchiveDigestPair = { reviewed: Sha256; registry: Sha256 };
+
+function tarOctal(field: Uint8Array): number {
+  const value = Buffer.from(field).toString("ascii").replace(/\0.*$/u, "").trim();
+  if (!/^[0-7]+$/u.test(value)) throw new Error("invalid tar octal field");
+  const parsed = Number.parseInt(value, 8);
+  if (!Number.isSafeInteger(parsed)) throw new Error("oversized tar field");
+  return parsed;
+}
+
+function cargoLockRange(tar: Buffer): { start: number; end: number } {
+  const matches: { start: number; end: number }[] = [];
+  let offset = 0;
+  let ended = false;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      ended = true;
+      break;
+    }
+    const storedChecksum = tarOctal(header.subarray(148, 156));
+    let checksum = 0;
+    for (let index = 0; index < header.length; index += 1)
+      checksum += index >= 148 && index < 156 ? 32 : header[index]!;
+    if (checksum !== storedChecksum) throw new Error("invalid tar header checksum");
+    const text = (start: number, end: number): string =>
+      header.subarray(start, end).toString("utf8").replace(/\0.*$/u, "");
+    const name = `${text(345, 500)}${text(345, 500) ? "/" : ""}${text(0, 100)}`;
+    if (!name || name.startsWith("/") || name.split("/").includes(".."))
+      throw new Error("unsafe tar path");
+    const size = tarOctal(header.subarray(124, 136));
+    const start = offset + 512;
+    const end = start + size;
+    if (end > tar.length) throw new Error("truncated tar entry");
+    const type = header[156];
+    if ((type === 0 || type === 48) && name.endsWith("/Cargo.lock"))
+      matches.push({ start, end });
+    offset = start + Math.ceil(size / 512) * 512;
+  }
+  if (!ended || matches.length !== 1) throw new Error("Cargo.lock tar entry is missing or ambiguous");
+  return matches[0]!;
+}
+
+function normalizeCargoLockChecksums(
+  tar: Buffer,
+  substitutions: CargoArchiveDigestPair[],
+): Buffer {
+  if (substitutions.length === 0) return tar;
+  const normalized = Buffer.from(tar);
+  const range = cargoLockRange(normalized);
+  for (const { reviewed, registry } of substitutions) {
+    if (reviewed === registry) continue;
+    const needle = Buffer.from(
+      `checksum = "${registry.slice("sha256:".length)}"`,
+    );
+    const replacement = Buffer.from(
+      `checksum = "${reviewed.slice("sha256:".length)}"`,
+    );
+    let cursor = range.start;
+    let matches = 0;
+    while (cursor + needle.length <= range.end) {
+      const found = normalized.indexOf(needle, cursor);
+      if (found < 0 || found + needle.length > range.end) break;
+      replacement.copy(normalized, found);
+      cursor = found + needle.length;
+      matches += 1;
+    }
+    if (matches > 1) throw new Error("Cargo.lock checksum substitution is ambiguous");
+  }
+  return normalized;
+}
+
+export function cargoArchiveEquivalent(
+  reviewed: Uint8Array,
+  registry: Uint8Array,
+  substitutions: CargoArchiveDigestPair[] = [],
+): boolean {
+  if (Buffer.from(reviewed).equals(Buffer.from(registry))) return true;
+  try {
+    const limit = 512 * 1024 * 1024;
+    const reviewedTar = gunzipSync(reviewed, { maxOutputLength: limit });
+    const registryTar = gunzipSync(registry, { maxOutputLength: limit });
+    return reviewedTar.equals(
+      normalizeCargoLockChecksums(registryTar, substitutions),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function verifiedCargoArchiveDigests(
+  digests: Map<string, CargoArchiveDigestPair>,
+): CargoArchiveDigestPair[] {
+  // Packaged Cargo.lock files include transitive same-plan dependencies, not
+  // only the current package's direct plan edges. Every pair in this map was
+  // established by a complete archive-equivalence check earlier in the
+  // publication order, so it is safe to normalize those exact checksums.
+  return [...digests.values()];
+}
 export function npmRegistryAuthentication(registry: string): { registry: string; authKey: string } {
   const url = new URL(registry);
   if (url.username || url.password || url.search || url.hash) fail("npm registry URL must not contain credentials, query parameters, or a fragment");
@@ -361,6 +466,30 @@ async function requestJson(url: string, init?: RequestInit): Promise<{ response:
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
   return { response, body };
 }
+
+const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/LioRael/lenso-release)";
+export async function fetchCargoArchive(
+  download: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const source = new URL(download);
+  const response = await fetch(download, { headers, redirect: "manual" });
+  if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+  const location = response.headers.get("location");
+  if (!location) fail("crates registry redirect location is missing");
+  const target = new URL(location, source);
+  if (
+    source.origin !== "https://crates.io" ||
+    target.origin !== "https://static.crates.io" ||
+    target.username !== "" ||
+    target.password !== "" ||
+    target.search !== "" ||
+    target.hash !== "" ||
+    !target.pathname.startsWith("/crates/")
+  )
+    fail("crates registry redirect is not trusted");
+  return fetch(target, { headers, redirect: "error" });
+}
 async function npmObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
   const encoded = name.replace("/", "%2f");
@@ -382,14 +511,15 @@ async function npmObservation(name: string, version: string): Promise<RegistryOb
 }
 async function cargoObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_CRATES_API_URL ?? "https://crates.io";
-  const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`);
+  const headers = { "user-agent": CRATES_IO_USER_AGENT };
+  const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`, { headers });
   if (response.status === 404) return { exists: false };
   if (!response.ok) fail(`crates registry observation ${response.status}`);
   const crate = body.version as Record<string, unknown> | undefined;
   const checksum = String(crate?.checksum ?? "");
   const publishedAt = String(crate?.created_at ?? "");
   const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
-  const artifact = await fetch(download, { redirect: "error" });
+  const artifact = await fetchCargoArchive(download, headers);
   if (!artifact.ok || !checksum || !publishedAt) fail("crates registry observation incomplete");
   return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
 }
@@ -613,7 +743,7 @@ async function ensureDraftReleaseAsset(environment: RuntimeEnvironment, version:
 export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
   const json = canonicalBytes(upload); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
   const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]); const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
-  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length) }, body });
+  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length), "user-agent": CRATES_IO_USER_AGENT }, body });
   if (!response.ok) fail(`crates exact archive upload ${response.status}`);
 }
 async function createAttestation(artifactPath: string, artifactBytes: Uint8Array, environment: RuntimeEnvironment): Promise<string> {
@@ -700,6 +830,288 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
   if (fixedGroup) {
     await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
     for (const receipt of receipts) await dispatchReceipt(receipt, environment);
+  }
+  return receipts;
+}
+
+type RecoveryAuthorization = {
+  kind: "production-break-glass";
+  authorizedRunUrl: string;
+  authorizedRunSha256: Sha256;
+  workflowCommit: string;
+};
+
+async function readRecoveryState(environment: RuntimeEnvironment): Promise<Record<string, unknown>> {
+  const repositorySegment = encodeURIComponent(
+    encodeURIComponent(environment.repository),
+  );
+  const planDigest = environment.planId.slice("sha256:".length);
+  const endpoint =
+    `https://api.github.com/repos/LioRael/lenso-release/contents/plans/${repositorySegment}/${planDigest}.json?ref=release-state`;
+  let lastError: unknown;
+  for (const waitMs of [0, 1_000, 2_000, 4_000, 8_000, 8_000] as const) {
+    if (waitMs > 0) await delay(waitMs);
+    try {
+      const response = await fetch(endpoint, {
+        redirect: "error",
+        headers: {
+          authorization: `Bearer ${environment.githubToken}`,
+          accept: "application/vnd.github+json",
+        },
+      });
+      if (!response.ok) throw new Error(`release-state observation ${response.status}`);
+      const body = await response.json() as Record<string, unknown>;
+      if (body.encoding !== "base64" || typeof body.content !== "string")
+        throw new Error("release-state content encoding invalid");
+      const state = JSON.parse(
+        Buffer.from(body.content.replace(/\n/gu, ""), "base64").toString("utf8"),
+      ) as Record<string, unknown>;
+      const outbox = Array.isArray(state.outbox)
+        ? state.outbox as Record<string, unknown>[]
+        : [];
+      const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+      if (
+        entry?.status !== "dispatched" ||
+        entry.runUrl !== environment.runUrl
+      )
+        throw new Error("recovery dispatch is not authoritative yet");
+      return state;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error("authoritative recovery dispatch is unavailable", {
+    cause: lastError,
+  });
+}
+
+export async function verifyRecoveryAuthorization(
+  environment: RuntimeEnvironment,
+): Promise<RecoveryAuthorization> {
+  if (process.env.LENSO_RELEASE_MODE !== "production")
+    fail("break-glass recovery is production-only");
+  const state = await readRecoveryState(environment);
+  if (
+    state.schema !== "lenso.plan-state.v1" ||
+    state.environment !== "production" ||
+    state.repository !== environment.repository ||
+    state.planId !== environment.planId ||
+    state.planSha256 !== environment.planSha256 ||
+    state.releaseCommit !== environment.releaseCommit ||
+    !["publishing", "verified"].includes(String(state.status))
+  )
+    fail("authoritative recovery plan binding mismatch");
+  const outbox = state.outbox as Record<string, unknown>[];
+  const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+  const recovery = entry?.recovery as Record<string, unknown> | undefined;
+  if (
+    entry?.ref !== environment.refName ||
+    entry.workflow !== environment.workflowPath ||
+    entry.runUrl !== environment.runUrl ||
+    recovery?.kind !== "production-break-glass" ||
+    recovery.workflowCommit !== environment.githubSha ||
+    !/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u
+      .test(String(recovery.authorizedRunUrl)) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256))
+  )
+    fail("authoritative break-glass recovery authorization mismatch");
+  const selected = JSON.stringify(
+    environment.packages.map(({ id, version }) => ({ id, version })),
+  );
+  if (
+    JSON.stringify(entry.packages) !== selected ||
+    (entry.inputs as Record<string, unknown> | undefined)?.event_id !==
+      environment.eventId ||
+    (entry.inputs as Record<string, unknown> | undefined)?.plan_id !==
+      environment.planId ||
+    (entry.inputs as Record<string, unknown> | undefined)?.plan_sha256 !==
+      environment.planSha256 ||
+    (entry.inputs as Record<string, unknown> | undefined)?.release_commit !==
+      environment.releaseCommit ||
+    (entry.inputs as Record<string, unknown> | undefined)?.packages_json !==
+      selected ||
+    (entry.inputs as Record<string, unknown> | undefined)?.nonce !==
+      environment.nonce
+  )
+    fail("authoritative recovery outbox payload mismatch");
+  return recovery as unknown as RecoveryAuthorization;
+}
+
+async function recoveryPlan(
+  environment: RuntimeEnvironment,
+): Promise<{ candidateEnvironment: RuntimeEnvironment; plan: ReleasePlanV1 }> {
+  await verifyRecoveryAuthorization(environment);
+  const candidateEnvironment: RuntimeEnvironment = {
+    ...environment,
+    githubSha: environment.releaseCommit,
+    refName: executionRef(environment.planId),
+  };
+  const planBytes = await safeRead(
+    candidateEnvironment.cwd,
+    ".lenso-release/plan.json",
+  );
+  if (hash(planBytes) !== candidateEnvironment.planSha256)
+    fail("plan byte digest mismatch");
+  const candidatePlan = parseJson<unknown>(planBytes, "release plan");
+  assertReleasePlan(candidatePlan);
+  if (
+    candidatePlan.planId !== candidateEnvironment.planId ||
+    candidatePlan.repository !== candidateEnvironment.repository
+  )
+    fail("plan identity mismatch");
+  exactSelection(candidatePlan, candidateEnvironment.packages);
+  return { candidateEnvironment, plan: candidatePlan };
+}
+
+export async function prepareRecovery(
+  environment: RuntimeEnvironment,
+): Promise<void> {
+  const { candidateEnvironment, plan: candidatePlan } =
+    await recoveryPlan(environment);
+  const phases = publisherPackagePhases(
+    candidateEnvironment.packages,
+    candidatePlan,
+    "recovery",
+  );
+  let plan = candidatePlan;
+  for (const packages of phases) {
+    plan = await preflight({ ...candidateEnvironment, packages });
+  }
+  const config = parseJson<RepositoryConfig>(
+    await safeRead(environment.cwd, ".lenso-release/config.json"),
+    "repository config",
+  );
+  if (selectedFixedGroup(config, environment.packages))
+    fail("fixed-group break-glass recovery is not supported");
+  await stageCargoArchives(environment.cwd, plan, environment.packages);
+  const subjectDirectory = join(
+    environment.cwd,
+    "target/recovery-attestations",
+  );
+  await mkdir(subjectDirectory, { mode: 0o700 });
+  const cargoDigests = new Map<string, CargoArchiveDigestPair>();
+  for (const item of publicationOrder(plan, environment.packages)) {
+    if (!item.id.startsWith("cargo:"))
+      fail("break-glass recovery supports Cargo packages only");
+    const artifact = await packedArtifact(environment.cwd, item);
+    const observed = await cargoObservation(
+      item.id.slice("cargo:".length),
+      item.version,
+    );
+    if (
+      !observed.exists ||
+      !observed.bytes ||
+      !observed.integrity ||
+      !observed.url ||
+      !observed.publishedAt
+    )
+      fail(`published package is not registry-visible: ${item.id}`);
+    if (
+      !cargoArchiveEquivalent(
+        artifact.bytes,
+        observed.bytes,
+        verifiedCargoArchiveDigests(cargoDigests),
+      ) ||
+      observed.integrity !== hash(observed.bytes).slice("sha256:".length)
+    )
+      fail(`registry archive differs from reviewed artifact: ${item.id}`);
+    cargoDigests.set(item.id, {
+      reviewed: hash(artifact.bytes),
+      registry: hash(observed.bytes),
+    });
+    const subjectPath = join(subjectDirectory, basename(artifact.path));
+    const handle = await open(
+      subjectPath,
+      constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_WRONLY |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(observed.bytes);
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+export function validateRecoveryAttestationUrl(
+  value: string,
+  repository: string,
+): string {
+  const url = new URL(value);
+  if (
+    url.origin !== "https://github.com" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !url.pathname.startsWith(`/${repository}/attestations/`)
+  )
+    fail("official recovery attestation URL is invalid");
+  return url.toString();
+}
+
+function recoveryAttestationUrl(environment: RuntimeEnvironment): string {
+  const value = process.env.LENSO_RECOVERY_ATTESTATION_URL;
+  if (!value) fail("official recovery attestation URL is required");
+  return validateRecoveryAttestationUrl(value, environment.repository);
+}
+
+export async function recoverPublished(
+  environment: RuntimeEnvironment,
+): Promise<ComponentReceiptV1[]> {
+  const { plan } = await recoveryPlan(environment);
+  const config = parseJson<RepositoryConfig>(
+    await safeRead(environment.cwd, ".lenso-release/config.json"),
+    "repository config",
+  );
+  if (selectedFixedGroup(config, environment.packages))
+    fail("fixed-group break-glass recovery is not supported");
+  const provenanceUrl = recoveryAttestationUrl(environment);
+  const receipts: ComponentReceiptV1[] = [];
+  const cargoDigests = new Map<string, CargoArchiveDigestPair>();
+  for (const item of publicationOrder(plan, environment.packages)) {
+    if (!item.id.startsWith("cargo:"))
+      fail("break-glass recovery supports Cargo packages only");
+    const artifact = await packedArtifact(environment.cwd, item);
+    const observed = await cargoObservation(
+      item.id.slice("cargo:".length),
+      item.version,
+    );
+    if (
+      !observed.exists ||
+      !observed.bytes ||
+      !observed.integrity ||
+      !observed.url ||
+      !observed.publishedAt
+    )
+      fail(`published package is not registry-visible: ${item.id}`);
+    if (
+      !cargoArchiveEquivalent(
+        artifact.bytes,
+        observed.bytes,
+        verifiedCargoArchiveDigests(cargoDigests),
+      ) ||
+      observed.integrity !== hash(observed.bytes).slice("sha256:".length)
+    )
+      fail(`registry archive differs from reviewed artifact: ${item.id}`);
+    cargoDigests.set(item.id, {
+      reviewed: hash(artifact.bytes),
+      registry: hash(observed.bytes),
+    });
+    const receipt = receiptFor(
+      plan,
+      item,
+      observed as Required<Omit<RegistryObservation, "exists">>,
+      provenanceUrl,
+      environment,
+    );
+    assertComponentReceipt(receipt);
+    await createImmutableTag(receipt, environment);
+    await dispatchReceipt(receipt, environment);
+    receipts.push(receipt);
   }
   return receipts;
 }

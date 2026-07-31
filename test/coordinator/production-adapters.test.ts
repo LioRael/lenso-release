@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -28,6 +28,24 @@ describe("production coordinator adapters", () => {
     expect(productionDependencyUrl("cargo:lenso-module-auth", "0.1.8")).toBe(
       "https://crates.io/api/v1/crates/lenso-module-auth/0.1.8/download",
     );
+  });
+
+  it("preserves a verified immutable tag attestation record URL", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const subject = { name: "lenso-1.0.0.crate", digest };
+    const recordUrl = "https://github.com/LioRael/lenso/attestations/38141732";
+    expect(verifiedProvenanceUrl("LioRael/lenso", digest, subject, {
+      repository: "LioRael/lenso",
+      packedSha256: digest,
+      provenanceSubject: subject,
+      provenanceUrl: recordUrl,
+    })).toBe(recordUrl);
+    expect(verifiedProvenanceUrl("LioRael/lenso", digest, subject, {
+      repository: "LioRael/lenso",
+      packedSha256: digest,
+      provenanceSubject: subject,
+      provenanceUrl: "https://example.com/untrusted",
+    })).toBe(`https://github.com/LioRael/lenso/attestations/${digest.slice(7)}`);
   });
 
   it("identifies allowlisted external observations across crates.io redirects", async () => {
@@ -64,6 +82,130 @@ describe("production coordinator adapters", () => {
     expect(executionRefProtectionIsImmutable(exact)).toBe(true);
     expect(executionRefProtectionIsImmutable({ ...exact, allow_deletions: { enabled: true } })).toBe(false);
     expect(executionRefProtectionIsImmutable({ ...exact, enforce_admins: null })).toBe(false);
+  });
+  it("accepts only successful reviewed recovery jobs from protected main history", () => {
+    const sha = "2".repeat(40);
+    const eventId = `sha256:${"a".repeat(64)}`;
+    const run = {
+      id: 42,
+      event: "workflow_dispatch",
+      display_title: `lenso-publish-requested:${eventId}`,
+      head_branch: "main",
+      head_sha: sha,
+      repository: { full_name: "LioRael/lenso" },
+      status: "completed",
+      conclusion: "success",
+    };
+    const jobs = [
+      { name: "recover", status: "completed", conclusion: "success" },
+      { name: "publish", status: "completed", conclusion: "skipped" },
+    ];
+    const comparison = {
+      status: "ahead",
+      base_commit: { sha },
+      merge_base_commit: { sha },
+    };
+    expect(trustedRecoveryRun(run, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(true);
+    expect(trustedRecoveryProvenanceRun(run, jobs, comparison, "LioRael/lenso", "main")).toBe(true);
+    expect(trustedRecoveryProvenanceRun({ ...run, display_title: "unbound-recovery" }, jobs, comparison, "LioRael/lenso", "main")).toBe(false);
+    expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+    expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
+    expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+  });
+  it("retries only an exact conclusively failed recovery run", () => {
+    const sha = "2".repeat(40);
+    const eventId = `sha256:${"a".repeat(64)}`;
+    const run = {
+      event: "workflow_dispatch",
+      path: ".github/workflows/publish.yml",
+      display_title: `lenso-publish-requested:${eventId}`,
+      head_branch: "main",
+      head_sha: sha,
+      repository: { full_name: "LioRael/lenso" },
+      status: "completed",
+      conclusion: "failure",
+    };
+    const jobs = [
+      { name: "recover", status: "completed", conclusion: "failure" },
+      { name: "publish", status: "completed", conclusion: "skipped" },
+    ];
+    expect(trustedFailedRecoveryRun(
+      run,
+      jobs,
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      "main",
+      sha,
+      eventId,
+    )).toBe(true);
+    expect(trustedFailedRecoveryRun(
+      { ...run, conclusion: "cancelled" },
+      jobs,
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      "main",
+      sha,
+      eventId,
+    )).toBe(false);
+  });
+  it("binds production break-glass evidence to the exact legacy release run", () => {
+    const releaseCommit = "2".repeat(40);
+    const executionRef = `release-execution/${"a".repeat(64)}`;
+    const steps = [
+      "Run release gate",
+      "Run package publish preflight",
+      "Build release package",
+      "Publish Lenso crates to crates.io",
+      "Publish GitHub Release",
+    ].map((name) => ({
+      name,
+      status: "completed",
+      conclusion: "success",
+    }));
+    const run = {
+      event: "workflow_dispatch",
+      name: "release",
+      display_title: "release",
+      path: ".github/workflows/release.yml",
+      repository: { full_name: "LioRael/lenso" },
+      head_branch: executionRef,
+      head_sha: releaseCommit,
+      status: "completed",
+      conclusion: "success",
+    };
+    const jobs = [{
+      name: "package",
+      status: "completed",
+      conclusion: "success",
+      steps,
+    }];
+    expect(
+      trustedProductionBreakGlassRun(
+        run,
+        jobs,
+        "LioRael/lenso",
+        executionRef,
+        releaseCommit,
+      ),
+    ).toBe(true);
+    expect(
+      trustedProductionBreakGlassRun(
+        run,
+        [{ ...jobs[0], steps: steps.slice(1) }],
+        "LioRael/lenso",
+        executionRef,
+        releaseCommit,
+      ),
+    ).toBe(false);
+    expect(
+      trustedProductionBreakGlassRun(
+        { ...run, head_sha: "3".repeat(40) },
+        jobs,
+        "LioRael/lenso",
+        executionRef,
+        releaseCommit,
+      ),
+    ).toBe(false);
   });
 
   it("follows only trusted GitHub asset redirects without forwarding authorization", async () => {
@@ -160,12 +302,36 @@ describe("production coordinator adapters", () => {
     expect(invocation?.args).toContain("--source-ref");
     expect(invocation?.args).toContain("--source-digest");
     expect(JSON.stringify(invocation)).not.toMatch(/token|secret|shell/iu);
+    const attempted = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{
+      verificationResult: {
+        ...exact,
+        signature: {
+          certificate: {
+            ...exactCertificate,
+            runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/1`,
+          },
+        },
+      },
+    }]) }));
+    await expect(attempted.verify(expected)).resolves.toEqual({ name: expected.subjectName, digest });
+    const historical = new GhAttestationVerifier(async (_file, args) => {
+      expect(args).not.toContain("--source-ref");
+      expect(args).not.toContain("--source-digest");
+      return { stdout: JSON.stringify([{ verificationResult: exact }]) };
+    });
+    await expect(historical.verify({ ...expected, allowAnySource: true })).resolves.toEqual({
+      name: expected.subjectName,
+      digest,
+      source: { ref: expected.ref, sha: expected.sha, runId: expected.runId },
+    });
     const wrong = new GhAttestationVerifier(async () => ({ stdout: JSON.stringify([{ verificationResult: { ...exact, signature: { certificate: { ...exactCertificate, sourceRepositoryURI: `https://github.com/${expected.repository}-suffix`, runInvocationURI: `https://github.com/${expected.repository}/actions/runs/420` } } } }]) }));
     await expect(wrong.verify(expected)).resolves.toBeNull();
     for (const certificate of [
       { ...exactCertificate, buildSignerURI: `${exactCertificate.buildSignerURI}-suffix` },
       { ...exactCertificate, sourceRepositoryDigest: `${expected.sha}0` },
       { ...exactCertificate, sourceRepositoryRef: `${sourceRef}/extra` },
+      { ...exactCertificate, runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/0` },
+      { ...exactCertificate, runInvocationURI: `${exactCertificate.runInvocationURI}/attempts/1/extra` },
       [exactCertificate],
       null,
     ]) {
@@ -209,6 +375,7 @@ describe("production coordinator adapters", () => {
     const eventId = `sha256:${"b".repeat(64)}`;
     let reads = 0;
     let posts = 0;
+    const waits: number[] = [];
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "POST") {
         posts++;
@@ -227,7 +394,10 @@ describe("production coordinator adapters", () => {
         conclusion: null,
       }] }), { status: 200, headers: { "content-type": "application/json" } });
     });
-    const run = await new GithubWorkflowDispatcher(request as typeof fetch).dispatch({
+    const run = await new GithubWorkflowDispatcher(
+      request as typeof fetch,
+      async (milliseconds) => { waits.push(milliseconds); },
+    ).dispatch({
       repository: "LioRael/lenso",
       workflow: ".github/workflows/publish.yml",
       ref: `release-execution/${"b".repeat(64)}`,
@@ -235,6 +405,7 @@ describe("production coordinator adapters", () => {
     }, eventId, "token");
     expect(run.runUrl).toBe("https://github.com/LioRael/lenso/actions/runs/99");
     expect(posts).toBe(1);
+    expect(waits).toEqual([1_000, 2_000]);
   });
 
   it("mints a token for only the requested repository and permissions", async () => {
@@ -251,6 +422,27 @@ describe("production coordinator adapters", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       repositories: ["lenso"], permissions: { actions: "write" },
     });
+  });
+
+  it("reuses unexpired tokens for the same repository and permissions", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      token: "cached",
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    }));
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const provider = new GithubAppTokenProvider(1, key, 2, request as typeof fetch);
+    await expect(Promise.all([
+      provider.tokenFor("LioRael/lenso", { metadata: "read", actions: "read" }),
+      provider.tokenFor("LioRael/lenso", { actions: "read", metadata: "read" }),
+    ])).resolves.toEqual(["cached", "cached"]);
+    await expect(
+      provider.tokenFor("LioRael/lenso", { actions: "write", metadata: "read" }),
+    ).resolves.toBe("cached");
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("does not require or return a static coordinator token", () => {

@@ -20,6 +20,11 @@ export type EventHandlers = {
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive?(): Promise<unknown>;
+  recoverBreakGlassPlan?(
+    repository: string,
+    planId: string,
+    breakGlassRunId: string,
+  ): Promise<unknown>;
   retireFailedShadowPlan?(repository: string, planId: string, eventId: Sha256): Promise<unknown>;
   retryFailedShadowPlan?(repository: string, planId: string): Promise<unknown>;
 };
@@ -127,6 +132,20 @@ export async function runHandleEventCli(
 ): Promise<number> {
   try {
     const handlers = await factory(env);
+    if (argv[0] === "--recover-break-glass-plan") {
+      if (
+        argv.length !== 7 ||
+        argv[1] !== "--repository" ||
+        argv[3] !== "--plan-id" ||
+        argv[5] !== "--break-glass-run-id" ||
+        !handlers.recoverBreakGlassPlan
+      )
+        throw new TypeError(
+          "usage: handle-event --recover-break-glass-plan --repository OWNER/REPO --plan-id SHA256 --break-glass-run-id RUN_ID",
+        );
+      await handlers.recoverBreakGlassPlan(argv[2]!, argv[4]!, argv[6]!);
+      return HANDLE_EVENT_EXIT.ok;
+    }
     if (argv[0] === "--retry-failed-shadow-plan") {
       if (
         argv.length !== 5 || argv[1] !== "--repository" ||
@@ -152,7 +171,8 @@ export async function runHandleEventCli(
     }
     if (argv.length === 1 && argv[0] === "--recover-active") {
       if (!handlers.recoverActive) throw new TypeError("active recovery is not configured");
-      await handlers.recoverActive();
+      const result = await handlers.recoverActive();
+      process.stdout.write(`${JSON.stringify(result)}\n`);
       return HANDLE_EVENT_EXIT.ok;
     }
     const value = await readEventArgument(argv);

@@ -186,6 +186,35 @@ version because receipt delivery failed.
 - If a release partially published, record exactly which immutable artifacts exist
   before deciding whether recovery can continue.
 
+When an explicitly approved production break-glass run published every planned
+Cargo artifact but the normal publisher emitted no receipt, use the reviewed
+`recover-break-glass-plan` workflow. It is not a publisher retry:
+
+1. Supply the exact component repository, reviewed plan ID, and successful
+   break-glass run ID.
+2. The coordinator requires the original reviewed publisher to be conclusively
+   failed, verifies the successful legacy run at the protected execution ref and
+   release commit, re-downloads every planned Cargo archive, matches its crates.io
+   checksum, and verifies the exact GitHub Release.
+3. The coordinator records a content-addressed recovery authorization in the
+   atomic release-state outbox and dispatches the reviewed component `publish.yml`
+   from the current default-branch commit.
+4. Only the `recover` job may run on the default branch; the registry-writing
+   `publish` job is skipped. The recovery job reads its exact run URL and inputs
+   back from authoritative release-state before doing any work.
+5. The recovery job checks out the reviewed release commit separately, reruns its
+   package and generated-file gates, rebuilds every selected archive, rejects any
+   registry-byte mismatch, creates GitHub attestations and immutable receipt tags,
+   and submits authenticated receipts. It never requests npm or crates.io
+   credentials and never uploads a package.
+6. Verify that the plan is `verified`, all packages are `received`, every receipt
+   binds the exact plan and release commit, and both the workflow state and release
+   mode remain unchanged.
+
+Do not use this path for a partial publication, a plan with accepted receipts, a
+non-Cargo package set, a different component repository, or an unreviewed
+break-glass workflow. Those cases require a separately reviewed recovery design.
+
 If a shadow publisher fails, the reviewed `retire-failed-shadow-plan` workflow may
 release the stale coordinator occupancy. It fails closed unless every dispatched
 workflow is complete, no dispatch is in flight, every received package still exists
@@ -219,6 +248,9 @@ plane cannot perform the release.
 6. Reconcile lockfile integrity against the published tarball where consumers pin it.
 7. Record the exception and return the repository to its prior workflow and release
    mode state.
+8. If the reviewed receipt recovery cannot see the break-glass workflow, complete
+   the exact `recover-break-glass-plan` procedure above; do not edit release-state
+   directly or republish immutable versions.
 
 ## Agent completion checklist
 
@@ -251,5 +283,7 @@ If one item is false, report the release as partial and name the blocker.
   receipt receiver.
 - [`.github/workflows/recover-receipts.yml`](../.github/workflows/recover-receipts.yml):
   scheduled recovery.
+- [`.github/workflows/recover-break-glass-plan.yml`](../.github/workflows/recover-break-glass-plan.yml):
+  exact, production-only recovery authorization for a fully published Cargo plan.
 - [`shadow-gateway/`](../shadow-gateway/): isolated registry, release, and
   attestation emulator.

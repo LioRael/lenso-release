@@ -5,11 +5,12 @@ import type {
   ReleaseEventV1,
   ReleasePlanV1,
 } from "../contracts/types.js";
+import { assertReleasePlan } from "../contracts/validate.js";
 import { loadComponents } from "../config/components.js";
 import { sha256 } from "../core/canonical.js";
 import { canonicalBytes } from "../core/canonical.js";
 import { acceptReadyEvent } from "./ready.js";
-import { acceptReceiptEvent, IncompleteEvidenceError, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
+import { acceptReceiptEvent, IncompleteEvidenceError, receiptRecoveryEligible, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
 import {
   runDispatchOutbox,
   type AppTokenProvider,
@@ -19,6 +20,10 @@ import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitS
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
+import {
+  authorizeProductionBreakGlassRecovery,
+  retryProductionBreakGlassRecovery,
+} from "./break-glass-recovery.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -159,6 +164,142 @@ export function executionRefProtectionIsImmutable(value: unknown): boolean {
     enabled("allow_deletions", false);
 }
 
+export function trustedRecoveryRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  comparison: Record<string, unknown>,
+  repository: string,
+  defaultBranch: string,
+  eventId: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const baseCommit = comparison.base_commit as Record<string, unknown> | undefined;
+  const mergeBase = comparison.merge_base_commit as Record<string, unknown> | undefined;
+  const recovery = jobs.find((job) => job.name === "recover");
+  const publish = jobs.find((job) => job.name === "publish");
+  return run.event === "workflow_dispatch"
+    && run.display_title === `lenso-publish-requested:${eventId}`
+    && runRepository?.full_name === repository
+    && run.head_branch === defaultBranch
+    && typeof run.head_sha === "string"
+    && /^[0-9a-f]{40}$/u.test(run.head_sha)
+    && run.status === "completed"
+    && run.conclusion === "success"
+    && recovery?.status === "completed"
+    && recovery.conclusion === "success"
+    && publish?.status === "completed"
+    && publish.conclusion === "skipped"
+    && (comparison.status === "ahead" || comparison.status === "identical")
+    && baseCommit?.sha === run.head_sha
+    && mergeBase?.sha === run.head_sha;
+}
+
+export function trustedFailedRecoveryRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  workflow: string,
+  branch: string,
+  workflowCommit: string,
+  eventId: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const recovery = jobs.find((job) => job.name === "recover");
+  const publish = jobs.find((job) => job.name === "publish");
+  return run.event === "workflow_dispatch" &&
+    run.path === workflow &&
+    run.display_title === `lenso-publish-requested:${eventId}` &&
+    runRepository?.full_name === repository &&
+    run.head_branch === branch &&
+    run.head_sha === workflowCommit &&
+    run.status === "completed" &&
+    run.conclusion === "failure" &&
+    recovery?.status === "completed" &&
+    recovery.conclusion === "failure" &&
+    publish?.status === "completed" &&
+    publish.conclusion === "skipped";
+}
+
+export function trustedRecoveryProvenanceRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  comparison: Record<string, unknown>,
+  repository: string,
+  defaultBranch: string,
+): boolean {
+  const match = /^lenso-publish-requested:(sha256:[0-9a-f]{64})$/u.exec(String(run.display_title));
+  return Boolean(match) &&
+    trustedRecoveryRun(run, jobs, comparison, repository, defaultBranch, match![1]!);
+}
+
+const BREAK_GLASS_REQUIRED_STEPS = [
+  "Run release gate",
+  "Run package publish preflight",
+  "Build release package",
+  "Publish Lenso crates to crates.io",
+  "Publish GitHub Release",
+] as const;
+
+export function trustedProductionBreakGlassRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  executionRef: string,
+  releaseCommit: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const packageJob = jobs.find((job) => job.name === "package");
+  const steps = Array.isArray(packageJob?.steps)
+    ? packageJob.steps as Record<string, unknown>[]
+    : [];
+  return run.event === "workflow_dispatch" &&
+    run.name === "release" &&
+    run.display_title === "release" &&
+    run.path === ".github/workflows/release.yml" &&
+    runRepository?.full_name === repository &&
+    run.head_branch === executionRef &&
+    run.head_sha === releaseCommit &&
+    run.status === "completed" &&
+    run.conclusion === "success" &&
+    packageJob?.status === "completed" &&
+    packageJob.conclusion === "success" &&
+    BREAK_GLASS_REQUIRED_STEPS.every((name) =>
+      steps.some((step) =>
+        step.name === name &&
+        step.status === "completed" &&
+        step.conclusion === "success"
+      )
+    );
+}
+
+export function verifiedProvenanceUrl(
+  repository: string,
+  packedDigest: string,
+  subject: { name: string; digest: string },
+  tagReceipt: unknown,
+): string {
+  const digestUrl =
+    `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`;
+  if (typeof tagReceipt !== "object" || tagReceipt === null || Array.isArray(tagReceipt))
+    return digestUrl;
+  const receipt = tagReceipt as Record<string, unknown>;
+  const receiptSubject = receipt.provenanceSubject;
+  const provenanceUrl = receipt.provenanceUrl;
+  if (
+    receipt.repository !== repository ||
+    receipt.packedSha256 !== packedDigest ||
+    !canonicalBytes(receiptSubject as never).equals(canonicalBytes(subject as never)) ||
+    typeof provenanceUrl !== "string"
+  ) return digestUrl;
+  const prefix = `https://github.com/${repository}/attestations/`;
+  const suffix = provenanceUrl.startsWith(prefix)
+    ? provenanceUrl.slice(prefix.length)
+    : "";
+  return /^[1-9][0-9]*$/u.test(suffix) || provenanceUrl === digestUrl
+    ? provenanceUrl
+    : digestUrl;
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -166,13 +307,13 @@ export async function scanActiveRecovery(
   const recovered: string[] = [];
   const incomplete: string[] = [];
   for (const state of Object.values(plans).sort((a, b) => `${a.repository}:${a.planId}`.localeCompare(`${b.repository}:${b.planId}`))) {
-    if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
+    if (!receiptRecoveryEligible(state)) continue;
     for (const pkg of [...state.packages].sort((a, b) => `${a.id}:${a.version}`.localeCompare(`${b.id}:${b.version}`))) {
       if (pkg.status !== "dispatched") continue;
       const key = `${state.repository}:${state.planId}:${pkg.id}:${pkg.version}`;
       try { await recover(state, pkg); recovered.push(key); }
       catch (error) {
-        if (error instanceof IncompleteEvidenceError) incomplete.push(key);
+        if (error instanceof IncompleteEvidenceError) incomplete.push(`${key}: ${error.message}`);
         else throw error;
       }
     }
@@ -243,6 +384,11 @@ export async function createCoordinatorHandlers(
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+  recoverBreakGlassPlan(
+    repository: string,
+    planId: string,
+    breakGlassRunId: string,
+  ): Promise<StoredPlanState>;
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
 }> {
@@ -308,6 +454,11 @@ export async function createCoordinatorHandlers(
     ready(value: unknown): Promise<StoredPlanState>;
     receipt(value: unknown): Promise<StoredPlanState>;
     recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+    recoverBreakGlassPlan(
+      repository: string,
+      planId: string,
+      breakGlassRunId: string,
+    ): Promise<StoredPlanState>;
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   } = {
@@ -491,9 +642,11 @@ export async function createCoordinatorHandlers(
         async observe(context: ReceiptObservationContext, packageId: string, packageVersion: string): Promise<ReceiptObservation | null> {
           if (!context.packages.some(({ id, version }) => id === packageId && version === packageVersion)) throw new Error("package is not selected by stored outbox");
           const repository = context.repository;
-          const token = await input.tokens.tokenFor(repository, shadow
-            ? { contents: "write", actions: "read", metadata: "read" }
-            : { contents: "write", actions: "read", attestations: "read", metadata: "read" });
+          const token = await input.tokens.tokenFor(repository, {
+            contents: "write",
+            actions: "read",
+            metadata: "read",
+          });
           const githubApi = `https://api.github.com/repos/${repository}`;
           const tagApi = shadow ? `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}` : githubApi;
           const readGithubAsset = shadow
@@ -522,7 +675,7 @@ export async function createCoordinatorHandlers(
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
-            registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
+            registryUrl = artifactUrl;
           } else if (packageId.startsWith("npm:")) {
             const name = `@lenso/${packageName}`;
             const packumentUrl = `${shadow ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL : "https://registry.npmjs.org"}/${encodeURIComponent(name)}`;
@@ -563,7 +716,9 @@ export async function createCoordinatorHandlers(
                   token,
                 )
               : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
-            if (release.draft !== true || typeof release.created_at !== "string") return null;
+            if (typeof release.draft !== "boolean"
+              || (shadow && release.draft !== true)
+              || typeof release.created_at !== "string") return null;
             const assets = Array.isArray(release.assets) ? release.assets as Record<string, unknown>[] : [];
             const asset = assets.find(({ name }) => name === `${packageName}.tar.gz`);
             const checksumAsset = assets.find(({ name }) => name === `${packageName}.tar.gz.sha256`);
@@ -581,27 +736,120 @@ export async function createCoordinatorHandlers(
             registryUrl = String(asset.browser_download_url);
           }
           const packedDigest = sha256(packedBytes);
-          const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(context.executionRef)}&per_page=100`, token);
+          const workflowRuns = await githubJson(`${githubApi}/actions/workflows/${encodeURIComponent(context.workflow)}/runs?event=workflow_dispatch&per_page=100`, token);
           const runs = Array.isArray(workflowRuns.workflow_runs) ? workflowRuns.workflow_runs as Record<string, unknown>[] : [];
-          const workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
-          if (!workflow) return null;
+          let workflow = runs.find((run) => run.display_title === `lenso-publish-requested:${context.eventId}` && run.event === "workflow_dispatch" && run.head_branch === context.executionRef && run.head_sha === context.releaseCommit && (run.repository as Record<string, unknown> | undefined)?.full_name === repository);
+          let recoveryRun = false;
+          let defaultBranch = "";
+          let defaultHead = "";
+          if ((!workflow || workflow.status !== "completed" || workflow.conclusion !== "success") && !shadow) {
+            const repositoryMetadata = await githubJson(githubApi, token);
+            defaultBranch = String(repositoryMetadata.default_branch);
+            const defaultRef = await githubJson(`${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
+            defaultHead = String((defaultRef.object as Record<string, unknown>).sha);
+            const candidates = runs.filter((run) =>
+              run.event === "workflow_dispatch"
+              && run.display_title === `lenso-publish-requested:${context.eventId}`
+              && run.head_branch === defaultBranch
+              && /^[0-9a-f]{40}$/u.test(String(run.head_sha))
+              && (run.repository as Record<string, unknown> | undefined)?.full_name === repository
+              && run.status === "completed"
+              && run.conclusion === "success");
+            const preferred = candidates.sort((left, right) =>
+              String(left.html_url) === expected.workflowUrl ? -1
+                : String(right.html_url) === expected.workflowUrl ? 1
+                  : Number(right.id) - Number(left.id));
+            workflow = undefined;
+            for (const candidate of preferred) {
+              const runId = String(candidate.id);
+              const jobsResponse = await githubJson(`${githubApi}/actions/runs/${runId}/jobs?per_page=100`, token);
+              const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+              const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(String(candidate.head_sha))}...${encodeURIComponent(defaultHead)}`, token);
+              if (trustedRecoveryRun(candidate, jobs, comparison, repository, defaultBranch, context.eventId)) {
+                workflow = candidate;
+                recoveryRun = true;
+                break;
+              }
+            }
+          }
+          if (!workflow) throw new IncompleteEvidenceError("successful exact or reviewed recovery workflow is not visible");
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if (runUrl !== expected.workflowUrl || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`) return null;
-          if (workflow.status !== "completed" || workflow.conclusion !== "success") return null;
+          if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`)
+            throw new IncompleteEvidenceError("workflow URL does not match the accepted execution");
+          if (workflow.status !== "completed" || workflow.conclusion !== "success")
+            throw new IncompleteEvidenceError("workflow has not completed successfully");
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
-            : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
-              : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
-          const subject = shadow
-            ? await (async () => {
-                const response = await request(expected.provenanceUrl, { redirect: "error" });
-                if (!response.ok) return null;
-                const value = await response.json() as Record<string, unknown>;
-                return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
-              })()
-            : await provenanceVerifier.verify({ artifactBytes: packedBytes, subjectName, digest: packedDigest, repository, workflow: context.workflow, ref: context.executionRef, sha: context.releaseCommit, runId, githubToken: token });
-          if (!subject) return null;
+             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
+               : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
+          let subject;
+          if (!recoveryRun) {
+            try {
+              subject = shadow
+                ? await (async () => {
+                    const response = await request(expected.provenanceUrl, { redirect: "error" });
+                    if (!response.ok) return null;
+                    const value = await response.json() as Record<string, unknown>;
+                    return value.artifact_sha256 === packedDigest ? expected.provenanceSubject : null;
+                  })()
+                : await provenanceVerifier.verify({
+                    artifactBytes: packedBytes,
+                    subjectName,
+                    digest: packedDigest,
+                    repository,
+                    workflow: context.workflow,
+                    ref: String(workflow.head_branch),
+                    sha: String(workflow.head_sha),
+                    runId,
+                    githubToken: token,
+                  });
+            } catch {
+              subject = null;
+            }
+          }
+          if (!subject && recoveryRun) {
+            const historicalNames = packageId.startsWith("npm:")
+              ? [subjectName, `lenso-${packageName}-${packageVersion}.tgz`]
+              : [subjectName];
+            for (const historicalName of historicalNames) {
+              try {
+                const historical = await provenanceVerifier.verify({
+                  artifactBytes: packedBytes,
+                  subjectName: historicalName,
+                  digest: packedDigest,
+                  repository,
+                  workflow: context.workflow,
+                  ref: defaultBranch,
+                  sha: String(workflow.head_sha),
+                  runId,
+                  githubToken: token,
+                  allowAnySource: true,
+                });
+                if (historical?.source) {
+                  const historicalRun = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}`, token);
+                  const jobsResponse = await githubJson(`${githubApi}/actions/runs/${historical.source.runId}/jobs?per_page=100`, token);
+                  const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+                  const comparison = await githubJson(`${githubApi}/compare/${encodeURIComponent(historical.source.sha)}...${encodeURIComponent(defaultHead)}`, token);
+                  if (
+                    historicalRun.head_branch === historical.source.ref &&
+                    historicalRun.head_sha === historical.source.sha &&
+                    trustedRecoveryProvenanceRun(
+                      historicalRun,
+                      jobs,
+                      comparison,
+                      repository,
+                      defaultBranch,
+                    )
+                  ) subject = { name: historical.name, digest: historical.digest };
+                }
+              } catch {
+                subject = null;
+              }
+              if (subject) break;
+            }
+          }
+           if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow history");
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
           tagWrite = { githubApi: tagApi, token, tagName, immutable };
@@ -632,7 +880,12 @@ export async function createCoordinatorHandlers(
             provenance: {
               url: shadow
                 ? expected.provenanceUrl
-                : `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`,
+                : verifiedProvenanceUrl(
+                    repository,
+                    packedDigest,
+                    subject,
+                    tagReceipt,
+                  ),
               subject,
             },
             workflow: {
@@ -642,6 +895,7 @@ export async function createCoordinatorHandlers(
               sha: String(workflow.head_sha),
               runName: String(workflow.display_title),
               workflowPath: context.workflow,
+              ...(recoveryRun ? { recovery: true as const } : {}),
             },
             tag: {
               url: expectedTagUrl,
@@ -792,6 +1046,319 @@ export async function createCoordinatorHandlers(
           });
       });
     },
+    async recoverBreakGlassPlan(repository, planId, breakGlassRunId) {
+      if (environment !== "production")
+        throw new Error("break-glass recovery is production-only");
+      if (repository !== "LioRael/lenso")
+        throw new Error("break-glass recovery is not approved for this repository");
+      if (!/^sha256:[0-9a-f]{64}$/u.test(planId))
+        throw new TypeError("break-glass recovery plan ID invalid");
+      if (!/^[1-9][0-9]*$/u.test(breakGlassRunId))
+        throw new TypeError("break-glass recovery run ID invalid");
+
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const token = await input.tokens.tokenFor(repository, {
+        actions: "read",
+        contents: "read",
+        metadata: "read",
+      });
+      const githubApi = `https://api.github.com/repos/${repository}`;
+      const authorizedRunUrl =
+        `https://github.com/${repository}/actions/runs/${breakGlassRunId}`;
+      const existing = state.outbox
+        .filter(
+          (entry) =>
+            entry.recovery?.kind === "production-break-glass" &&
+            entry.recovery.authorizedRunUrl === authorizedRunUrl,
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (existing) {
+        if (existing.status !== "dispatched" || existing.runUrl === null) {
+          return runDispatchOutbox(
+            input.store,
+            repository,
+            planId,
+            input.dispatcher,
+            input.tokens,
+            now,
+          );
+        }
+        const failedRunId =
+          /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)$/u
+            .exec(existing.runUrl)?.[1];
+        if (!failedRunId)
+          throw new Error("recovery workflow URL is invalid");
+        const [failedRun, failedJobsResponse, repositoryMetadata] =
+          await Promise.all([
+            githubJson(`${githubApi}/actions/runs/${failedRunId}`, token),
+            githubJson(
+              `${githubApi}/actions/runs/${failedRunId}/jobs?per_page=100`,
+              token,
+            ),
+            githubJson(githubApi, token),
+          ]);
+        const failedJobs = Array.isArray(failedJobsResponse.jobs)
+          ? failedJobsResponse.jobs as Record<string, unknown>[]
+          : [];
+        if (
+          !trustedFailedRecoveryRun(
+            failedRun,
+            failedJobs,
+            repository,
+            existing.workflow,
+            existing.ref,
+            existing.recovery!.workflowCommit,
+            existing.eventId,
+          )
+        )
+          throw new Error(
+            "existing break-glass recovery is not conclusively failed",
+          );
+        const defaultBranch = String(repositoryMetadata.default_branch);
+        const defaultRef = await githubJson(
+          `${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+          token,
+        );
+        const workflowCommit = String(
+          (defaultRef.object as Record<string, unknown>).sha,
+        );
+        if (!/^[0-9a-f]{40}$/u.test(workflowCommit))
+          throw new Error("recovery workflow commit is invalid");
+        const planBytes = await githubBytes(
+          repository,
+          planPath,
+          state.releaseCommit,
+          token,
+        );
+        const plan = JSON.parse(
+          Buffer.from(planBytes).toString("utf8"),
+        ) as ReleasePlanV1;
+        assertReleasePlan(plan);
+        const retried = await retryProductionBreakGlassRecovery(
+          input.store,
+          {
+            repository,
+            planId: planId as `sha256:${string}`,
+            plan,
+            defaultBranch,
+            workflowCommit,
+            authorizedRunUrl,
+            authorizedRunSha256:
+              existing.recovery!.authorizedRunSha256,
+            now: now(),
+            nonce: nonce(),
+            appId: input.config.appId,
+          },
+          existing.eventId,
+        );
+        return runDispatchOutbox(
+          input.store,
+          retried.state.repository,
+          retried.state.planId,
+          input.dispatcher,
+          input.tokens,
+          now,
+        );
+      }
+
+      const run = await githubJson(
+        `${githubApi}/actions/runs/${breakGlassRunId}`,
+        token,
+      );
+      const jobsResponse = await githubJson(
+        `${githubApi}/actions/runs/${breakGlassRunId}/jobs?per_page=100`,
+        token,
+      );
+      const jobs = Array.isArray(jobsResponse.jobs)
+        ? jobsResponse.jobs as Record<string, unknown>[]
+        : [];
+      if (
+        !trustedProductionBreakGlassRun(
+          run,
+          jobs,
+          repository,
+          state.executionRef.name,
+          state.releaseCommit,
+        )
+      )
+        throw new Error("break-glass workflow evidence is not trusted");
+      const runUrl =
+        `https://github.com/${repository}/actions/runs/${breakGlassRunId}`;
+      if (run.html_url !== runUrl)
+        throw new Error("break-glass workflow URL is not canonical");
+      if (
+        Object.values(snapshot.plans).some((candidate) =>
+          candidate.planId !== planId &&
+          candidate.evidence.some(({ url }) => url === runUrl)
+        )
+      )
+        throw new Error("break-glass workflow evidence is already bound");
+
+      const failedOutbox = state.outbox.find(
+        ({ status, runUrl: url }) => status === "dispatched" && url !== null,
+      );
+      if (!failedOutbox?.runUrl)
+        throw new Error("reviewed publisher failure binding is missing");
+      const failedRunId =
+        /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)$/u
+          .exec(failedOutbox.runUrl)?.[1];
+      if (!failedRunId)
+        throw new Error("reviewed publisher run URL is invalid");
+      const failedRun = await githubJson(
+        `${githubApi}/actions/runs/${failedRunId}`,
+        token,
+      );
+      if (
+        failedRun.event !== "workflow_dispatch" ||
+        failedRun.path !== failedOutbox.workflow ||
+        failedRun.head_branch !== state.executionRef.name ||
+        failedRun.head_sha !== state.releaseCommit ||
+        failedRun.status !== "completed" ||
+        failedRun.conclusion === "success" ||
+        failedRun.display_title !==
+          `lenso-publish-requested:${failedOutbox.eventId}`
+      )
+        throw new Error("reviewed publisher failure is not conclusive");
+
+      const planBytes = await githubBytes(
+        repository,
+        planPath,
+        state.releaseCommit,
+        token,
+      );
+      const plan = JSON.parse(Buffer.from(planBytes).toString("utf8")) as ReleasePlanV1;
+      assertReleasePlan(plan);
+      if (
+        plan.planId !== state.planId ||
+        plan.repository !== state.repository ||
+        sha256(planBytes) !== state.planSha256
+      )
+        throw new Error("stored break-glass plan binding contradiction");
+
+      const publicPackages: Record<string, string>[] = [];
+      for (const item of state.packages) {
+        if (!item.id.startsWith("cargo:"))
+          throw new Error("approved break-glass recovery supports Cargo only");
+        const name = item.id.slice("cargo:".length);
+        const metadataResponse = await checkedExternal(
+          request,
+          `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(item.version)}`,
+        );
+        const metadata = await metadataResponse.json() as Record<string, unknown>;
+        const version = metadata.version as Record<string, unknown> | undefined;
+        const checksum = String(version?.checksum ?? "");
+        if (
+          version?.crate !== name ||
+          version?.num !== item.version ||
+          !/^[0-9a-f]{64}$/u.test(checksum)
+        )
+          throw new Error(`public Cargo metadata contradiction: ${item.id}`);
+        const archiveResponse = await checkedExternal(
+          request,
+          `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(item.version)}/download`,
+        );
+        const archive = new Uint8Array(await archiveResponse.arrayBuffer());
+        const digest = sha256(archive);
+        if (digest !== `sha256:${checksum}`)
+          throw new Error(`public Cargo archive contradiction: ${item.id}`);
+        publicPackages.push({
+          id: item.id,
+          version: item.version,
+          digest,
+          url: archiveResponse.url ||
+            `https://static.crates.io/crates/${name}/${name}-${item.version}.crate`,
+        });
+      }
+      publicPackages.sort((left, right) =>
+        `${left.id}:${left.version}`.localeCompare(`${right.id}:${right.version}`)
+      );
+
+      const framework = state.packages.find(({ id }) => id === "cargo:lenso");
+      if (!framework) throw new Error("framework release package is missing");
+      const release = await githubJson(
+        `${githubApi}/releases/tags/${encodeURIComponent(`v${framework.version}`)}`,
+        token,
+      );
+      if (
+        release.draft !== false ||
+        release.prerelease !== false ||
+        release.tag_name !== `v${framework.version}` ||
+        release.target_commitish !== state.releaseCommit
+      )
+        throw new Error("GitHub Release contradiction");
+
+      const repositoryMetadata = await githubJson(githubApi, token);
+      const defaultBranch = String(repositoryMetadata.default_branch);
+      const defaultRef = await githubJson(
+        `${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+        token,
+      );
+      const workflowCommit = String(
+        (defaultRef.object as Record<string, unknown>).sha,
+      );
+      if (!/^[0-9a-f]{40}$/u.test(workflowCommit))
+        throw new Error("recovery workflow commit is invalid");
+      const workflowBytes = await githubBytes(
+        repository,
+        plan.publisher.workflow,
+        workflowCommit,
+        token,
+      );
+      const authorizedRunSha256 = sha256({
+        schema: "lenso.production-break-glass-recovery.v1",
+        repository,
+        planId: state.planId,
+        planSha256: state.planSha256,
+        releaseCommit: state.releaseCommit,
+        failedReviewedRun: {
+          id: failedRunId,
+          url: failedOutbox.runUrl,
+          conclusion: String(failedRun.conclusion),
+        },
+        breakGlassRun: {
+          id: breakGlassRunId,
+          url: runUrl,
+          headSha: String(run.head_sha),
+        },
+        publicPackages,
+        githubRelease: {
+          id: String(release.id),
+          url: String(release.html_url),
+          tag: String(release.tag_name),
+          target: String(release.target_commitish),
+        },
+        recoveryWorkflow: {
+          branch: defaultBranch,
+          commit: workflowCommit,
+          sha256: sha256(workflowBytes),
+        },
+      } as never) as `sha256:${string}`;
+      const authorized = await authorizeProductionBreakGlassRecovery(
+        input.store,
+        {
+          repository,
+          planId: planId as `sha256:${string}`,
+          plan,
+          defaultBranch,
+          workflowCommit,
+          authorizedRunUrl: runUrl,
+          authorizedRunSha256,
+          now: now(),
+          nonce: nonce(),
+          appId: input.config.appId,
+        },
+      );
+      return runDispatchOutbox(
+        input.store,
+        authorized.state.repository,
+        authorized.state.planId,
+        input.dispatcher,
+        input.tokens,
+        now,
+      );
+    },
     async retireFailedShadowPlan(repository, planId, eventId) {
       const snapshot = await input.store.readSnapshot();
       const state = snapshot.plans[planStatePath(repository, planId)];
@@ -864,7 +1431,7 @@ export async function createCoordinatorHandlers(
           },
         },
         now(),
-        nonce(),
+        nonce,
         input.config.appId,
       );
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);

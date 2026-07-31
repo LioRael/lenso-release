@@ -44,6 +44,12 @@ Generated build output is written to `dist/` and is not committed.
 4. Plan state advances only from authenticated ready events and verified publication receipts.
 5. Completed component receipts form an immutable system candidate. A reviewed promotion produces an immutable system release; the mutable `stable` pointer moves last using compare-and-swap semantics.
 
+For an explicitly approved production break-glass publication, the reviewed
+recovery path first records exact workflow and registry evidence in release-state.
+The component repository then rebuilds and compares the already-public artifacts,
+creates attestations and receipt tags, and submits the missing receipts without
+requesting registry credentials or uploading immutable versions.
+
 The schemas in [`schemas/`](schemas/) are the public wire contracts for release events, plans, state, receipts, reconciliation, framework locks, candidates, channels, and releases. [`config/components.yaml`](config/components.yaml) is the reviewed component catalog.
 
 ## Operator and agent runbook

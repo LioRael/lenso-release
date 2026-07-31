@@ -7,7 +7,7 @@ import { assertLegalTransition, planStatePath, transact, type GitStateStore, typ
 export type ReceiptObservation = {
   registry: { packedBytes: Uint8Array; nativeIntegrity: string; url: string; publishedAt: string };
   provenance: { url: string; subject: { name: string; digest: string } };
-  workflow: { url: string; repository: string; ref: string; sha: string; runName: string; workflowPath: string };
+  workflow: { url: string; repository: string; ref: string; sha: string; runName: string; workflowPath: string; recovery?: true };
   tag: { url: string; annotated: boolean; immutable: boolean; targetSha: string | null; receipt: unknown | null };
 };
 export class IncompleteEvidenceError extends Error {}
@@ -16,15 +16,50 @@ export type ReceiptObserver = { observe(context: ReceiptObservationContext, pack
 export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; dependenciesVisible?(plan: ReleasePlanV1, packageIds: string[]): Promise<boolean>; environment: ComponentReceiptV1["environment"]; recovery?: boolean; now(): Date; nonce(): string; appId: number };
 
 const equal = (a: unknown, b: unknown) => canonicalBytes(a as never).equals(canonicalBytes(b as never));
+const RECOVERABLE_RECEIPT_BLOCK_REASONS = new Set([
+  "dispatch outcome unknown",
+  "registry contradiction",
+  "provenance contradiction",
+]);
+export function receiptRecoveryEligible(state: PlanStateV1): boolean {
+  return state.status === "publishing" ||
+    (state.status === "blocked" &&
+      RECOVERABLE_RECEIPT_BLOCK_REASONS.has(state.reason ?? ""));
+}
+function normalizeLegacyRecoveryReceipt(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const receipt = value as Record<string, unknown>;
+  const subjectValue = receipt.provenanceSubject;
+  if (typeof subjectValue !== "object" || subjectValue === null || Array.isArray(subjectValue)) return value;
+  const subject = subjectValue as Record<string, unknown>;
+  if (!Object.hasOwn(subject, "source")) return value;
+  if (Object.keys(subject).sort().join(",") !== "digest,name,source") return value;
+  const sourceValue = subject.source;
+  if (typeof sourceValue !== "object" || sourceValue === null || Array.isArray(sourceValue)) return value;
+  const source = sourceValue as Record<string, unknown>;
+  if (
+    Object.keys(source).sort().join(",") !== "ref,runId,sha" ||
+    source.ref !== "main" ||
+    !/^[1-9][0-9]*$/u.test(String(source.runId)) ||
+    !/^[0-9a-f]{40}$/u.test(String(source.sha))
+  ) return value;
+  const { receiptId: _legacyReceiptId, ...legacyIdentity } = receipt;
+  const identity = {
+    ...legacyIdentity,
+    provenanceSubject: { name: subject.name, digest: subject.digest },
+  };
+  return { ...identity, receiptId: sha256(identity as never) };
+}
 function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { eventType: "lenso-publish-receipt" }>, observed: ReceiptObservation, state: PlanStateV1): void {
   if (sha256(observed.registry.packedBytes) !== receipt.packedSha256 || observed.registry.nativeIntegrity !== receipt.registryIntegrity || observed.registry.url !== receipt.registryUrl || observed.registry.publishedAt !== receipt.publishedAt) throw new Error("registry contradiction");
   if (observed.provenance.url !== receipt.provenanceUrl || !equal(observed.provenance.subject, receipt.provenanceSubject)) throw new Error("provenance contradiction");
   const run = observed.workflow;
   const outbox = state.outbox.find(({ eventId }) => eventId === event.correlationId);
   if (!outbox || !outbox.packages.some(({ id, version }) => id === receipt.packageId && version === receipt.version)) throw new Error("workflow package contradiction");
-  if (run.url !== receipt.workflowUrl || run.repository !== state.repository || run.ref !== state.executionRef.name || run.sha !== state.releaseCommit || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
+  const exactExecution = run.ref === state.executionRef.name && run.sha === state.releaseCommit;
+  if (run.url !== receipt.workflowUrl || run.repository !== state.repository || (!exactExecution && run.recovery !== true) || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
   const tagReceipt = observed.tag.receipt;
-  const tagContainsReceipt = equal(tagReceipt, receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(candidate, receipt)));
+  const tagContainsReceipt = equal(normalizeLegacyRecoveryReceipt(tagReceipt), receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(normalizeLegacyRecoveryReceipt(candidate), receipt)));
   if (!observed.tag.annotated || !observed.tag.immutable || observed.tag.targetSha !== state.releaseCommit || observed.tag.url !== receipt.tagUrl || !tagContainsReceipt) throw new Error("annotated tag contradiction");
 }
 async function block(deps: ReceiptDependencies, path: string, eventId: Sha256, reason: string): Promise<StoredPlanState> {
@@ -42,7 +77,7 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
   const auth = await deps.authenticate(value); if (value.expectedAppId !== deps.appId || auth.appId !== deps.appId || auth.actor !== deps.expectedActor) throw new Error("receipt GitHub App authentication mismatch");
   const receipt = value.receipt; const path = planStatePath(receipt.repository, receipt.planId); const snapshot = await deps.store.readSnapshot(); const current = snapshot.plans[path]; if (!current) throw new Error("plan state not found");
   if (current.status === "verified" && current.receipts.some((item) => equal(item, receipt))) return { state: current, headSha: snapshot.headSha };
-  if (current.status === "blocked" && (!deps.recovery || current.reason !== "dispatch outcome unknown")) throw new Error("blocked plan requires explicit recovery");
+  if (current.status === "blocked" && (!deps.recovery || !receiptRecoveryEligible(current))) throw new Error("blocked plan requires explicit recovery");
   if (current.receipts.some((item) => equal(item, receipt))) return { state: current, headSha: snapshot.headSha };
   if (receipt.planId !== current.planId || receipt.repository !== current.repository || receipt.sourceCommit !== current.releaseCommit || value.planId !== current.planId || value.releaseCommit !== current.releaseCommit) return block(deps, path, value.eventId, "receipt identity contradiction");
   const selected = current.packages.find(({ id, version }) => id === receipt.packageId && version === receipt.version); if (!selected || selected.requestEventId !== value.correlationId) return block(deps, path, value.eventId, "receipt package correlation contradiction");
@@ -73,14 +108,17 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
 }
 
 export async function recoverLostReceipt(repository: string, planId: string, packageId: string, version: string, deps: ReceiptDependencies): Promise<StoredPlanState | null> {
-  const snapshot = await deps.store.readSnapshot(); const state = snapshot.plans[planStatePath(repository, planId)]; if (!state) throw new Error("plan state not found"); if (state.status === "blocked" && state.reason !== "dispatch outcome unknown") throw new Error("blocked plan is not recoverable");
+  const snapshot = await deps.store.readSnapshot(); const state = snapshot.plans[planStatePath(repository, planId)]; if (!state) throw new Error("plan state not found"); if (!receiptRecoveryEligible(state)) throw new Error("blocked plan is not recoverable");
   const selected = state.packages.find((item) => item.id === packageId && item.version === version); const requestId = selected?.requestEventId; if (!requestId) throw new Error("package was not dispatched");
   const outbox = state.outbox.find(({ eventId }) => eventId === requestId); if (!outbox || !outbox.packages.some(({ id, version: selectedVersion }) => id === packageId && selectedVersion === version)) throw new Error("package outbox binding missing");
   const context: ReceiptObservationContext = { repository, releaseCommit: state.releaseCommit, eventId: requestId, executionRef: state.executionRef.name, workflow: outbox.workflow, packages: outbox.packages };
   const observed = await deps.observer.observe(context, packageId, version); if (!observed) return null;
-  if (observed.workflow.repository !== repository || observed.workflow.ref !== state.executionRef.name || observed.workflow.sha !== state.releaseCommit || observed.workflow.runName !== `lenso-publish-requested:${requestId}` || observed.workflow.workflowPath !== outbox.workflow) return null;
+  const exactExecution = observed.workflow.ref === state.executionRef.name && observed.workflow.sha === state.releaseCommit;
+  if (observed.workflow.repository !== repository || (!exactExecution && observed.workflow.recovery !== true) || observed.workflow.runName !== `lenso-publish-requested:${requestId}` || observed.workflow.workflowPath !== outbox.workflow) return null;
   const identity = { schema: "lenso.component-receipt.v1" as const, environment: deps.environment, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
-  let receipt = observed.tag.receipt as ComponentReceiptV1 | null;
+  let receipt = observed.tag.receipt === null
+    ? null
+    : normalizeLegacyRecoveryReceipt(observed.tag.receipt) as ComponentReceiptV1;
   if (receipt === null) {
     receipt = { ...identity, receiptId: sha256(identity as never) as Sha256 };
     await deps.observer.createAnnotatedTag(repository, receipt);

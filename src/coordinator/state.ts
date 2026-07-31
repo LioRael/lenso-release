@@ -26,6 +26,10 @@ export class StateConflictError extends Error {}
 
 const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
+export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
+  "authorized production break-glass recovery";
+export const RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
+  "retried authorized production break-glass recovery";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -291,16 +295,37 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     "outbox",
   );
   for (const entry of outbox) {
-    exactKeys(entry as unknown as Record<string, unknown>, [
+    const entryKeys = [
       "eventId", "nonce", "ref", "workflow", "packages", "inputs", "status",
       "claimOwner", "leaseExpiresAt", "runUrl", "createdAt", "updatedAt",
-    ], "outbox");
+    ];
+    if (Object.hasOwn(entry, "recovery")) entryKeys.push("recovery");
+    exactKeys(entry as unknown as Record<string, unknown>, entryKeys, "outbox");
+    const recovery = entry.recovery;
+    if (recovery !== undefined) {
+      exactKeys(
+        recovery as unknown as Record<string, unknown>,
+        ["kind", "authorizedRunUrl", "authorizedRunSha256", "workflowCommit"],
+        "outbox recovery",
+      );
+      if (
+        recovery.kind !== "production-break-glass" ||
+        !/^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/actions\/runs\/[1-9][0-9]*$/u
+          .test(recovery.authorizedRunUrl) ||
+        !SHA256.test(recovery.authorizedRunSha256) ||
+        !OID.test(recovery.workflowCommit) ||
+        state.environment !== "production"
+      )
+        throw new TypeError("outbox recovery invalid");
+    }
     if (
       !SHA256.test(entry.eventId) ||
       !isRfc3339(entry.createdAt) ||
       !isRfc3339(entry.updatedAt) ||
       !["pending", "in-flight", "dispatched", "cancelled"].includes(entry.status) ||
-      entry.ref !== ref.name ||
+      (recovery === undefined
+        ? entry.ref !== ref.name
+        : !/^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,254})$/u.test(entry.ref)) ||
       typeof entry.nonce !== "string" ||
       entry.nonce.length === 0 ||
       typeof entry.workflow !== "string" ||
@@ -422,6 +447,14 @@ export function assertLegalTransition(
   const retryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
   );
+  const breakGlassAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
+    kind === "recovery" &&
+    outcome === "accepted" &&
+    (
+      detail === AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY ||
+      detail === RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY
+    )
+  );
   const retryOutbox = retryAttempt
     ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)
     : undefined;
@@ -433,7 +466,16 @@ export function assertLegalTransition(
     if (
       before.requestEventId !== null && before.requestEventId !== after.requestEventId &&
       (!retryOutbox || after.requestEventId !== retryOutbox.eventId ||
-        !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version))
+        !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version)) &&
+      (!breakGlassAttempt ||
+        after.requestEventId !== breakGlassAttempt.eventId ||
+        !next.outbox.some((entry) =>
+          entry.eventId === breakGlassAttempt.eventId &&
+          entry.recovery?.kind === "production-break-glass" &&
+          entry.packages.some(({ id, version }) =>
+            id === after.id && version === after.version
+          )
+        ))
     ) throw new TypeError("immutable package request rewrite");
   }
   const nextReceipts = new Set(next.receipts.map((receipt) => JSON.stringify(receipt)));
@@ -460,7 +502,8 @@ export function assertLegalTransition(
         throw new TypeError(`immutable outbox ${field} rewrite`);
     if (
       JSON.stringify(before.packages) !== JSON.stringify(after.packages) ||
-      JSON.stringify(before.inputs) !== JSON.stringify(after.inputs)
+      JSON.stringify(before.inputs) !== JSON.stringify(after.inputs) ||
+      JSON.stringify(before.recovery) !== JSON.stringify(after.recovery)
     )
       throw new TypeError("immutable outbox payload rewrite");
   }
@@ -471,7 +514,7 @@ export function assertLegalTransition(
     (previous.status === "publishing" &&
       ["verified", "blocked"].includes(next.status)) ||
     (previous.status === "blocked" &&
-      next.status === "publishing" &&
+      ["publishing", "verified"].includes(next.status) &&
       next.evidence.some(({ kind }) => kind === "recovery"));
   if (!legal)
     throw new TypeError(
@@ -572,7 +615,7 @@ export async function retryFailedShadowPlan(
   mode: string | undefined,
   facts: FailedShadowRetryFacts,
   now: Date,
-  nonce: string,
+  nextNonce: () => string,
   appId: number,
 ): Promise<StoredPlanState> {
   if (mode !== "shadow") throw new Error("failed plan retry is restricted to shadow mode");
@@ -585,7 +628,7 @@ export async function retryFailedShadowPlan(
     throw new Error("plan is not eligible for failed dispatch retry");
   if (state.attempts.some(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
-  )) throw new Error("failed shadow plan retry was already consumed");
+  )) return { state, headSha: initial.headSha };
   if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
     throw new Error("failed dispatch retry forbids pending or in-flight dispatches");
   const previous = state.outbox
@@ -599,6 +642,7 @@ export async function retryFailedShadowPlan(
   ) throw new Error("dispatched workflow is not conclusively failed");
 
   const at = now.toISOString();
+  const nonce = nextNonce();
   const identity = {
     schema: "lenso.release-event.v1",
     eventType: "lenso-publish-requested",
@@ -688,6 +732,19 @@ export async function retireFailedShadowPlan(
   if (dispatched.length === 0)
     throw new Error("failed dispatch retirement requires a dispatched workflow");
   const received = new Set(state.receipts.map(({ packageId, version }) => `${packageId}@${version}`));
+  const verifiedByAnotherPlan = new Set(
+    Object.values(initial.plans)
+      .filter((candidate) =>
+        candidate.planId !== state.planId &&
+        candidate.status === "verified" &&
+        candidate.environment === "shadow"
+      )
+      .flatMap((candidate) =>
+        candidate.receipts
+          .filter(({ environment }) => environment === "shadow")
+          .map(({ packageId, version }) => `${packageId}@${version}`)
+      ),
+  );
   for (const entry of dispatched) {
     const run = await facts.observeRun(entry);
     const receivedCount = entry.packages.filter(({ id, version }) => received.has(`${id}@${version}`)).length;
@@ -702,12 +759,16 @@ export async function retireFailedShadowPlan(
     ) throw new Error("dispatched workflow is not conclusively failed");
   }
   for (const pkg of state.packages) {
-    const hasReceipt = received.has(`${pkg.id}@${pkg.version}`);
+    const key = `${pkg.id}@${pkg.version}`;
+    const hasReceipt = received.has(key);
+    const hasPriorVerifiedReceipt = verifiedByAnotherPlan.has(key);
     const exists = await facts.packageVersionExists(pkg.id, pkg.version);
-    if (hasReceipt !== exists)
+    if (hasReceipt !== exists && !(exists && hasPriorVerifiedReceipt))
       throw new Error(hasReceipt
         ? `received shadow package is missing: ${pkg.id}@${pkg.version}`
         : `unreceived package version already exists: ${pkg.id}@${pkg.version}`);
+    if (!exists && hasPriorVerifiedReceipt)
+      throw new Error(`previously verified shadow package is missing: ${pkg.id}@${pkg.version}`);
   }
 
   let result!: PlanStateV1;

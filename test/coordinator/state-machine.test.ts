@@ -28,6 +28,10 @@ import { acceptReadyEvent } from "../../src/coordinator/ready.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
 import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
 import { scanActiveOutboxRecovery, scanActiveRecovery } from "../../src/coordinator/production-facts.js";
+import {
+  authorizeProductionBreakGlassRecovery,
+  retryProductionBreakGlassRecovery,
+} from "../../src/coordinator/break-glass-recovery.js";
 import { HANDLE_EVENT_EXIT, handleEvent, runHandleEventCli } from "../../src/commands/handle-event.js";
 
 const digest = (value: string) => `sha256:${value.repeat(64)}` as const;
@@ -493,7 +497,7 @@ describe("atomic coordinator state", () => {
     expect(retry.state).toMatchObject({ status: "blocked", reason: "dispatch outcome unknown" });
     expect(retry.state.occupancyKeys.length).toBeGreaterThan(0);
   });
-  it("reconstructs a lost receipt and creates a missing annotated tag without publishing", async () => {
+  it("reconstructs a lost receipt from a reviewed recovery run without publishing", async () => {
     const identity = {
       schema: "lenso.release-plan.v1" as const,
       repository: "LioRael/lenso",
@@ -509,6 +513,8 @@ describe("atomic coordinator state", () => {
     value.planId = plan.planId;
     value.planSha256 = sha256(planBytes) as Sha256;
     value.executionRef.name = `release-execution/${plan.planId.slice(7)}`;
+    value.status = "blocked";
+    value.reason = "provenance contradiction";
     value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
     value.occupancyKeys = ["package:cargo:lenso-contracts:1.0.0", `plan:${value.repository}:${value.planId}`].sort();
     const store = new MemoryStore(snapshot(value));
@@ -519,7 +525,7 @@ describe("atomic coordinator state", () => {
     const observation = () => ({
       registry: { packedBytes: bytes, nativeIntegrity: packed.slice(7), url: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", publishedAt: "2026-07-11T00:02:00Z" },
       provenance: { url: "https://github.com/LioRael/lenso/attestations/1", subject: { name: "lenso-contracts-1.0.0.crate", digest: packed } },
-      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/7", repository: value.repository, ref: value.executionRef.name, sha: value.releaseCommit, runName: `lenso-publish-requested:${value.packages[0]!.requestEventId!}`, workflowPath: value.outbox[0]!.workflow },
+      workflow: { url: "https://github.com/LioRael/lenso/actions/runs/8", repository: value.repository, ref: "main", sha: "2".repeat(40), runName: `lenso-publish-requested:${value.packages[0]!.requestEventId!}`, workflowPath: value.outbox[0]!.workflow, recovery: true as const },
       tag: { url: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", annotated: tagReceipt !== null, immutable: tagReceipt !== null, targetSha: value.releaseCommit, receipt: tagReceipt },
     });
     const recovered = await recoverLostReceipt(value.repository, value.planId, value.packages[0]!.id, value.packages[0]!.version, {
@@ -531,8 +537,153 @@ describe("atomic coordinator state", () => {
     expect(recovered?.state.status).toBe("verified");
     expect(recovered?.state.receipts).toEqual([tagReceipt]);
   });
+  it("authorizes one production break-glass recovery outbox for the full plan", async () => {
+    const value = state();
+    value.outbox[0] = {
+      ...value.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/7",
+    };
+    const store = new MemoryStore(snapshot(value));
+    const plan = {
+      schema: "lenso.release-plan.v1",
+      planId: value.planId,
+      repository: value.repository,
+      sourceCommit: value.sourceCommit,
+      tegamiVersion: "1.2.5",
+      publisher: {
+        workflow: ".github/workflows/publish.yml",
+        workflowSha256: digest("1"),
+        sharedRevision: "4".repeat(40),
+        sharedBundleSha256: digest("2"),
+        runner: "ubuntu-24.04",
+        node: "24.0.0",
+        npm: "11.7.0",
+        rust: "1.94.0",
+      },
+      generatedFiles: [{ path: "Cargo.lock", sha256: digest("3") }],
+      packages: [{
+        id: value.packages[0]!.id,
+        previousVersion: "0.9.0",
+        nextVersion: value.packages[0]!.version,
+        bump: "major",
+        releaseGroup: "foundation",
+        userFacing: true,
+        dependencies: [],
+      }],
+    } as ReleasePlanV1;
+    const authorized = await authorizeProductionBreakGlassRecovery(store, {
+      repository: value.repository,
+      planId: value.planId,
+      plan,
+      defaultBranch: "main",
+      workflowCommit: "5".repeat(40),
+      authorizedRunUrl: "https://github.com/LioRael/lenso/actions/runs/8",
+      authorizedRunSha256: digest("9"),
+      now: new Date("2026-07-11T00:03:00Z"),
+      nonce: "break-glass-recovery-nonce",
+      appId: 42,
+    });
+    const recovery = authorized.state.outbox.find((entry) => entry.recovery);
+    expect(recovery).toMatchObject({
+      ref: "main",
+      workflow: ".github/workflows/publish.yml",
+      status: "pending",
+      recovery: {
+        kind: "production-break-glass",
+        authorizedRunUrl: "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        workflowCommit: "5".repeat(40),
+      },
+    });
+    expect(authorized.state.packages[0]).toMatchObject({
+      status: "dispatched",
+      requestEventId: recovery!.eventId,
+    });
+    expect(authorized.state.attempts.at(-1)).toMatchObject({
+      eventId: recovery!.eventId,
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "authorized production break-glass recovery",
+    });
+
+    const dispatch = vi.fn(async (command, eventId) =>
+      observedRun({
+        repository: command.repository,
+        workflow: command.workflow,
+        ref: command.ref,
+        sha: command.expectedSha,
+      }, eventId, 9)
+    );
+    const dispatched = await runDispatchOutbox(
+      store,
+      value.repository,
+      value.planId,
+      {
+        async findByEventId() { return null; },
+        dispatch,
+      },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:04:00Z"),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ref: "main",
+        expectedSha: "5".repeat(40),
+      }),
+      recovery!.eventId,
+      "secret",
+    );
+    expect(
+      dispatched.state.outbox.find(({ eventId }) => eventId === recovery!.eventId),
+    ).toMatchObject({
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/9",
+    });
+
+    const retried = await retryProductionBreakGlassRecovery(
+      store,
+      {
+        repository: value.repository,
+        planId: value.planId,
+        plan,
+        defaultBranch: "main",
+        workflowCommit: "6".repeat(40),
+        authorizedRunUrl:
+          "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        now: new Date("2026-07-11T00:05:00Z"),
+        nonce: "break-glass-retry-nonce",
+        appId: 42,
+      },
+      recovery!.eventId,
+    );
+    const retry = retried.state.outbox.find(
+      (entry) =>
+        entry.recovery?.workflowCommit === "6".repeat(40),
+    );
+    expect(retry).toMatchObject({
+      ref: "main",
+      status: "pending",
+      recovery: {
+        authorizedRunUrl:
+          "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        workflowCommit: "6".repeat(40),
+      },
+    });
+    expect(retried.state.packages[0]?.requestEventId).toBe(retry?.eventId);
+    expect(retried.state.attempts.at(-1)).toMatchObject({
+      eventId: retry?.eventId,
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "retried authorized production break-glass recovery",
+    });
+  });
   it("continues active recovery after incomplete evidence but aborts security errors", async () => {
     const first = state();
+    first.status = "blocked";
+    first.reason = "registry contradiction";
     const second = structuredClone(first);
     second.repository = "LioRael/lenso-cli";
     const calls: string[] = [];
@@ -674,6 +825,50 @@ describe("atomic coordinator state", () => {
     }, new Date());
     expect(partiallyRetired.state).toMatchObject({ status: "blocked", receipts: withReceipt.receipts, occupancyKeys: [] });
 
+    const prior = structuredClone(withReceipt);
+    prior.planId = digest("d");
+    prior.environment = "shadow";
+    prior.status = "verified";
+    prior.reason = null;
+    prior.packages[0]!.requestEventId = prior.outbox[0]!.eventId;
+    prior.receipts[0] = {
+      ...prior.receipts[0]!,
+      planId: prior.planId,
+    };
+    prior.outbox = [];
+    prior.occupancyKeys = [];
+    prior.executionRef = {
+      name: `release-execution/${"d".repeat(64)}`,
+      tip: prior.releaseCommit,
+      protected: true,
+    };
+    const preexistingSnapshot = snapshot(failed);
+    preexistingSnapshot.plans[planStatePath(prior.repository, prior.planId)] = prior;
+    const preexistingRetired = await retireFailedShadowPlan(
+      new MemoryStore(preexistingSnapshot),
+      failed.repository,
+      failed.planId,
+      digest("f"),
+      "shadow",
+      {
+        async observeRun() {
+          return {
+            runUrl: failed.outbox[0]!.runUrl!,
+            status: "completed",
+            conclusion: "failure",
+          };
+        },
+        async packageVersionExists() { return true; },
+      },
+      new Date(),
+    );
+    expect(preexistingRetired.state).toMatchObject({
+      status: "blocked",
+      reason: "retired failed shadow dispatch",
+      receipts: [],
+      occupancyKeys: [],
+    });
+
     for (const [mode, receipts, conclusion, exists, message] of [
       ["production", [], "failure", false, "shadow mode"],
       ["shadow", [], "success", false, "conclusively failed"],
@@ -703,7 +898,7 @@ describe("atomic coordinator state", () => {
       "shadow",
       { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
       new Date("2026-07-11T00:03:00Z"),
-      "retry-nonce",
+      () => "retry-nonce",
       42,
     );
     expect(retried.state.outbox).toHaveLength(2);
@@ -713,21 +908,72 @@ describe("atomic coordinator state", () => {
     expect(pending.packages).toEqual(failed.outbox[0]!.packages);
     expect(retried.state.packages[0]!.requestEventId).toBe(pending.eventId);
     expect(retried.state.attempts.at(-1)).toMatchObject({ eventId: pending.eventId, kind: "recovery", outcome: "accepted", detail: "retry failed shadow dispatch" });
-    await expect(retryFailedShadowPlan(
+    const replayNonce = vi.fn(() => "second-retry");
+    const replayed = await retryFailedShadowPlan(
       store, failed.repository, failed.planId, "shadow",
       { async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; } },
-      new Date("2026-07-11T00:04:00Z"), "second-retry", 42,
-    )).rejects.toThrow("already consumed");
+      new Date("2026-07-11T00:04:00Z"), replayNonce, 42,
+    );
+    expect(replayNonce).not.toHaveBeenCalled();
+    expect(replayed.state).toEqual(retried.state);
+    expect(replayed.state.outbox).toHaveLength(2);
+    expect(replayed.state.attempts.filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
+    )).toHaveLength(1);
+
+    const dispatch = vi.fn(async () => { throw new Error("workflow run is not yet visible"); });
+    await expect(runDispatchOutbox(
+      store,
+      failed.repository,
+      failed.planId,
+      { async findByEventId() { return null; }, dispatch },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:05:00Z"),
+    )).rejects.toThrow("not yet visible");
+    const acceptedRetry = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
+    const inFlight = acceptedRetry.outbox.find(({ eventId }) => eventId === pending.eventId)!;
+    expect(inFlight).toMatchObject({ status: "in-flight", nonce: "retry-nonce", packages: pending.packages });
+
+    const delayedReplayNonce = vi.fn(() => "third-retry");
+    await retryFailedShadowPlan(
+      store, failed.repository, failed.planId, "shadow",
+      { async observeRun() { return null; } },
+      new Date("2026-07-11T00:20:00Z"), delayedReplayNonce, 42,
+    );
+    expect(delayedReplayNonce).not.toHaveBeenCalled();
+
+    const redispatch = vi.fn();
+    const reconciled = await runDispatchOutbox(
+      store,
+      failed.repository,
+      failed.planId,
+      {
+        async findByEventId(context, eventId) { return observedRun(context, eventId, 99); },
+        async dispatch() { redispatch(); throw new Error("must not redispatch"); },
+      },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:20:00Z"),
+    );
+    expect(redispatch).not.toHaveBeenCalled();
+    expect(reconciled.state.outbox.find(({ eventId }) => eventId === pending.eventId)).toMatchObject({
+      status: "dispatched",
+      nonce: "retry-nonce",
+      packages: pending.packages,
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/99",
+    });
+    expect(reconciled.state.attempts.filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
+    )).toHaveLength(1);
 
     await expect(retryFailedShadowPlan(
       new MemoryStore(snapshot(failed)), failed.repository, failed.planId, "production",
-      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+      { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("shadow mode");
     const running = structuredClone(failed);
     running.outbox[0] = { ...running.outbox[0]!, status: "in-flight", runUrl: null, claimOwner: "worker", leaseExpiresAt: "2026-07-11T00:10:00Z" };
     await expect(retryFailedShadowPlan(
       new MemoryStore(snapshot(running)), running.repository, running.planId, "shadow",
-      { async observeRun() { return null; } }, new Date(), "nonce", 42,
+      { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("pending or in-flight");
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {

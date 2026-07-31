@@ -135,6 +135,27 @@ const expectedInventory = {
     true
   ],
   "cargo:lenso-platform-runtime": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:lenso-platform-runtime-observability": [
+    "LioRael/lenso",
+    "crates-io",
+    "foundation",
+    true,
+    false
+  ],
+  "cargo:lenso-platform-runtime-operations": [
+    "LioRael/lenso",
+    "crates-io",
+    "foundation",
+    true,
+    false
+  ],
+  "cargo:lenso-platform-system-plane": [
+    "LioRael/lenso",
+    "crates-io",
+    "foundation",
+    true,
+    false
+  ],
   "cargo:lenso-platform-testing": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-service": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-worker": ["LioRael/lenso", "crates-io", "host", true, true],
@@ -213,6 +234,23 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-runtime",
+    "cargo:lenso-platform-runtime-observability",
+    "cargo:lenso-platform-runtime-operations",
+    "cargo:lenso-platform-system-plane",
+    "cargo:lenso-service"
+  ],
+  "cargo:lenso-platform-system-plane": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-service"
+  ],
+  "cargo:lenso-platform-runtime-observability": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-system-plane",
+    "cargo:lenso-service"
+  ],
+  "cargo:lenso-platform-runtime-operations": [
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-system-plane",
     "cargo:lenso-service"
   ],
   "cargo:lenso-module-auth": [
@@ -329,7 +367,8 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module",
-    "cargo:lenso-worker"
+    "cargo:lenso-worker",
+    "cargo:lenso-service"
   ],
   "cargo:lenso-cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-service"],
   "npm:@lenso/cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-cli"],
@@ -413,7 +452,11 @@ describe("component release graph", () => {
     );
 
     expect(actual).toEqual(expectedInventory);
-    expect(registry.internalPackages).toEqual([]);
+    expect(registry.internalPackages).toEqual([
+      "cargo:lenso-platform-runtime-observability",
+      "cargo:lenso-platform-runtime-operations",
+      "cargo:lenso-platform-system-plane"
+    ]);
   });
 
   it("matches every reviewed cross-repository and release-phase edge", async () => {

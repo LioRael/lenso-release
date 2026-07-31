@@ -5,15 +5,16 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, write
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 
 import { parse } from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { syncRepositoryTemplate, type TemplateManifest } from "../../src/commands/sync-repository-template.js";
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives } from "../../src/repository/runtime.js";
+import { cargoArchiveEquivalent, cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -22,6 +23,7 @@ const root = resolve(import.meta.dirname, "../..");
 const template = join(root, "templates/repository");
 const temporary: string[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(temporary.splice(0).map(async (path) => {
     const resolved = resolve(path); const prefix = `${resolve(tmpdir())}/lenso-template-test-`;
     if (!resolved.startsWith(prefix) || resolved === resolve(process.cwd()) || resolve(process.cwd()).startsWith(`${resolved}/`)) throw new Error(`refusing unsafe test cleanup: ${resolved}`);
@@ -31,6 +33,41 @@ afterEach(async () => {
 });
 async function temp(): Promise<string> { const path = await mkdtemp(join(tmpdir(), "lenso-template-test-")); temporary.push(path); return path; }
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+function cargoLockArchive(checksum: string, suffix = ""): Buffer {
+  const content = Buffer.from(`version = 4\nchecksum = "${checksum}"\n${suffix}`);
+  const header = Buffer.alloc(512);
+  const octal = (value: number, offset: number, length: number): void => {
+    header.write(
+      `${value.toString(8).padStart(length - 1, "0")}\0`,
+      offset,
+      length,
+      "ascii",
+    );
+  };
+  header.write("fixture-1.0.0/Cargo.lock", 0, "utf8");
+  octal(420, 100, 8);
+  octal(0, 108, 8);
+  octal(0, 116, 8);
+  octal(content.length, 124, 12);
+  octal(0, 136, 12);
+  header.fill(32, 148, 156);
+  header[156] = 48;
+  header.write("ustar\0", 257, "ascii");
+  header.write("00", 263, "ascii");
+  const checksumValue = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(
+    `${checksumValue.toString(8).padStart(6, "0")}\0 `,
+    148,
+    8,
+    "ascii",
+  );
+  const padding = Buffer.alloc(
+    Math.ceil(content.length / 512) * 512 - content.length,
+  );
+  return gzipSync(
+    Buffer.concat([header, content, padding, Buffer.alloc(1024)]),
+  );
+}
 
 describe("npm shadow registry authentication", () => {
   it("normalizes the registry and token scope to the same trailing-slash path", () => {
@@ -43,6 +80,144 @@ describe("npm shadow registry authentication", () => {
   it("rejects registry URLs that could redirect or disclose credentials", () => {
     expect(() => npmRegistryAuthentication("https://user:secret@registry.example/npm")).toThrow(/must not contain credentials/u);
     expect(() => npmRegistryAuthentication("https://registry.example/npm?target=other")).toThrow(/query parameters/u);
+  });
+});
+
+describe("crates.io archive redirects", () => {
+  it("follows only the official static archive redirect", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: {
+          location:
+            "https://static.crates.io/crates/lenso/lenso-0.3.34.crate",
+        },
+      }))
+      .mockResolvedValueOnce(new Response("crate"));
+    vi.stubGlobal("fetch", request);
+    await expect(fetchCargoArchive(
+      "https://crates.io/api/v1/crates/lenso/0.3.34/download",
+      { "user-agent": "publisher" },
+    )).resolves.toMatchObject({ status: 200 });
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      new URL("https://static.crates.io/crates/lenso/lenso-0.3.34.crate"),
+      { headers: { "user-agent": "publisher" }, redirect: "error" },
+    );
+  });
+
+  it("rejects redirects outside the crates.io archive host", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://example.com/lenso.crate" },
+    })));
+    await expect(fetchCargoArchive(
+      "https://crates.io/api/v1/crates/lenso/0.3.34/download",
+      { "user-agent": "publisher" },
+    )).rejects.toThrow("crates registry redirect is not trusted");
+  });
+});
+
+describe("recovery attestation URLs", () => {
+  it("accepts only the repository's official GitHub attestation URL", () => {
+    expect(validateRecoveryAttestationUrl(
+      "https://github.com/LioRael/lenso/attestations/123",
+      "LioRael/lenso",
+    )).toBe("https://github.com/LioRael/lenso/attestations/123");
+    expect(() => validateRecoveryAttestationUrl(
+      "https://example.com/LioRael/lenso/attestations/123",
+      "LioRael/lenso",
+    )).toThrow(/invalid/u);
+    expect(() => validateRecoveryAttestationUrl(
+      "https://github.com/LioRael/other/attestations/123",
+      "LioRael/lenso",
+    )).toThrow(/invalid/u);
+  });
+});
+
+describe("Cargo recovery archive equivalence", () => {
+  it("requires identical tar bytes while allowing gzip encoder differences", () => {
+    const tar = Buffer.from("reviewed tar bytes");
+    const first = gzipSync(tar, { level: 1 });
+    const second = gzipSync(tar, { level: 9 });
+    expect(first.equals(second)).toBe(false);
+    expect(cargoArchiveEquivalent(first, second)).toBe(true);
+    expect(cargoArchiveEquivalent(
+      first,
+      gzipSync(Buffer.from("different tar bytes"), { level: 9 }),
+    )).toBe(false);
+    expect(cargoArchiveEquivalent(first, Buffer.from("not gzip"))).toBe(false);
+  });
+
+  it("normalizes only an exact dependency checksum inside Cargo.lock", () => {
+    const reviewed = "a".repeat(64);
+    const registry = "b".repeat(64);
+    const reviewedArchive = cargoLockArchive(reviewed);
+    const registryArchive = cargoLockArchive(registry);
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive)).toBe(false);
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive, [{
+      reviewed: `sha256:${reviewed}`,
+      registry: `sha256:${registry}`,
+    }])).toBe(true);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed, "reviewed"),
+      cargoLockArchive(registry, "different"),
+      [{ reviewed: `sha256:${reviewed}`, registry: `sha256:${registry}` }],
+    )).toBe(false);
+  });
+
+  it("normalizes verified transitive dependency checksums inside Cargo.lock", () => {
+    const reviewedDirect = "a".repeat(64);
+    const registryDirect = "b".repeat(64);
+    const reviewedTransitive = "c".repeat(64);
+    const registryTransitive = "d".repeat(64);
+    const reviewedArchive = cargoLockArchive(
+      reviewedDirect,
+      `checksum = "${reviewedTransitive}"\n`,
+    );
+    const registryArchive = cargoLockArchive(
+      registryDirect,
+      `checksum = "${registryTransitive}"\n`,
+    );
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive, [
+      {
+        reviewed: `sha256:${reviewedDirect}`,
+        registry: `sha256:${registryDirect}`,
+      },
+      {
+        reviewed: `sha256:${reviewedTransitive}`,
+        registry: `sha256:${registryTransitive}`,
+      },
+    ])).toBe(true);
+  });
+
+  it("ignores verified prior checksums absent from the current Cargo.lock", () => {
+    const reviewed = "a".repeat(64);
+    const registry = "b".repeat(64);
+    const unrelatedReviewed = "c".repeat(64);
+    const unrelatedRegistry = "d".repeat(64);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed),
+      cargoLockArchive(registry),
+      [
+        {
+          reviewed: `sha256:${reviewed}`,
+          registry: `sha256:${registry}`,
+        },
+        {
+          reviewed: `sha256:${unrelatedReviewed}`,
+          registry: `sha256:${unrelatedRegistry}`,
+        },
+      ],
+    )).toBe(true);
+    expect(cargoArchiveEquivalent(
+      cargoLockArchive(reviewed),
+      cargoLockArchive(registry),
+      [{
+        reviewed: `sha256:${unrelatedReviewed}`,
+        registry: `sha256:${unrelatedRegistry}`,
+      }],
+    )).toBe(false);
   });
 });
 
@@ -83,6 +258,33 @@ describe("repository template workflow contracts", () => {
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write", packages: "write" });
     expect(source).toContain("pnpm run --if-present release:artifacts");
     expect(source).toContain("LENSO_OCI_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_OCI_TOKEN || github.token }}");
+    expect(workflow.jobs.publish.if).toBe(
+      "startsWith(github.ref_name, 'release-execution/')",
+    );
+    expect(workflow.jobs.recover.if).toBe(
+      "github.ref_name == github.event.repository.default_branch",
+    );
+    expect(workflow.jobs.recover.permissions).toEqual({
+      contents: "write",
+      "id-token": "write",
+      attestations: "write",
+    });
+    const recovery = source.slice(source.indexOf("\n  recover:"));
+    expect(recovery).toContain("cli.js recover-prepare");
+    expect(recovery).toContain("cli.js recover");
+    expect(recovery).toContain(
+      "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+    );
+    expect(recovery).toContain(
+      "target/recovery-attestations/*.crate",
+    );
+    expect(recovery).toContain(
+      "LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}",
+    );
+    expect(recovery).toContain("LENSO_RUNTIME_CWD:");
+    expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
+    expect(recovery).not.toContain("NODE_AUTH_TOKEN");
+    expect(recovery).not.toContain("crates-io-auth-action");
   });
 
   it("uses scoped App authentication and prioritizes fresh intent over a retained plan", async () => {
@@ -131,6 +333,82 @@ describe("repository template workflow contracts", () => {
   });
 });
 
+describe("production break-glass recovery authorization", () => {
+  it("accepts only the exact dispatched run recorded in release-state", async () => {
+    const eventId = `sha256:${"e".repeat(64)}`;
+    const planId = `sha256:${"a".repeat(64)}`;
+    const planSha256 = `sha256:${"b".repeat(64)}`;
+    const releaseCommit = "2".repeat(40);
+    const workflowCommit = "3".repeat(40);
+    const runUrl = "https://github.com/LioRael/lenso/actions/runs/42";
+    const packages = [{ id: "cargo:lenso", version: "0.3.34" }];
+    const nonce = "12345678-1234-4234-8234-123456789abc";
+    const state = {
+      schema: "lenso.plan-state.v1",
+      environment: "production",
+      repository: "LioRael/lenso",
+      planId,
+      planSha256,
+      releaseCommit,
+      status: "publishing",
+      outbox: [{
+        eventId,
+        ref: "main",
+        workflow: ".github/workflows/publish.yml",
+        packages,
+        inputs: {
+          event_id: eventId,
+          plan_id: planId,
+          plan_sha256: planSha256,
+          release_commit: releaseCommit,
+          packages_json: JSON.stringify(packages),
+          nonce,
+        },
+        status: "dispatched",
+        runUrl,
+        recovery: {
+          kind: "production-break-glass",
+          authorizedRunUrl:
+            "https://github.com/LioRael/lenso/actions/runs/41",
+          authorizedRunSha256: `sha256:${"c".repeat(64)}`,
+          workflowCommit,
+        },
+      }],
+    };
+    const request = vi.fn(async (_input: string | URL | Request) =>
+      new Response(JSON.stringify({
+        encoding: "base64",
+        content: Buffer.from(JSON.stringify(state)).toString("base64"),
+      }), {
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", request);
+    await expect(verifyRecoveryAuthorization({
+      cwd: "/candidate",
+      repository: "LioRael/lenso",
+      releaseCommit,
+      githubSha: workflowCommit,
+      refName: "main",
+      workflowPath: ".github/workflows/publish.yml",
+      runId: "42",
+      runUrl,
+      githubToken: "app-token",
+      eventId,
+      nonce,
+      planId,
+      planSha256,
+      packages,
+    })).resolves.toMatchObject({
+      kind: "production-break-glass",
+      workflowCommit,
+    });
+    expect(String(request.mock.calls[0]![0])).toContain(
+      "plans/LioRael%252Flenso/",
+    );
+  });
+});
+
 describe("transactional template synchronization", () => {
   it("installs deterministically, rejects manifest takeover and rolls back every partial write", async () => {
     const target = await temp();
@@ -155,6 +433,38 @@ describe("transactional template synchronization", () => {
     await expect(syncRepositoryTemplate({ source: template, target })).rejects.toThrow("symlink is forbidden");
     await expect(lstat(join(outside, "workflows/publish.yml"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("requires explicit managed-file deletions and rolls them back atomically", async () => {
+    const target = await temp(); const source = await temp();
+    await cp(template, source, { recursive: true });
+    const removed = "scripts/release-mode.mjs";
+    const installed = await syncRepositoryTemplate({ source: template, target });
+    const original = await readFile(join(target, removed));
+    await rm(join(source, removed));
+
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed] })).rejects.toThrow(`explicit migration: ${removed}`);
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed], deletePaths: [removed], failAfterWrites: installed.files.length + 1 })).rejects.toThrow("injected sync failure");
+    expect(await readFile(join(target, removed))).toEqual(original);
+    expect(JSON.parse(await readFile(join(target, ".lenso-release/template-manifest.json"), "utf8"))).toEqual(installed);
+
+    await expect(syncRepositoryTemplate({ source, target, trustedPreviousManifests: [installed], deletePaths: [removed] })).resolves.toMatchObject({ schema: "lenso.repository-template.v1" });
+    await expect(lstat(join(target, removed))).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it("preserves only exact reviewed repository variants", async () => {
+    const target = await temp(); const installed = await syncRepositoryTemplate({ source: template, target });
+    const path = ".lenso-release/shadow.json"; const bytes = Buffer.from('{"schema":"lenso.release-mode.v1","mode":"shadow","allowedModes":["shadow","production"]}\n');
+    const reviewed = { path, sha256: sha256(bytes) };
+    await writeFile(join(target, path), bytes);
+
+    await expect(syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed] })).rejects.toThrow(`managed file drift: ${path}`);
+    await expect(syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed], preserveFiles: [{ path, sha256: `sha256:${"0".repeat(64)}` }] })).rejects.toThrow(`managed file drift: ${path}`);
+    const upgraded = await syncRepositoryTemplate({ source: template, target, trustedPreviousManifests: [installed], preserveFiles: [reviewed] });
+
+    expect(await readFile(join(target, path))).toEqual(bytes);
+    expect(upgraded.files.find((file) => file.path === path)).toEqual(reviewed);
+    expect(JSON.parse(await readFile(join(target, ".lenso-release/template-manifest.json"), "utf8"))).toEqual(upgraded);
+  }, 20_000);
 });
 
 async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string; releaseCommit: string; manifest: any }> {
