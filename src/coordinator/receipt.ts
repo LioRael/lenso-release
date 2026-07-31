@@ -116,9 +116,11 @@ export async function recoverLostReceipt(repository: string, planId: string, pac
   const exactExecution = observed.workflow.ref === state.executionRef.name && observed.workflow.sha === state.releaseCommit;
   if (observed.workflow.repository !== repository || (!exactExecution && observed.workflow.recovery !== true) || observed.workflow.runName !== `lenso-publish-requested:${requestId}` || observed.workflow.workflowPath !== outbox.workflow) return null;
   const identity = { schema: "lenso.component-receipt.v1" as const, environment: deps.environment, planId: state.planId, packageId: packageId as ComponentReceiptV1["packageId"], version, repository, sourceCommit: state.releaseCommit, packedSha256: sha256(observed.registry.packedBytes) as Sha256, registryIntegrity: observed.registry.nativeIntegrity, registryUrl: observed.registry.url, provenanceUrl: observed.provenance.url, provenanceSubject: observed.provenance.subject, workflowUrl: observed.workflow.url, tagUrl: observed.tag.url, publishedAt: observed.registry.publishedAt };
-  let receipt = observed.tag.receipt === null
-    ? null
-    : normalizeLegacyRecoveryReceipt(observed.tag.receipt) as ComponentReceiptV1;
+  const tagReceipt = observed.tag.receipt;
+  const componentTagReceipt = tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1"
+    ? (tagReceipt as { receipts?: unknown[] }).receipts?.find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as { packageId?: string; version?: string }).packageId === packageId && (candidate as { version?: string }).version === version) ?? null
+    : tagReceipt;
+  let receipt = componentTagReceipt === null ? null : normalizeLegacyRecoveryReceipt(componentTagReceipt) as ComponentReceiptV1;
   if (receipt === null) {
     receipt = { ...identity, receiptId: sha256(identity as never) as Sha256 };
     await deps.observer.createAnnotatedTag(repository, receipt);
