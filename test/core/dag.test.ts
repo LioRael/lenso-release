@@ -182,6 +182,13 @@ const expectedInventory = {
     true
   ],
   "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", "distribution", true, true],
+  "npm:@lenso/console-package-api": [
+    "LioRael/lenso-runtime-console",
+    "npm",
+    "console",
+    true,
+    true
+  ],
   "npm:@lenso/organization-console": [
     "LioRael/lenso-organization-module",
     "npm",
