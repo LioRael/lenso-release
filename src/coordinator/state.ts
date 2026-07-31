@@ -400,7 +400,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
   if (
     state.status === "verified" &&
     (receipts.length !== packages.length ||
-      outbox.some((entry) => entry.status !== "dispatched"))
+      outbox.some((entry) => entry.status !== "dispatched" && !(entry.status === "cancelled" && !packages.some(({ requestEventId }) => requestEventId === entry.eventId))))
   )
     throw new TypeError("verified state incomplete");
 }
