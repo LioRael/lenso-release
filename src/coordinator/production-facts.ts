@@ -294,7 +294,15 @@ export function verifiedProvenanceUrl(
     `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`;
   if (typeof tagReceipt !== "object" || tagReceipt === null || Array.isArray(tagReceipt))
     return digestUrl;
-  const receipt = tagReceipt as Record<string, unknown>;
+  const receiptEnvelope = tagReceipt as Record<string, unknown>;
+  const receipt = receiptEnvelope.schema === "lenso.fixed-group-receipt.v1" && Array.isArray(receiptEnvelope.receipts)
+    ? receiptEnvelope.receipts.find((candidate) => {
+      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+      const component = candidate as Record<string, unknown>;
+      return component.repository === repository && component.packedSha256 === packedDigest && canonicalBytes(component.provenanceSubject as never).equals(canonicalBytes(subject as never));
+    }) as Record<string, unknown> | undefined
+    : receiptEnvelope;
+  if (!receipt) return digestUrl;
   const receiptSubject = receipt.provenanceSubject;
   const provenanceUrl = receipt.provenanceUrl;
   if (
