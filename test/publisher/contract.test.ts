@@ -5,6 +5,7 @@ import { sha256, type JsonValue } from "../../src/core/canonical.js";
 import {
   assertPublishRequest,
   executionRef,
+  publisherPackagePhases,
   verifyPublisherContract,
   type NonceConsumer,
   type ObservedPublishRequest,
@@ -113,6 +114,17 @@ describe("publisher execution contract", () => {
     expect(() => verifyPublisherContract(phased, { ...base, packages: [{ id: "cargo:lenso-platform-core", version: "1.0.0" }] })).not.toThrow();
     expect(() => verifyPublisherContract(phased, { ...base, packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }, { id: "cargo:lenso-platform-core", version: "1.0.0" }] })).toThrow("crosses dependency phases");
     expect(() => verifyPublisherContract(phased, { ...base, packages: [] })).toThrow("must not be empty");
+    expect(publisherPackagePhases(
+      [
+        { id: "cargo:lenso-contracts", version: "1.0.0" },
+        { id: "cargo:lenso-platform-core", version: "1.0.0" },
+      ],
+      phased,
+      "recovery",
+    )).toEqual([
+      [{ id: "cargo:lenso-contracts", version: "1.0.0" }],
+      [{ id: "cargo:lenso-platform-core", version: "1.0.0" }],
+    ]);
   });
   it("creates a valid immutable execution branch and rejects non-exact digests", () => {
     expect(executionRef(`sha256:${"a".repeat(64)}`)).toBe(`release-execution/${"a".repeat(64)}`);

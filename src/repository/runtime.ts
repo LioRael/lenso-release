@@ -11,7 +11,11 @@ import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
 import type { ComponentReceiptV1, ReleasePlanV1, Sha256 } from "../contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../core/canonical.js";
-import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
+import {
+  executionRef,
+  publisherPackagePhases,
+  verifyPublisherContract,
+} from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 import type { AuthorizedArtifact, PublishAuthorization } from "../publisher/preflight-authority.js";
 
@@ -727,7 +731,29 @@ export async function recoverPublished(
     githubSha: environment.releaseCommit,
     refName: executionRef(environment.planId),
   };
-  const plan = await preflight(candidateEnvironment);
+  const planBytes = await safeRead(
+    candidateEnvironment.cwd,
+    ".lenso-release/plan.json",
+  );
+  if (hash(planBytes) !== candidateEnvironment.planSha256)
+    fail("plan byte digest mismatch");
+  const candidatePlan = parseJson<unknown>(planBytes, "release plan");
+  assertReleasePlan(candidatePlan);
+  if (
+    candidatePlan.planId !== candidateEnvironment.planId ||
+    candidatePlan.repository !== candidateEnvironment.repository
+  )
+    fail("plan identity mismatch");
+  exactSelection(candidatePlan, candidateEnvironment.packages);
+  const phases = publisherPackagePhases(
+    candidateEnvironment.packages,
+    candidatePlan,
+    "recovery",
+  );
+  let plan = candidatePlan;
+  for (const packages of phases) {
+    plan = await preflight({ ...candidateEnvironment, packages });
+  }
   const config = parseJson<RepositoryConfig>(
     await safeRead(environment.cwd, ".lenso-release/config.json"),
     "repository config",
