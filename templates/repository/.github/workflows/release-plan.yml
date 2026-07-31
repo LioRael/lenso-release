@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/release-plan.yml'
       - '.tegami/**'
       - '.lenso-release/**'
       - 'package.json'
