@@ -254,6 +254,13 @@ packages:
     userFacing: true
     publishable: true
     dependencies: []
+  - id: npm:@lenso/console-package-api
+    repository: LioRael/lenso-runtime-console
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: []
   - id: npm:@lenso/auth-console
     repository: LioRael/lenso-auth-module
     registry: npm
