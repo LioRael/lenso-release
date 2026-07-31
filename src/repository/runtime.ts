@@ -5,6 +5,7 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
@@ -610,6 +611,168 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
   if (fixedGroup) {
     await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
     for (const receipt of receipts) await dispatchReceipt(receipt, environment);
+  }
+  return receipts;
+}
+
+type RecoveryAuthorization = {
+  kind: "production-break-glass";
+  authorizedRunUrl: string;
+  authorizedRunSha256: Sha256;
+  workflowCommit: string;
+};
+
+async function readRecoveryState(environment: RuntimeEnvironment): Promise<Record<string, unknown>> {
+  const repositorySegment = encodeURIComponent(
+    encodeURIComponent(environment.repository),
+  );
+  const planDigest = environment.planId.slice("sha256:".length);
+  const endpoint =
+    `https://api.github.com/repos/LioRael/lenso-release/contents/plans/${repositorySegment}/${planDigest}.json?ref=release-state`;
+  let lastError: unknown;
+  for (const waitMs of [0, 1_000, 2_000, 4_000, 8_000, 8_000] as const) {
+    if (waitMs > 0) await delay(waitMs);
+    try {
+      const response = await fetch(endpoint, {
+        redirect: "error",
+        headers: {
+          authorization: `Bearer ${environment.githubToken}`,
+          accept: "application/vnd.github+json",
+        },
+      });
+      if (!response.ok) throw new Error(`release-state observation ${response.status}`);
+      const body = await response.json() as Record<string, unknown>;
+      if (body.encoding !== "base64" || typeof body.content !== "string")
+        throw new Error("release-state content encoding invalid");
+      const state = JSON.parse(
+        Buffer.from(body.content.replace(/\n/gu, ""), "base64").toString("utf8"),
+      ) as Record<string, unknown>;
+      const outbox = Array.isArray(state.outbox)
+        ? state.outbox as Record<string, unknown>[]
+        : [];
+      const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+      if (
+        entry?.status !== "dispatched" ||
+        entry.runUrl !== environment.runUrl
+      )
+        throw new Error("recovery dispatch is not authoritative yet");
+      return state;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error("authoritative recovery dispatch is unavailable", {
+    cause: lastError,
+  });
+}
+
+export async function verifyRecoveryAuthorization(
+  environment: RuntimeEnvironment,
+): Promise<RecoveryAuthorization> {
+  if (process.env.LENSO_RELEASE_MODE !== "production")
+    fail("break-glass recovery is production-only");
+  const state = await readRecoveryState(environment);
+  if (
+    state.schema !== "lenso.plan-state.v1" ||
+    state.environment !== "production" ||
+    state.repository !== environment.repository ||
+    state.planId !== environment.planId ||
+    state.planSha256 !== environment.planSha256 ||
+    state.releaseCommit !== environment.releaseCommit ||
+    !["publishing", "verified"].includes(String(state.status))
+  )
+    fail("authoritative recovery plan binding mismatch");
+  const outbox = state.outbox as Record<string, unknown>[];
+  const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+  const recovery = entry?.recovery as Record<string, unknown> | undefined;
+  if (
+    entry?.ref !== environment.refName ||
+    entry.workflow !== environment.workflowPath ||
+    entry.runUrl !== environment.runUrl ||
+    recovery?.kind !== "production-break-glass" ||
+    recovery.workflowCommit !== environment.githubSha ||
+    !/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u
+      .test(String(recovery.authorizedRunUrl)) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256))
+  )
+    fail("authoritative break-glass recovery authorization mismatch");
+  const selected = JSON.stringify(
+    environment.packages.map(({ id, version }) => ({ id, version })),
+  );
+  if (
+    JSON.stringify(entry.packages) !== selected ||
+    (entry.inputs as Record<string, unknown> | undefined)?.event_id !==
+      environment.eventId ||
+    (entry.inputs as Record<string, unknown> | undefined)?.plan_id !==
+      environment.planId ||
+    (entry.inputs as Record<string, unknown> | undefined)?.plan_sha256 !==
+      environment.planSha256 ||
+    (entry.inputs as Record<string, unknown> | undefined)?.release_commit !==
+      environment.releaseCommit ||
+    (entry.inputs as Record<string, unknown> | undefined)?.packages_json !==
+      selected ||
+    (entry.inputs as Record<string, unknown> | undefined)?.nonce !==
+      environment.nonce
+  )
+    fail("authoritative recovery outbox payload mismatch");
+  return recovery as unknown as RecoveryAuthorization;
+}
+
+export async function recoverPublished(
+  environment: RuntimeEnvironment,
+): Promise<ComponentReceiptV1[]> {
+  await verifyRecoveryAuthorization(environment);
+  const candidateEnvironment: RuntimeEnvironment = {
+    ...environment,
+    githubSha: environment.releaseCommit,
+    refName: executionRef(environment.planId),
+  };
+  const plan = await preflight(candidateEnvironment);
+  const config = parseJson<RepositoryConfig>(
+    await safeRead(environment.cwd, ".lenso-release/config.json"),
+    "repository config",
+  );
+  if (selectedFixedGroup(config, environment.packages))
+    fail("fixed-group break-glass recovery is not supported");
+  await stageCargoArchives(environment.cwd, plan, environment.packages);
+  const receipts: ComponentReceiptV1[] = [];
+  for (const item of publicationOrder(plan, environment.packages)) {
+    if (!item.id.startsWith("cargo:"))
+      fail("break-glass recovery supports Cargo packages only");
+    const artifact = await packedArtifact(environment.cwd, item);
+    const observed = await cargoObservation(
+      item.id.slice("cargo:".length),
+      item.version,
+    );
+    if (
+      !observed.exists ||
+      !observed.bytes ||
+      !observed.integrity ||
+      !observed.url ||
+      !observed.publishedAt
+    )
+      fail(`published package is not registry-visible: ${item.id}`);
+    if (
+      hash(observed.bytes) !== hash(artifact.bytes) ||
+      observed.integrity !== hash(artifact.bytes).slice("sha256:".length)
+    )
+      fail(`registry archive differs from reviewed artifact: ${item.id}`);
+    const provenanceUrl = await createAttestation(
+      artifact.path,
+      artifact.bytes,
+      environment,
+    );
+    const receipt = receiptFor(
+      plan,
+      item,
+      observed as Required<Omit<RegistryObservation, "exists">>,
+      provenanceUrl,
+      environment,
+    );
+    assertComponentReceipt(receipt);
+    await createImmutableTag(receipt, environment);
+    await dispatchReceipt(receipt, environment);
+    receipts.push(receipt);
   }
   return receipts;
 }

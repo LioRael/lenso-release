@@ -7,13 +7,13 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { parse } from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { syncRepositoryTemplate, type TemplateManifest } from "../../src/commands/sync-repository-template.js";
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives } from "../../src/repository/runtime.js";
+import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -22,6 +22,7 @@ const root = resolve(import.meta.dirname, "../..");
 const template = join(root, "templates/repository");
 const temporary: string[] = [];
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(temporary.splice(0).map(async (path) => {
     const resolved = resolve(path); const prefix = `${resolve(tmpdir())}/lenso-template-test-`;
     if (!resolved.startsWith(prefix) || resolved === resolve(process.cwd()) || resolve(process.cwd()).startsWith(`${resolved}/`)) throw new Error(`refusing unsafe test cleanup: ${resolved}`);
@@ -81,6 +82,23 @@ describe("repository template workflow contracts", () => {
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
     expect(workflow.permissions).toEqual({});
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
+    expect(workflow.jobs.publish.if).toBe(
+      "startsWith(github.ref_name, 'release-execution/')",
+    );
+    expect(workflow.jobs.recover.if).toBe(
+      "github.ref_name == github.event.repository.default_branch",
+    );
+    expect(workflow.jobs.recover.permissions).toEqual({
+      contents: "write",
+      "id-token": "write",
+      attestations: "write",
+    });
+    const recovery = source.slice(source.indexOf("\n  recover:"));
+    expect(recovery).toContain("cli.js recover");
+    expect(recovery).toContain("LENSO_RUNTIME_CWD:");
+    expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
+    expect(recovery).not.toContain("NODE_AUTH_TOKEN");
+    expect(recovery).not.toContain("crates-io-auth-action");
   });
 
   it("uses scoped App authentication and prioritizes fresh intent over a retained plan", async () => {
@@ -126,6 +144,82 @@ describe("repository template workflow contracts", () => {
     await expect(assertVendorLicenses(broken)).rejects.toThrow("missing vendored license");
     const manifest = await readFile(join(template, ".lenso-release/runtime/manifest.json"), "utf8");
     expect(manifest).not.toMatch(/BEGIN (?:RSA |EC )?PRIVATE KEY|ghp_[A-Za-z0-9]{20}|npm_[A-Za-z0-9]{20}/u);
+  });
+});
+
+describe("production break-glass recovery authorization", () => {
+  it("accepts only the exact dispatched run recorded in release-state", async () => {
+    const eventId = `sha256:${"e".repeat(64)}`;
+    const planId = `sha256:${"a".repeat(64)}`;
+    const planSha256 = `sha256:${"b".repeat(64)}`;
+    const releaseCommit = "2".repeat(40);
+    const workflowCommit = "3".repeat(40);
+    const runUrl = "https://github.com/LioRael/lenso/actions/runs/42";
+    const packages = [{ id: "cargo:lenso", version: "0.3.34" }];
+    const nonce = "12345678-1234-4234-8234-123456789abc";
+    const state = {
+      schema: "lenso.plan-state.v1",
+      environment: "production",
+      repository: "LioRael/lenso",
+      planId,
+      planSha256,
+      releaseCommit,
+      status: "publishing",
+      outbox: [{
+        eventId,
+        ref: "main",
+        workflow: ".github/workflows/publish.yml",
+        packages,
+        inputs: {
+          event_id: eventId,
+          plan_id: planId,
+          plan_sha256: planSha256,
+          release_commit: releaseCommit,
+          packages_json: JSON.stringify(packages),
+          nonce,
+        },
+        status: "dispatched",
+        runUrl,
+        recovery: {
+          kind: "production-break-glass",
+          authorizedRunUrl:
+            "https://github.com/LioRael/lenso/actions/runs/41",
+          authorizedRunSha256: `sha256:${"c".repeat(64)}`,
+          workflowCommit,
+        },
+      }],
+    };
+    const request = vi.fn(async (_input: string | URL | Request) =>
+      new Response(JSON.stringify({
+        encoding: "base64",
+        content: Buffer.from(JSON.stringify(state)).toString("base64"),
+      }), {
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", request);
+    await expect(verifyRecoveryAuthorization({
+      cwd: "/candidate",
+      repository: "LioRael/lenso",
+      releaseCommit,
+      githubSha: workflowCommit,
+      refName: "main",
+      workflowPath: ".github/workflows/publish.yml",
+      runId: "42",
+      runUrl,
+      githubToken: "app-token",
+      eventId,
+      nonce,
+      planId,
+      planSha256,
+      packages,
+    })).resolves.toMatchObject({
+      kind: "production-break-glass",
+      workflowCommit,
+    });
+    expect(String(request.mock.calls[0]![0])).toContain(
+      "plans/LioRael%252Flenso/",
+    );
   });
 });
 

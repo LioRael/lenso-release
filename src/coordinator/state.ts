@@ -26,6 +26,8 @@ export class StateConflictError extends Error {}
 
 const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
+export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
+  "authorized production break-glass recovery";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -286,16 +288,37 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
     "outbox",
   );
   for (const entry of outbox) {
-    exactKeys(entry as unknown as Record<string, unknown>, [
+    const entryKeys = [
       "eventId", "nonce", "ref", "workflow", "packages", "inputs", "status",
       "claimOwner", "leaseExpiresAt", "runUrl", "createdAt", "updatedAt",
-    ], "outbox");
+    ];
+    if (Object.hasOwn(entry, "recovery")) entryKeys.push("recovery");
+    exactKeys(entry as unknown as Record<string, unknown>, entryKeys, "outbox");
+    const recovery = entry.recovery;
+    if (recovery !== undefined) {
+      exactKeys(
+        recovery as unknown as Record<string, unknown>,
+        ["kind", "authorizedRunUrl", "authorizedRunSha256", "workflowCommit"],
+        "outbox recovery",
+      );
+      if (
+        recovery.kind !== "production-break-glass" ||
+        !/^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/actions\/runs\/[1-9][0-9]*$/u
+          .test(recovery.authorizedRunUrl) ||
+        !SHA256.test(recovery.authorizedRunSha256) ||
+        !OID.test(recovery.workflowCommit) ||
+        state.environment !== "production"
+      )
+        throw new TypeError("outbox recovery invalid");
+    }
     if (
       !SHA256.test(entry.eventId) ||
       !isRfc3339(entry.createdAt) ||
       !isRfc3339(entry.updatedAt) ||
       !["pending", "in-flight", "dispatched", "cancelled"].includes(entry.status) ||
-      entry.ref !== ref.name ||
+      (recovery === undefined
+        ? entry.ref !== ref.name
+        : !/^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,254})$/u.test(entry.ref)) ||
       typeof entry.nonce !== "string" ||
       entry.nonce.length === 0 ||
       typeof entry.workflow !== "string" ||
@@ -416,6 +439,11 @@ export function assertLegalTransition(
   const retryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
   );
+  const breakGlassAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
+    kind === "recovery" &&
+    outcome === "accepted" &&
+    detail === AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY
+  );
   const retryOutbox = retryAttempt
     ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)
     : undefined;
@@ -427,7 +455,16 @@ export function assertLegalTransition(
     if (
       before.requestEventId !== null && before.requestEventId !== after.requestEventId &&
       (!retryOutbox || after.requestEventId !== retryOutbox.eventId ||
-        !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version))
+        !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version)) &&
+      (!breakGlassAttempt ||
+        after.requestEventId !== breakGlassAttempt.eventId ||
+        !next.outbox.some((entry) =>
+          entry.eventId === breakGlassAttempt.eventId &&
+          entry.recovery?.kind === "production-break-glass" &&
+          entry.packages.some(({ id, version }) =>
+            id === after.id && version === after.version
+          )
+        ))
     ) throw new TypeError("immutable package request rewrite");
   }
   const nextReceipts = new Set(next.receipts.map((receipt) => JSON.stringify(receipt)));
@@ -454,7 +491,8 @@ export function assertLegalTransition(
         throw new TypeError(`immutable outbox ${field} rewrite`);
     if (
       JSON.stringify(before.packages) !== JSON.stringify(after.packages) ||
-      JSON.stringify(before.inputs) !== JSON.stringify(after.inputs)
+      JSON.stringify(before.inputs) !== JSON.stringify(after.inputs) ||
+      JSON.stringify(before.recovery) !== JSON.stringify(after.recovery)
     )
       throw new TypeError("immutable outbox payload rewrite");
   }

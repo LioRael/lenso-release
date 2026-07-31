@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { consumePreflightProof, createPlan, createPreflightProof, publishSelected, type RuntimeEnvironment } from "./runtime.js";
+import {
+  consumePreflightProof,
+  createPlan,
+  createPreflightProof,
+  publishSelected,
+  recoverPublished,
+  type RuntimeEnvironment,
+} from "./runtime.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -19,7 +26,7 @@ function parsePackages(value: string): { id: string; version: string }[] {
 }
 
 function environment(): RuntimeEnvironment { return {
-  cwd: process.cwd(), repository: required("GITHUB_REPOSITORY"), releaseCommit: required("INPUT_RELEASE_COMMIT"),
+  cwd: process.env.LENSO_RUNTIME_CWD ?? process.cwd(), repository: required("GITHUB_REPOSITORY"), releaseCommit: required("INPUT_RELEASE_COMMIT"),
   githubSha: required("GITHUB_SHA"), refName: required("GITHUB_REF_NAME"), workflowPath: ".github/workflows/publish.yml",
   runId: required("GITHUB_RUN_ID"), runUrl: `${required("GITHUB_SERVER_URL")}/${required("GITHUB_REPOSITORY")}/actions/runs/${required("GITHUB_RUN_ID")}`,
   githubToken: required("LENSO_APP_TOKEN"), eventId: required("INPUT_EVENT_ID"), nonce: required("INPUT_NONCE"), planId: required("INPUT_PLAN_ID"),
@@ -36,6 +43,11 @@ if (command === "plan") {
 } else if (command === "publish") {
   const receipts = await publishSelected(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
+} else if (command === "recover") {
+  const receipts = await recoverPublished(environment());
+  process.stdout.write(`${JSON.stringify(receipts)}\n`);
 } else {
-  throw new Error("usage: runtime plan|preflight|consume-preflight|publish");
+  throw new Error(
+    "usage: runtime plan|preflight|consume-preflight|publish|recover",
+  );
 }

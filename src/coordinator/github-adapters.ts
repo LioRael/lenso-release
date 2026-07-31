@@ -306,7 +306,12 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     if (!response.ok) throw new Error(`workflow dispatch ${response.status}`);
     for (const waitMs of WORKFLOW_VISIBILITY_DELAYS_MS) {
       if (waitMs > 0) await this.pause(waitMs);
-      const observed = await this.findByEventId({ repository: command.repository, workflow: command.workflow, ref: command.ref, sha: command.inputs.release_commit }, eventId, appToken);
+      const observed = await this.findByEventId({
+        repository: command.repository,
+        workflow: command.workflow,
+        ref: command.ref,
+        sha: command.expectedSha ?? command.inputs.release_commit,
+      }, eventId, appToken);
       if (observed) return observed;
     }
     throw new Error(`workflow run ${eventId} is not yet visible`);

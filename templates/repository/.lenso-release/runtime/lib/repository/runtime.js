@@ -5,10 +5,11 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
 import { canonicalBytes, sha256 } from "../core/canonical.js";
-import { verifyPublisherContract } from "../publisher/contract.js";
+import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 const execFile = promisify(execFileCallback);
 const OID = /^[0-9a-f]{40}$/u;
@@ -387,6 +388,7 @@ async function requestJson(url, init) {
     const body = await response.json().catch(() => ({}));
     return { response, body };
 }
+const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/LioRael/lenso-release)";
 async function npmObservation(name, version) {
     const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
     const encoded = name.replace("/", "%2f");
@@ -414,7 +416,8 @@ async function npmObservation(name, version) {
 }
 async function cargoObservation(name, version) {
     const base = process.env.LENSO_CRATES_API_URL ?? "https://crates.io";
-    const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`);
+    const headers = { "user-agent": CRATES_IO_USER_AGENT };
+    const { response, body } = await requestJson(`${base}/api/v1/crates/${encodeURIComponent(name)}/${version}`, { headers });
     if (response.status === 404)
         return { exists: false };
     if (!response.ok)
@@ -423,7 +426,7 @@ async function cargoObservation(name, version) {
     const checksum = String(crate?.checksum ?? "");
     const publishedAt = String(crate?.created_at ?? "");
     const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
-    const artifact = await fetch(download, { redirect: "error" });
+    const artifact = await fetch(download, { headers, redirect: "error" });
     if (!artifact.ok || !checksum || !publishedAt)
         fail("crates registry observation incomplete");
     return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
@@ -632,7 +635,7 @@ export async function uploadCargoArtifact(item, bytes, upload) {
     header.writeUInt32LE(bytes.length, 4);
     const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]);
     const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
-    const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN, "content-type": "application/octet-stream", "content-length": String(body.length) }, body });
+    const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN, "content-type": "application/octet-stream", "content-length": String(body.length), "user-agent": CRATES_IO_USER_AGENT }, body });
     if (!response.ok)
         fail(`crates exact archive upload ${response.status}`);
 }
@@ -747,6 +750,122 @@ export async function publishSelected(environment) {
         await createFixedGroupRelease(fixedGroup, receipts, artifacts, environment);
         for (const receipt of receipts)
             await dispatchReceipt(receipt, environment);
+    }
+    return receipts;
+}
+async function readRecoveryState(environment) {
+    const repositorySegment = encodeURIComponent(encodeURIComponent(environment.repository));
+    const planDigest = environment.planId.slice("sha256:".length);
+    const endpoint = `https://api.github.com/repos/LioRael/lenso-release/contents/plans/${repositorySegment}/${planDigest}.json?ref=release-state`;
+    let lastError;
+    for (const waitMs of [0, 1_000, 2_000, 4_000, 8_000, 8_000]) {
+        if (waitMs > 0)
+            await delay(waitMs);
+        try {
+            const response = await fetch(endpoint, {
+                redirect: "error",
+                headers: {
+                    authorization: `Bearer ${environment.githubToken}`,
+                    accept: "application/vnd.github+json",
+                },
+            });
+            if (!response.ok)
+                throw new Error(`release-state observation ${response.status}`);
+            const body = await response.json();
+            if (body.encoding !== "base64" || typeof body.content !== "string")
+                throw new Error("release-state content encoding invalid");
+            const state = JSON.parse(Buffer.from(body.content.replace(/\n/gu, ""), "base64").toString("utf8"));
+            const outbox = Array.isArray(state.outbox)
+                ? state.outbox
+                : [];
+            const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+            if (entry?.status !== "dispatched" ||
+                entry.runUrl !== environment.runUrl)
+                throw new Error("recovery dispatch is not authoritative yet");
+            return state;
+        }
+        catch (error) {
+            lastError = error;
+        }
+    }
+    throw new Error("authoritative recovery dispatch is unavailable", {
+        cause: lastError,
+    });
+}
+export async function verifyRecoveryAuthorization(environment) {
+    if (process.env.LENSO_RELEASE_MODE !== "production")
+        fail("break-glass recovery is production-only");
+    const state = await readRecoveryState(environment);
+    if (state.schema !== "lenso.plan-state.v1" ||
+        state.environment !== "production" ||
+        state.repository !== environment.repository ||
+        state.planId !== environment.planId ||
+        state.planSha256 !== environment.planSha256 ||
+        state.releaseCommit !== environment.releaseCommit ||
+        !["publishing", "verified"].includes(String(state.status)))
+        fail("authoritative recovery plan binding mismatch");
+    const outbox = state.outbox;
+    const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
+    const recovery = entry?.recovery;
+    if (entry?.ref !== environment.refName ||
+        entry.workflow !== environment.workflowPath ||
+        entry.runUrl !== environment.runUrl ||
+        recovery?.kind !== "production-break-glass" ||
+        recovery.workflowCommit !== environment.githubSha ||
+        !/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u
+            .test(String(recovery.authorizedRunUrl)) ||
+        !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256)))
+        fail("authoritative break-glass recovery authorization mismatch");
+    const selected = JSON.stringify(environment.packages.map(({ id, version }) => ({ id, version })));
+    if (JSON.stringify(entry.packages) !== selected ||
+        entry.inputs?.event_id !==
+            environment.eventId ||
+        entry.inputs?.plan_id !==
+            environment.planId ||
+        entry.inputs?.plan_sha256 !==
+            environment.planSha256 ||
+        entry.inputs?.release_commit !==
+            environment.releaseCommit ||
+        entry.inputs?.packages_json !==
+            selected ||
+        entry.inputs?.nonce !==
+            environment.nonce)
+        fail("authoritative recovery outbox payload mismatch");
+    return recovery;
+}
+export async function recoverPublished(environment) {
+    await verifyRecoveryAuthorization(environment);
+    const candidateEnvironment = {
+        ...environment,
+        githubSha: environment.releaseCommit,
+        refName: executionRef(environment.planId),
+    };
+    const plan = await preflight(candidateEnvironment);
+    const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+    if (selectedFixedGroup(config, environment.packages))
+        fail("fixed-group break-glass recovery is not supported");
+    await stageCargoArchives(environment.cwd, plan, environment.packages);
+    const receipts = [];
+    for (const item of publicationOrder(plan, environment.packages)) {
+        if (!item.id.startsWith("cargo:"))
+            fail("break-glass recovery supports Cargo packages only");
+        const artifact = await packedArtifact(environment.cwd, item);
+        const observed = await cargoObservation(item.id.slice("cargo:".length), item.version);
+        if (!observed.exists ||
+            !observed.bytes ||
+            !observed.integrity ||
+            !observed.url ||
+            !observed.publishedAt)
+            fail(`published package is not registry-visible: ${item.id}`);
+        if (hash(observed.bytes) !== hash(artifact.bytes) ||
+            observed.integrity !== hash(artifact.bytes).slice("sha256:".length))
+            fail(`registry archive differs from reviewed artifact: ${item.id}`);
+        const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
+        const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
+        assertComponentReceipt(receipt);
+        await createImmutableTag(receipt, environment);
+        await dispatchReceipt(receipt, environment);
+        receipts.push(receipt);
     }
     return receipts;
 }
