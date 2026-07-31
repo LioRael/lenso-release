@@ -164,17 +164,14 @@ export function cargoArchiveEquivalent(
   }
 }
 
-function cargoDependencyArchiveDigests(
-  plan: ReleasePlanV1,
-  item: PublishSelection,
+function verifiedCargoArchiveDigests(
   digests: Map<string, CargoArchiveDigestPair>,
 ): CargoArchiveDigestPair[] {
-  const planned = plan.packages.find(({ id }) => id === item.id);
-  if (!planned) fail(`selected package missing from plan: ${item.id}`);
-  return planned.dependencies.flatMap(({ id }) => {
-    const pair = digests.get(id);
-    return pair ? [pair] : [];
-  });
+  // Packaged Cargo.lock files include transitive same-plan dependencies, not
+  // only the current package's direct plan edges. Every pair in this map was
+  // established by a complete archive-equivalence check earlier in the
+  // publication order, so it is safe to normalize those exact checksums.
+  return [...digests.values()];
 }
 export function npmRegistryAuthentication(registry: string): { registry: string; authKey: string } {
   const url = new URL(registry);
@@ -920,7 +917,7 @@ export async function prepareRecovery(
       !cargoArchiveEquivalent(
         artifact.bytes,
         observed.bytes,
-        cargoDependencyArchiveDigests(plan, item, cargoDigests),
+        verifiedCargoArchiveDigests(cargoDigests),
       ) ||
       observed.integrity !== hash(observed.bytes).slice("sha256:".length)
     )
@@ -1002,7 +999,7 @@ export async function recoverPublished(
       !cargoArchiveEquivalent(
         artifact.bytes,
         observed.bytes,
-        cargoDependencyArchiveDigests(plan, item, cargoDigests),
+        verifiedCargoArchiveDigests(cargoDigests),
       ) ||
       observed.integrity !== hash(observed.bytes).slice("sha256:".length)
     )

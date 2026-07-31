@@ -99,14 +99,12 @@ export function cargoArchiveEquivalent(reviewed, registry, substitutions = []) {
         return false;
     }
 }
-function cargoDependencyArchiveDigests(plan, item, digests) {
-    const planned = plan.packages.find(({ id }) => id === item.id);
-    if (!planned)
-        fail(`selected package missing from plan: ${item.id}`);
-    return planned.dependencies.flatMap(({ id }) => {
-        const pair = digests.get(id);
-        return pair ? [pair] : [];
-    });
+function verifiedCargoArchiveDigests(digests) {
+    // Packaged Cargo.lock files include transitive same-plan dependencies, not
+    // only the current package's direct plan edges. Every pair in this map was
+    // established by a complete archive-equivalence check earlier in the
+    // publication order, so it is safe to normalize those exact checksums.
+    return [...digests.values()];
 }
 export function npmRegistryAuthentication(registry) {
     const url = new URL(registry);
@@ -986,7 +984,7 @@ export async function prepareRecovery(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, cargoDependencyArchiveDigests(plan, item, cargoDigests)) ||
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, verifiedCargoArchiveDigests(cargoDigests)) ||
             observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
         cargoDigests.set(item.id, {
@@ -1042,7 +1040,7 @@ export async function recoverPublished(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, cargoDependencyArchiveDigests(plan, item, cargoDigests)) ||
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, verifiedCargoArchiveDigests(cargoDigests)) ||
             observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
         cargoDigests.set(item.id, {

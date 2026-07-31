@@ -165,6 +165,31 @@ describe("Cargo recovery archive equivalence", () => {
       [{ reviewed: `sha256:${reviewed}`, registry: `sha256:${registry}` }],
     )).toBe(false);
   });
+
+  it("normalizes verified transitive dependency checksums inside Cargo.lock", () => {
+    const reviewedDirect = "a".repeat(64);
+    const registryDirect = "b".repeat(64);
+    const reviewedTransitive = "c".repeat(64);
+    const registryTransitive = "d".repeat(64);
+    const reviewedArchive = cargoLockArchive(
+      reviewedDirect,
+      `checksum = "${reviewedTransitive}"\n`,
+    );
+    const registryArchive = cargoLockArchive(
+      registryDirect,
+      `checksum = "${registryTransitive}"\n`,
+    );
+    expect(cargoArchiveEquivalent(reviewedArchive, registryArchive, [
+      {
+        reviewed: `sha256:${reviewedDirect}`,
+        registry: `sha256:${registryDirect}`,
+      },
+      {
+        reviewed: `sha256:${reviewedTransitive}`,
+        registry: `sha256:${registryTransitive}`,
+      },
+    ])).toBe(true);
+  });
 });
 
 async function assertVendorLicenses(modules: string): Promise<void> {
