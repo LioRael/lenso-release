@@ -165,6 +165,17 @@ export function executionRefProtectionIsImmutable(value: unknown): boolean {
     enabled("allow_deletions", false);
 }
 
+function exclusiveRecoveryJob(
+  jobs: Record<string, unknown>[],
+  conclusion: "success" | "failure",
+): Record<string, unknown> | undefined {
+  const candidates = jobs.filter(({ name }) => name === "recover" || name === "recover-partial");
+  const active = candidates.filter((job) => job.status === "completed" && job.conclusion === conclusion);
+  if (active.length !== 1 || candidates.some((job) => job !== active[0] && !(job.status === "completed" && job.conclusion === "skipped")))
+    return undefined;
+  return active[0];
+}
+
 export function trustedRecoveryRun(
   run: Record<string, unknown>,
   jobs: Record<string, unknown>[],
@@ -176,7 +187,7 @@ export function trustedRecoveryRun(
   const runRepository = run.repository as Record<string, unknown> | undefined;
   const baseCommit = comparison.base_commit as Record<string, unknown> | undefined;
   const mergeBase = comparison.merge_base_commit as Record<string, unknown> | undefined;
-  const recovery = jobs.find((job) => job.name === "recover");
+  const recovery = exclusiveRecoveryJob(jobs, "success");
   const publish = jobs.find((job) => job.name === "publish");
   return run.event === "workflow_dispatch"
     && run.display_title === `lenso-publish-requested:${eventId}`
@@ -205,7 +216,7 @@ export function trustedFailedRecoveryRun(
   eventId: string,
 ): boolean {
   const runRepository = run.repository as Record<string, unknown> | undefined;
-  const recovery = jobs.find((job) => job.name === "recover");
+  const recovery = exclusiveRecoveryJob(jobs, "failure");
   const publish = jobs.find((job) => job.name === "publish");
   return run.event === "workflow_dispatch" &&
     run.path === workflow &&

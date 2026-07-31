@@ -106,6 +106,16 @@ describe("production coordinator adapters", () => {
       merge_base_commit: { sha },
     };
     expect(trustedRecoveryRun(run, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(true);
+    expect(trustedRecoveryRun(run, [
+      { name: "recover", status: "completed", conclusion: "skipped" },
+      { name: "recover-partial", status: "completed", conclusion: "success" },
+      jobs[1]!,
+    ], comparison, "LioRael/lenso", "main", eventId)).toBe(true);
+    expect(trustedRecoveryRun(run, [
+      jobs[0]!,
+      { name: "recover-partial", status: "completed", conclusion: "success" },
+      jobs[1]!,
+    ], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryProvenanceRun(run, jobs, comparison, "LioRael/lenso", "main")).toBe(true);
     expect(trustedRecoveryProvenanceRun({ ...run, display_title: "unbound-recovery" }, jobs, comparison, "LioRael/lenso", "main")).toBe(false);
     expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
@@ -132,6 +142,19 @@ describe("production coordinator adapters", () => {
     expect(trustedFailedRecoveryRun(
       run,
       jobs,
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      "main",
+      sha,
+      eventId,
+    )).toBe(true);
+    expect(trustedFailedRecoveryRun(
+      run,
+      [
+        { name: "recover", status: "completed", conclusion: "skipped" },
+        { name: "recover-partial", status: "completed", conclusion: "failure" },
+        jobs[1]!,
+      ],
       "LioRael/lenso",
       ".github/workflows/publish.yml",
       "main",
