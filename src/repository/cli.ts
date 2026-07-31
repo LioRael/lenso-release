@@ -4,6 +4,7 @@ import {
   consumePreflightProof,
   createPlan,
   createPreflightProof,
+  prepareRecovery,
   publishSelected,
   recoverPublished,
   type RuntimeEnvironment,
@@ -43,11 +44,13 @@ if (command === "plan") {
 } else if (command === "publish") {
   const receipts = await publishSelected(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
+} else if (command === "recover-prepare") {
+  await prepareRecovery(environment());
 } else if (command === "recover") {
   const receipts = await recoverPublished(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
 } else {
   throw new Error(
-    "usage: runtime plan|preflight|consume-preflight|publish|recover",
+    "usage: runtime plan|preflight|consume-preflight|publish|recover-prepare|recover",
   );
 }

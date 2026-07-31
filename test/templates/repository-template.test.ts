@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
+import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -82,6 +82,23 @@ describe("crates.io archive redirects", () => {
   });
 });
 
+describe("recovery attestation URLs", () => {
+  it("accepts only the repository's official GitHub attestation URL", () => {
+    expect(validateRecoveryAttestationUrl(
+      "https://github.com/LioRael/lenso/attestations/123",
+      "LioRael/lenso",
+    )).toBe("https://github.com/LioRael/lenso/attestations/123");
+    expect(() => validateRecoveryAttestationUrl(
+      "https://example.com/LioRael/lenso/attestations/123",
+      "LioRael/lenso",
+    )).toThrow(/invalid/u);
+    expect(() => validateRecoveryAttestationUrl(
+      "https://github.com/LioRael/other/attestations/123",
+      "LioRael/lenso",
+    )).toThrow(/invalid/u);
+  });
+});
+
 async function assertVendorLicenses(modules: string): Promise<void> {
   const packages: string[] = [];
   for (const entry of await readdir(modules, { withFileTypes: true })) {
@@ -129,7 +146,14 @@ describe("repository template workflow contracts", () => {
       attestations: "write",
     });
     const recovery = source.slice(source.indexOf("\n  recover:"));
+    expect(recovery).toContain("cli.js recover-prepare");
     expect(recovery).toContain("cli.js recover");
+    expect(recovery).toContain(
+      "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+    );
+    expect(recovery).toContain(
+      "LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}",
+    );
     expect(recovery).toContain("LENSO_RUNTIME_CWD:");
     expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
     expect(recovery).not.toContain("NODE_AUTH_TOKEN");

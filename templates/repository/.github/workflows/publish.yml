@@ -162,7 +162,7 @@ jobs:
           npm install --global npm@11.7.0
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
-      - name: Rebuild, verify, attest, and submit recovery receipts
+      - name: Rebuild and verify published archives
         env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
           INPUT_PLAN_ID: ${{ inputs.plan_id }}
@@ -172,8 +172,26 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
-          LENSO_ATTESTATION_TOKEN: ${{ github.token }}
+          LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          RUNNER_IMAGE: ubuntu-24.04
+        run: node .lenso-release/runtime/lib/repository/cli.js recover-prepare
+      - name: Attest verified recovery archives
+        id: recovery-attestation
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: ${{ github.workspace }}/recovery-candidate/target/package/*.crate
+      - name: Submit recovery receipts
+        env:
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
+          LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js recover
