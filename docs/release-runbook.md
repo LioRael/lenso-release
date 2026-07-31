@@ -277,8 +277,12 @@ publication authorization. Any missing bytes or digest mismatch stops recovery.
 
 If an older runtime emitted a ready event without binding the repository release
 mode and a successful shadow publisher was consequently recorded as production,
-use `recover-shadow-mode-mismatch-plan` only for that historical state. Supply the
-exact repository, plan ID, and successful publisher run ID. The workflow requires
+use `recover-shadow-mode-mismatch-plan` only for that historical state. First run
+the component's reviewed `verify-production-oci-absence` workflow with the exact
+plan, commit, package, version, and registry path. It uses the component-scoped
+`GITHUB_TOKEN` with read-only package permission and succeeds only on an authenticated
+`404 MANIFEST_UNKNOWN`. Then supply the exact repository, plan ID, successful
+publisher run ID, and absence-proof run ID. The recovery workflow requires
 an untouched production-labelled publishing plan with no receipts, one original
 dispatch covering the complete package set, a successful exact execution-ref run,
 every selected npm/OCI version present in shadow, and every selected version absent

@@ -284,6 +284,29 @@ export function trustedProductionBreakGlassRun(
     );
 }
 
+export function trustedProductionOciAbsenceRun(
+  run: Record<string, unknown>,
+  workflow: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  defaultBranch: string,
+  defaultHead: string,
+  planId: string,
+  packageId: string,
+  version: string,
+): boolean {
+  const proofJob = jobs.find(({ name }) => name === "verify");
+  const proofSteps = Array.isArray(proofJob?.steps) ? proofJob.steps as Record<string, unknown>[] : [];
+  const proofStep = proofSteps.find(({ name }) => name === "Prove the production manifest is absent");
+  return run.event === "workflow_dispatch" && run.head_branch === defaultBranch &&
+    run.head_sha === defaultHead &&
+    run.display_title === `verify-production-oci-absence:${planId}:${packageId}@${version}` &&
+    run.status === "completed" && run.conclusion === "success" &&
+    (run.repository as Record<string, unknown> | undefined)?.full_name === repository &&
+    workflow.path === ".github/workflows/verify-production-oci-absence.yml" &&
+    proofJob?.conclusion === "success" && proofStep?.conclusion === "success";
+}
+
 export function verifiedProvenanceUrl(
   repository: string,
   packedDigest: string,
@@ -412,7 +435,7 @@ export async function createCoordinatorHandlers(
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
-  recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string): Promise<StoredPlanState>;
+  recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
     ? new URL("../../../config/components.yaml", import.meta.url).pathname
@@ -484,7 +507,7 @@ export async function createCoordinatorHandlers(
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
     recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
-    recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string): Promise<StoredPlanState>;
+    recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -1491,16 +1514,40 @@ export async function createCoordinatorHandlers(
       }
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
     },
-    async recoverShadowModeMismatchPlan(repository, planId, publisherRunId) {
+    async recoverShadowModeMismatchPlan(repository, planId, publisherRunId, absenceRunId) {
       const snapshot = await input.store.readSnapshot();
       const state = snapshot.plans[planStatePath(repository, planId)];
       if (!state) throw new Error("plan state not found");
+      if (!/^[1-9][0-9]*$/u.test(absenceRunId))
+        throw new TypeError("production absence run ID invalid");
+      const ociPackages = state.packages.filter(({ id }) => id.startsWith("oci:"));
+      if (ociPackages.length !== 1)
+        throw new Error("mode mismatch recovery requires one OCI package absence proof");
+      const ociPackage = ociPackages[0]!;
       const token = await input.tokens.tokenFor(repository, { actions: "read", metadata: "read" });
+      const repositoryApi = `https://api.github.com/repos/${repository}`;
+      const metadata = await githubJson(repositoryApi, token);
+      const defaultBranch = String(metadata.default_branch);
+      const defaultRef = await githubJson(`${repositoryApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
+      const defaultHead = String((defaultRef.object as Record<string, unknown> | undefined)?.sha);
+      const absenceRun = await githubJson(`${repositoryApi}/actions/runs/${absenceRunId}`, token);
+      const absenceRunUrl = `https://github.com/${repository}/actions/runs/${absenceRunId}`;
+      const workflowId = String(absenceRun.workflow_id);
+      const workflow = await githubJson(`${repositoryApi}/actions/workflows/${encodeURIComponent(workflowId)}`, token);
+      const jobsResponse = await githubJson(`${repositoryApi}/actions/runs/${absenceRunId}/jobs?per_page=100`, token);
+      const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs as Record<string, unknown>[] : [];
+      if (
+        absenceRun.html_url !== absenceRunUrl || !trustedProductionOciAbsenceRun(
+          absenceRun, workflow, jobs, repository, defaultBranch, defaultHead,
+          state.planId, ociPackage.id, ociPackage.version,
+        )
+      ) throw new Error("production OCI absence proof is not exact and successful");
       return recoverShadowModeMismatchPlan(
         input.store,
         repository,
         planId,
         publisherRunId,
+        absenceRunUrl,
         input.env.LENSO_COORDINATOR_MODE,
         {
           async observeRun(entry) {
@@ -1522,10 +1569,9 @@ export async function createCoordinatorHandlers(
               return npmPackumentContainsVersion(await response.json(), pkg.version);
             }
             if (pkg.id.startsWith("oci:")) {
+              if (target === "production") return false;
               if (!pkg.registryPath) throw new TypeError("OCI registry path is missing from stored plan");
-              const registryUrl = target === "shadow"
-                ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL
-                : "https://ghcr.io";
+              const registryUrl = input.env.LENSO_SHADOW_OCI_REGISTRY_URL;
               if (!registryUrl) throw new TypeError("OCI registry endpoint is missing");
               const observation = await observeOciImage(pkg.id.slice(4), pkg.version, {
                 fetch: request,

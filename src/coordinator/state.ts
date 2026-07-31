@@ -645,6 +645,7 @@ export async function recoverShadowModeMismatchPlan(
   repository: string,
   planId: string,
   publisherRunId: string,
+  productionAbsenceRunUrl: string,
   mode: string | undefined,
   facts: ShadowModeMismatchRecoveryFacts,
   now: Date,
@@ -653,6 +654,8 @@ export async function recoverShadowModeMismatchPlan(
     throw new Error("mode mismatch recovery requires production coordinator mode");
   if (!/^[1-9][0-9]*$/u.test(publisherRunId))
     throw new TypeError("publisher run ID invalid");
+  if (!/^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/actions\/runs\/[1-9][0-9]*$/u.test(productionAbsenceRunUrl))
+    throw new TypeError("production absence run URL invalid");
   const initial = await store.readSnapshot();
   assertReleaseStateSnapshot(initial);
   const path = planStatePath(repository, planId);
@@ -702,6 +705,7 @@ export async function recoverShadowModeMismatchPlan(
     repository,
     planId,
     publisherRunId,
+    productionAbsenceRunUrl,
   } as JsonValue) as Sha256;
   const committed = await transact(store, (current) => {
     const candidate = current.plans[path];
@@ -713,6 +717,10 @@ export async function recoverShadowModeMismatchPlan(
       evidence: [...candidate.evidence, {
         kind: "shadow-mode-mismatch-recovery",
         url: expectedRunUrl,
+        digest: eventId,
+      }, {
+        kind: "production-oci-absence-proof",
+        url: productionAbsenceRunUrl,
         digest: eventId,
       }],
       attempts: [...candidate.attempts, {

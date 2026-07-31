@@ -15,6 +15,10 @@ on:
         description: Exact successful shadow publisher run ID
         required: true
         type: string
+      production_absence_run_id:
+        description: Exact successful production OCI absence proof run ID
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -43,10 +47,12 @@ jobs:
           --repository "$RECOVERY_REPOSITORY"
           --plan-id "$RECOVERY_PLAN_ID"
           --publisher-run-id "$PUBLISHER_RUN_ID"
+          --production-absence-run-id "$PRODUCTION_ABSENCE_RUN_ID"
         env:
           RECOVERY_REPOSITORY: ${{ inputs.repository }}
           RECOVERY_PLAN_ID: ${{ inputs.plan_id }}
           PUBLISHER_RUN_ID: ${{ inputs.publisher_run_id }}
+          PRODUCTION_ABSENCE_RUN_ID: ${{ inputs.production_absence_run_id }}
           LENSO_GITHUB_APP_ID: ${{ secrets.LENSO_GITHUB_APP_ID }}
           LENSO_GITHUB_APP_INSTALLATION_ID: ${{ secrets.LENSO_GITHUB_APP_INSTALLATION_ID }}
           LENSO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.LENSO_GITHUB_APP_PRIVATE_KEY }}
