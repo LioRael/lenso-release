@@ -3,6 +3,7 @@ internalPackages:
   - cargo:lenso-platform-runtime-observability
   - cargo:lenso-platform-runtime-operations
   - cargo:lenso-platform-system-plane
+  - cargo:provider-fixture
 packages:
   - id: cargo:lenso-contracts
     repository: LioRael/lenso
@@ -82,6 +83,15 @@ packages:
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
       - cargo:lenso-platform-runtime
+  - id: cargo:provider-fixture
+    repository: LioRael/lenso
+    registry: crates-io
+    releaseGroup: foundation
+    userFacing: false
+    publishable: false
+    dependencies:
+      - cargo:lenso-platform-module
+      - cargo:lenso-platform-provider
   - id: cargo:lenso-service
     repository: LioRael/lenso
     registry: crates-io

@@ -163,6 +163,7 @@ const expectedInventory = {
     false
   ],
   "cargo:lenso-platform-testing": ["LioRael/lenso", "crates-io", "foundation", true, true],
+  "cargo:provider-fixture": ["LioRael/lenso", "crates-io", "foundation", false, false],
   "cargo:lenso-service": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-worker": ["LioRael/lenso", "crates-io", "host", true, true],
   "catalog:lenso-official-module-catalog": [
@@ -260,6 +261,7 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-system-plane",
     "cargo:lenso-service"
   ],
+  "cargo:provider-fixture": ["cargo:lenso-platform-module", "cargo:lenso-platform-provider"],
   "cargo:lenso-module-auth": [
     "cargo:lenso-contracts",
     "cargo:lenso-platform-core",
@@ -445,7 +447,8 @@ describe("component release graph", () => {
     expect(registry.internalPackages).toEqual([
       "cargo:lenso-platform-runtime-observability",
       "cargo:lenso-platform-runtime-operations",
-      "cargo:lenso-platform-system-plane"
+      "cargo:lenso-platform-system-plane",
+      "cargo:provider-fixture"
     ]);
   });
 
