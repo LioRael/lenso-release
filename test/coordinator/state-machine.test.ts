@@ -1014,7 +1014,7 @@ describe("atomic coordinator state", () => {
     const entry = recovered.state.outbox.find(({ recovery }) => recovery?.kind === "production-partial")!;
     expect(entry).toMatchObject({
       ref: "main",
-      workflow: ".github/workflows/recover-partial-production.yml",
+      workflow: ".github/workflows/publish.yml",
       status: "pending",
       recovery: {
         kind: "production-partial",

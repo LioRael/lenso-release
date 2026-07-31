@@ -263,14 +263,17 @@ describe("repository template workflow contracts", () => {
       "startsWith(github.ref_name, 'release-execution/')",
     );
     expect(workflow.jobs.recover.if).toBe(
-      "github.ref_name == github.event.repository.default_branch",
+      "github.ref_name == github.event.repository.default_branch && !contains(inputs.packages_json, 'npm:') && !contains(inputs.packages_json, 'oci:')",
     );
     expect(workflow.jobs.recover.permissions).toEqual({
       contents: "write",
       "id-token": "write",
       attestations: "write",
     });
-    const recovery = source.slice(source.indexOf("\n  recover:"));
+    const recovery = source.slice(
+      source.indexOf("\n  recover:"),
+      source.indexOf("\n  recover-partial:"),
+    );
     expect(recovery).toContain("cli.js recover-prepare");
     expect(recovery).toContain("cli.js recover");
     expect(recovery).toContain(
@@ -286,6 +289,25 @@ describe("repository template workflow contracts", () => {
     expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
     expect(recovery).not.toContain("NODE_AUTH_TOKEN");
     expect(recovery).not.toContain("crates-io-auth-action");
+    expect(workflow.jobs["recover-partial"].if).toBe(
+      "github.ref_name == github.event.repository.default_branch && (contains(inputs.packages_json, 'npm:') || contains(inputs.packages_json, 'oci:'))",
+    );
+    expect(workflow.jobs["recover-partial"].permissions).toEqual({
+      contents: "write",
+      "id-token": "write",
+      attestations: "write",
+    });
+    const trustedPartialRecovery = source.slice(
+      source.indexOf("\n  recover-partial:"),
+    );
+    expect(trustedPartialRecovery).toContain(
+      "LENSO_WORKFLOW_PATH: .github/workflows/publish.yml",
+    );
+    expect(trustedPartialRecovery).toContain("cli.js recover-partial-prepare");
+    expect(trustedPartialRecovery).toContain("cli.js recover-partial");
+    expect(trustedPartialRecovery).toContain("NODE_AUTH_TOKEN: \"\"");
+    expect(trustedPartialRecovery).not.toContain("crates-io-auth-action");
+    expect(trustedPartialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
     const partialRecovery = await readFile(
       join(template, ".github/workflows/recover-partial-production.yml"),
       "utf8",
