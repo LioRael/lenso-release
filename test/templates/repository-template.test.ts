@@ -299,6 +299,7 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("if: ${{ steps.draft.outputs.created == 'true' }}");
     expect(source).toContain("if [[ -f Cargo.toml ]]");
     expect(source).toContain("cargo fetch --locked");
+    expect(source).toContain("'.github/workflows/release-plan.yml'");
     expect(source).not.toContain("cache: pnpm");
     expect(source).toContain("curl --fail-with-body --proto '=https'");
     expect(source).not.toContain("--location-trusted");
