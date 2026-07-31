@@ -15,7 +15,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(join(output, "lib"), { recursive: true });
 const modules = [
   "config/components.js", "contracts/types.js", "contracts/events.js", "contracts/validate.js", "core/canonical.js", "core/dag.js",
-  "publisher/contract.js", "registry/validation.js", "repository/runtime.js", "repository/cli.js", "repository/ready-event.js",
+  "publisher/contract.js", "registry/oci.js", "registry/validation.js", "repository/oci-registry-publisher.js", "repository/oci-release-artifact.js", "repository/runtime.js", "repository/cli.js", "repository/ready-event.js",
   "tegami/capture-plugin.js", "tegami/cargo-lock-plugin.js", "tegami/cargo-workspace-plugin.js", "tegami/export-plan.js",
 ];
 for (const path of modules) {
@@ -36,8 +36,8 @@ async function vendor(name, from = join(root, "package.json")) {
           recursive: true,
           dereference: true,
           filter: (source) => {
-            const entryName = source.split("/").at(-1) ?? "";
-            return entryName !== ".bin" && !/^(?:CHANGELOG|README|SECURITY)(?:\.|$)/iu.test(entryName);
+            const segments = source.split("/");
+            return !segments.includes(".bin") && !/^(?:CHANGELOG|README|SECURITY)(?:\.|$)/iu.test(segments.at(-1) ?? "");
           },
         });
         if (name === "@rainbowatcher/toml-edit-js") await cp(join(root, "scripts/vendor-licenses/rainbowatcher-toml-edit-js.LICENSE"), join(destination, "LICENSE"));

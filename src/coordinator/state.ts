@@ -41,7 +41,7 @@ export function isRetiredPlan(state: PlanStateV1): boolean {
 const REPOSITORY =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/u;
 const OID = /^[0-9a-f]{40}$/u;
-const PACKAGE_KEY = /^package:(?:cargo|npm|artifact):[^:]+:.+$/u;
+const PACKAGE_KEY = /^package:(?:cargo|npm|artifact|oci):[^:]+:.+$/u;
 
 export function planDigestHex(planId: string): string {
   const match = /^sha256:([0-9a-f]{64})$/u.exec(planId);
@@ -245,13 +245,18 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
   for (const item of packages) {
     exactKeys(
       item,
-      ["id", "version", "phase", "status", "requestEventId"],
+      ["id", "version", "registryPath", "phase", "status", "requestEventId"],
       "package",
     );
     const key = `${item.id}:${item.version}`;
     if (
-      !/^(?:cargo|npm|artifact):/u.test(String(item.id)) ||
+      !/^(?:cargo|npm|artifact|oci):/u.test(String(item.id)) ||
       !SEMVER.test(String(item.version)) ||
+      (String(item.id).startsWith("oci:")
+        ? typeof item.registryPath !== "string" ||
+          !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(item.registryPath) ||
+          item.registryPath.includes("..")
+        : item.registryPath !== null) ||
       !Number.isSafeInteger(item.phase) ||
       Number(item.phase) < 0 ||
       !["pending", "dispatched", "received"].includes(String(item.status))
@@ -416,14 +421,15 @@ export function assertLegalTransition(
       throw new TypeError(`immutable ${field} rewrite`);
   if (
     JSON.stringify(
-      previous.packages.map(({ id, version, phase }) => ({
+      previous.packages.map(({ id, version, registryPath, phase }) => ({
         id,
         version,
+        registryPath,
         phase,
       })),
     ) !==
     JSON.stringify(
-      next.packages.map(({ id, version, phase }) => ({ id, version, phase })),
+      next.packages.map(({ id, version, registryPath, phase }) => ({ id, version, registryPath, phase })),
     )
   )
     throw new TypeError("immutable package plan rewrite");

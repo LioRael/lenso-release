@@ -1,4 +1,4 @@
-import { npmPublication, parseCargoUpload, sha256 } from "./protocol.ts";
+import { npmPublication, ociDigest, ociReference, ociRepository, parseCargoUpload, sha256 } from "./protocol.ts";
 import { coordinatorRoute } from "./coordinator.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -105,6 +105,71 @@ async function cargoRoute(request: Request, env: Env, url: URL): Promise<Respons
   return error(405, "unsupported Cargo operation");
 }
 
+async function ociRoute(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method === "GET" && url.pathname === "/oci/v2/") return new Response(null, { status: 200, headers: { "docker-distribution-api-version": "registry/2.0" } });
+  const uploadStart = url.pathname.match(/^\/oci\/v2\/(.+)\/blobs\/uploads\/?$/u);
+  const upload = url.pathname.match(/^\/oci\/v2\/(.+)\/blobs\/uploads\/([0-9a-f-]+)$/u);
+  const blob = url.pathname.match(/^\/oci\/v2\/(.+)\/blobs\/(sha256:[0-9a-f]{64})$/u);
+  const manifest = url.pathname.match(/^\/oci\/v2\/(.+)\/manifests\/([^/]+)$/u);
+  const repository = ociRepository(decodeURIComponent(uploadStart?.[1] ?? upload?.[1] ?? blob?.[1] ?? manifest?.[1] ?? ""));
+  if (request.method === "POST" && uploadStart) {
+    const denied = await requireShadowToken(request, env); if (denied) return denied;
+    const id = crypto.randomUUID();
+    return new Response(null, { status: 202, headers: { location: `${url.origin}/oci/v2/${repository}/blobs/uploads/${id}`, "docker-upload-uuid": id, range: "0-0" } });
+  }
+  if (request.method === "PUT" && upload) {
+    const denied = await requireShadowToken(request, env); if (denied) return denied;
+    const expected = ociDigest(url.searchParams.get("digest") ?? "");
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const actual = `sha256:${await sha256(bytes)}`;
+    if (actual !== expected) return error(400, "OCI blob digest mismatch");
+    await env.ARTIFACTS.put(`oci/blobs/${expected}`, bytes, { httpMetadata: { contentType: "application/octet-stream" } });
+    return new Response(null, { status: 201, headers: { location: `${url.origin}/oci/v2/${repository}/blobs/${expected}`, "docker-content-digest": expected } });
+  }
+  if ((request.method === "GET" || request.method === "HEAD") && blob) {
+    const digest = ociDigest(blob[2]!);
+    const object = await env.ARTIFACTS.get(`oci/blobs/${digest}`);
+    if (!object) return error(404, "OCI blob not found");
+    const headers = { "content-type": "application/octet-stream", "docker-content-digest": digest, "content-length": String(object.size) };
+    return request.method === "HEAD" ? new Response(null, { headers }) : new Response(object.body, { headers });
+  }
+  if (request.method === "PUT" && manifest) {
+    const denied = await requireShadowToken(request, env); if (denied) return denied;
+    const reference = ociReference(decodeURIComponent(manifest[2]!));
+    const mediaType = request.headers.get("content-type")?.split(";", 1)[0] ?? "";
+    if (mediaType !== "application/vnd.oci.image.manifest.v1+json") return error(415, "unsupported OCI manifest media type");
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    let document: { schemaVersion?: unknown; config?: { digest?: unknown }; layers?: Array<{ digest?: unknown }> };
+    try { document = JSON.parse(new TextDecoder().decode(bytes)); } catch { return error(400, "invalid OCI manifest JSON"); }
+    if (document.schemaVersion !== 2 || typeof document.config?.digest !== "string" || !Array.isArray(document.layers)) return error(400, "invalid OCI image manifest");
+    const dependencies = [document.config.digest, ...document.layers.map(({ digest }) => digest)];
+    for (const dependency of dependencies) {
+      const digest = ociDigest(String(dependency));
+      if (!await env.ARTIFACTS.head(`oci/blobs/${digest}`)) return error(400, `OCI manifest blob is missing: ${digest}`);
+    }
+    const digest = `sha256:${await sha256(bytes)}`;
+    if (reference.startsWith("sha256:") && reference !== digest) return error(400, "OCI manifest reference digest mismatch");
+    const key = `oci/manifests/${digest}`;
+    const publishedAt = new Date().toISOString();
+    const existing = await env.DB.prepare("SELECT digest FROM oci_manifests WHERE repository=?1 AND reference=?2").bind(repository, reference).first<{ digest: string }>();
+    if (existing && existing.digest !== digest) return error(409, "OCI tag is immutable");
+    await env.ARTIFACTS.put(key, bytes, { httpMetadata: { contentType: mediaType } });
+    await env.DB.prepare("INSERT INTO oci_manifests (repository, reference, digest, media_type, object_key, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(repository, reference) DO NOTHING")
+      .bind(repository, reference, digest, mediaType, key, publishedAt).run();
+    return new Response(null, { status: 201, headers: { location: `${url.origin}/oci/v2/${repository}/manifests/${digest}`, "docker-content-digest": digest } });
+  }
+  if ((request.method === "GET" || request.method === "HEAD") && manifest) {
+    const reference = ociReference(decodeURIComponent(manifest[2]!));
+    const row = await env.DB.prepare("SELECT digest, media_type, object_key, published_at FROM oci_manifests WHERE repository=?1 AND (reference=?2 OR digest=?2)").bind(repository, reference).first<{ digest: string; media_type: string; object_key: string; published_at: string }>();
+    if (!row) return error(404, "OCI manifest not found");
+    const object = await env.ARTIFACTS.get(row.object_key);
+    if (!object) return error(404, "OCI manifest bytes not found");
+    const headers = { "content-type": row.media_type, "docker-content-digest": row.digest, "content-length": String(object.size), "x-lenso-published-at": row.published_at };
+    return request.method === "HEAD" ? new Response(null, { headers }) : new Response(object.body, { headers });
+  }
+  return error(405, "unsupported OCI operation");
+}
+
 async function releaseJson(env: Env, origin: string, row: ReleaseRow): Promise<JsonObject> {
   const assets = await env.DB.prepare("SELECT * FROM github_assets WHERE release_id=?1 ORDER BY id").bind(row.id).all<AssetRow>();
   return {
@@ -199,6 +264,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/health") return json({ status: "ok", service: "lenso-release-shadow-gateway" });
       if (url.pathname.startsWith("/npm/")) return await npmRoute(request, env, url);
       if (url.pathname.startsWith("/cargo/")) return await cargoRoute(request, env, url);
+      if (url.pathname.startsWith("/oci/v2/")) return await ociRoute(request, env, url);
       if (url.pathname.startsWith("/github/")) return await githubRoute(request, env, url);
       if (url.pathname.startsWith("/coordinator/")) return await coordinatorRoute(request, env, url);
       if (url.pathname === "/attestations") return await attestationRoute(request, env, url);

@@ -5,7 +5,7 @@ import { sha256, type JsonValue } from "../../src/core/canonical.js";
 import { createPreflightHttpHandler, GitPreflightStore, MemoryPreflightStore, PreflightAuthority, type PreflightBinding } from "../../src/publisher/preflight-authority.js";
 
 const servers: ReturnType<typeof createServer>[] = []; afterEach(() => servers.splice(0).forEach((server) => server.close()));
-function binding(): PreflightBinding { const planId = `sha256:${"a".repeat(64)}`; return { eventId: `sha256:${"b".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId, planSha256: `sha256:${"c".repeat(64)}`, repository: "LioRael/lenso", releaseCommit: "d".repeat(40), ref: `release-execution/${planId.slice(7)}`, workflowSha256: `sha256:${"e".repeat(64)}`, runtimeManifestSha256: `sha256:${"f".repeat(64)}`, packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }], generated: [] }; }
+function binding(): PreflightBinding { const planId = `sha256:${"a".repeat(64)}`; return { eventId: `sha256:${"b".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId, planSha256: `sha256:${"c".repeat(64)}`, repository: "LioRael/lenso", releaseCommit: "d".repeat(40), ref: `release-execution/${planId.slice(7)}`, workflowSha256: `sha256:${"e".repeat(64)}`, runtimeManifestSha256: `sha256:${"f".repeat(64)}`, packages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }], generated: [], registries: {} }; }
 describe("authoritative preflight service", () => {
   it("authenticates issue and permits exactly one concurrent consume", async () => {
     const { privateKey } = generateKeyPairSync("ed25519"); const authority = new PreflightAuthority(new MemoryPreflightStore(), Buffer.alloc(32, 7), privateKey, () => new Date("2026-07-11T00:00:00.000Z"));
@@ -24,5 +24,14 @@ describe("authoritative preflight service", () => {
     await expect(first.consume(proof, facts, artifacts, async () => true)).resolves.toMatchObject({ accepted: true });
     const restarted = new PreflightAuthority(new GitPreflightStore(backend), Buffer.alloc(32, 3), privateKey, now); await expect(restarted.consume(proof, facts, artifacts, async () => true)).rejects.toThrow("already consumed");
     const handler = createPreflightHttpHandler(restarted, async (request) => request.headers.get("authorization") === "Bearer app"); const response = await handler(new Request("https://authority.test/consume", { method: "POST", headers: { authorization: "Bearer app" }, body: JSON.stringify({ proof, facts, artifacts }) })); expect(response.status).toBe(409);
+  });
+  it("rejects an OCI artifact aimed outside the reviewed registry destination", async () => {
+    const { privateKey } = generateKeyPairSync("ed25519"); const authority = new PreflightAuthority(new MemoryPreflightStore(), Buffer.alloc(32, 5), privateKey, () => new Date("2026-07-11T00:00:00.000Z"));
+    const value = binding(); value.repository = "LioRael/lenso-runtime-console"; value.packages = [{ id: "oci:lenso-console-service", version: "0.2.0" }]; value.registries = { "oci:lenso-console-service": "liorael/lenso-console" };
+    const proof = await authority.issue(value, sha256(value as unknown as JsonValue), async () => true);
+    const path = `.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}`;
+    const artifacts = [{ id: "oci:lenso-console-service", name: "lenso-console-service", version: "0.2.0", kind: "oci" as const, path: `${path}/lenso-console-release.json`, sha256: `sha256:${"1".repeat(64)}` as const, size: 42, ino: 7, mode: 256 as const, cargoMetadata: null, cargoMetadataSha256: null, attachments: [{ role: "oci-archive" as const, path: `${path}/lenso-console-service.oci.tar`, sha256: `sha256:${"2".repeat(64)}` as const, size: 84, ino: 8, mode: 256 as const }], ociMetadata: { registryRepository: "attacker/console", manifestDigest: `sha256:${"3".repeat(64)}` as const, archiveSha256: `sha256:${"2".repeat(64)}` as const } }];
+    const facts = { eventId: value.eventId, nonce: value.nonce, planId: value.planId, releaseCommit: value.releaseCommit, ref: value.ref };
+    await expect(authority.consume(proof, facts, artifacts, async () => true)).rejects.toThrow("OCI authorization binding mismatch");
   });
 });

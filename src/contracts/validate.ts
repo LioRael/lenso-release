@@ -186,18 +186,19 @@ function immutableRequirement(value: unknown, path: string): string {
   return result;
 }
 
-function packageEcosystem(packageId: unknown, path: string): "cargo" | "npm" | "artifact" {
+function packageEcosystem(packageId: unknown, path: string): "cargo" | "npm" | "artifact" | "oci" {
   const result = string(packageId, path);
   if (/^cargo:.+/u.test(result)) return "cargo";
   if (/^npm:.+/u.test(result)) return "npm";
   if (/^artifact:.+/u.test(result)) return "artifact";
-  fail(path, "must use a cargo:, npm:, or artifact: component ID");
+  if (/^oci:.+/u.test(result)) return "oci";
+  fail(path, "must use a cargo:, npm:, artifact:, or oci: component ID");
 }
 
-function registryIntegrity(value: unknown, ecosystem: "cargo" | "npm" | "artifact", path: string): string {
+function registryIntegrity(value: unknown, ecosystem: "cargo" | "npm" | "artifact" | "oci", path: string): string {
   const result = string(value, path);
-  if (ecosystem === "artifact") {
-    if (!/^sha256:[0-9a-f]{64}$/u.test(result)) fail(path, "must be a canonical artifact SHA-256 digest");
+  if (ecosystem === "artifact" || ecosystem === "oci") {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(result)) fail(path, `must be a canonical ${ecosystem} SHA-256 digest`);
     return result;
   }
   if (ecosystem === "cargo") {

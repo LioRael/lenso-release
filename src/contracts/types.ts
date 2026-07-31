@@ -1,6 +1,6 @@
 export type Sha256 = `sha256:${string}`;
 export type GitOid = string;
-export type RegistryPackageId = `cargo:${string}` | `npm:${string}` | `artifact:${string}`;
+export type RegistryPackageId = `cargo:${string}` | `npm:${string}` | `artifact:${string}` | `oci:${string}`;
 
 export type PackageDependency = {
   id: string;
@@ -100,6 +100,7 @@ export type PlanStateAttempt = {
 export type PlanStatePackage = {
   id: RegistryPackageId;
   version: string;
+  registryPath: string | null;
   phase: number;
   status: "pending" | "dispatched" | "received";
   requestEventId: Sha256 | null;

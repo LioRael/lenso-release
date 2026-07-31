@@ -137,6 +137,7 @@ function packagesFor(
     .map(({ id, nextVersion: version }) => ({
       id: id as RegistryPackageId,
       version,
+      registryPath: registry.packages[id]?.registryPath ?? null,
       phase: phases.findIndex((phase) => phase.includes(id)),
       status: "pending" as const,
       requestEventId: null,

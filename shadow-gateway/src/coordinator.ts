@@ -77,6 +77,16 @@ async function requireAuthoritativeBinding(token: string, binding: ObjectValue):
     throw new Error("preflight binding is not authorized by active release state");
   if (canonical(dispatch.packages as Json) !== canonical(binding.packages as Json)) throw new Error("preflight package selection is not authorized by release outbox");
   if (typeof inputs.packages_json !== "string" || canonical(JSON.parse(inputs.packages_json) as Json) !== canonical(binding.packages as Json)) throw new Error("preflight dispatch inputs do not authorize package selection");
+  const selected = Array.isArray(binding.packages) ? binding.packages.map((item) => object(item, "binding package")) : [];
+  const statePackages = Array.isArray(state.packages) ? state.packages.map((item) => object(item, "state package")) : [];
+  const expectedRegistries = Object.fromEntries(selected
+    .filter(({ id }) => String(id).startsWith("oci:"))
+    .map(({ id, version }) => {
+      const authoritative = statePackages.find((item) => item.id === id && item.version === version);
+      if (!authoritative || typeof authoritative.registryPath !== "string") throw new Error("authoritative OCI registry destination is missing");
+      return [String(id), authoritative.registryPath];
+    }));
+  if (canonical(expectedRegistries as Json) !== canonical(object(binding.registries, "binding.registries") as Json)) throw new Error("preflight registry destinations are not authorized by release state");
   if (state.environment !== "shadow" && state.environment !== "production")
     throw new Error("authoritative release state environment is missing or invalid");
   return state.environment;
@@ -115,6 +125,20 @@ export async function assertExistingArtifactMatches(
       const object = await env.ARTIFACTS.get(string(row.object_key, "stored release object key"));
       if (!object) throw new Error(`existing shadow artifact bytes are missing: ${id}@${version}`);
       actual = `sha256:${await sha256(new Uint8Array(await object.arrayBuffer()))}`;
+    }
+  } else if (id.startsWith("oci:")) {
+    const metadata = object(artifact.ociMetadata, "artifact.ociMetadata");
+    const manifestDigest = string(metadata.manifestDigest, "artifact.ociMetadata.manifestDigest");
+    const image = await env.DB.prepare("SELECT digest FROM oci_manifests WHERE repository=?1 AND reference=?2")
+      .bind(string(metadata.registryRepository, "artifact.ociMetadata.registryRepository"), version).first() as { digest?: string } | null;
+    if (image && image.digest !== manifestDigest) throw new Error(`existing shadow OCI manifest digest mismatch: ${id}@${version}`);
+    const assetName = String(artifact.path).split("/").at(-1);
+    const asset = await env.DB.prepare("SELECT a.object_key FROM github_assets a JOIN github_releases r ON r.id=a.release_id WHERE r.repository=?1 AND r.tag_name=?2 AND a.name=?3")
+      .bind(repository, `v${version}`, assetName).first() as { object_key?: string } | null;
+    if (asset) {
+      const stored = await env.ARTIFACTS.get(string(asset.object_key, "stored OCI manifest object key"));
+      if (!stored) throw new Error(`existing shadow install manifest bytes are missing: ${id}@${version}`);
+      actual = `sha256:${await sha256(new Uint8Array(await stored.arrayBuffer()))}`;
     }
   }
   if (actual !== null && actual !== expected)
@@ -195,13 +219,24 @@ async function consumePreflight(request: Request, env: CoordinatorEnv): Promise<
     const id = string(artifact.id, "artifact.id");
     const version = string(artifact.version, "artifact.version");
     const name = id.startsWith("npm:@lenso/") ? id.slice(11) : id.slice(id.indexOf(":") + 1);
-    const kind = id.startsWith("npm:") ? "npm" : id.startsWith("cargo:") ? "cargo" : "artifact";
+    const kind = id.startsWith("npm:") ? "npm" : id.startsWith("cargo:") ? "cargo" : id.startsWith("oci:") ? "oci" : "artifact";
     if (!pkg || pkg.id !== id || pkg.version !== version || artifact.name !== name || artifact.kind !== kind || typeof artifact.path !== "string" || !artifact.path.startsWith(`.lenso-release/preflight-artifacts/${proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(String(artifact.sha256)) || !Number.isSafeInteger(artifact.size) || Number(artifact.size) <= 0 || !Number.isSafeInteger(artifact.ino) || Number(artifact.ino) <= 0 || artifact.mode !== 256)
       throw new Error("invalid canonical artifact authorization");
     const cargoMetadata = artifact.cargoMetadata;
     const cargoDigest = artifact.cargoMetadataSha256;
     if (kind === "cargo" ? !cargoMetadata || cargoDigest !== await canonicalSha256(cargoMetadata as Json) : cargoMetadata !== null || cargoDigest !== null)
       throw new Error("Cargo upload metadata binding mismatch");
+    const attachments = artifact.attachments ?? [];
+    if (!Array.isArray(attachments) || attachments.some((value) => {
+      const attachment = object(value, "artifact attachment");
+      return attachment.role !== "oci-archive" || typeof attachment.path !== "string" || !attachment.path.startsWith(`.lenso-release/preflight-artifacts/${proofId.slice(7)}/`) || !/^sha256:[0-9a-f]{64}$/u.test(String(attachment.sha256)) || !Number.isSafeInteger(attachment.size) || Number(attachment.size) <= 0 || !Number.isSafeInteger(attachment.ino) || Number(attachment.ino) <= 0 || attachment.mode !== 256;
+    })) throw new Error("invalid canonical artifact attachment");
+    if (kind === "oci") {
+      const metadata = object(artifact.ociMetadata, "artifact.ociMetadata");
+      const archive = attachments[0] ? object(attachments[0], "OCI archive attachment") : null;
+      const registries = object(binding.registries, "stored binding registries");
+      if (attachments.length !== 1 || !archive || metadata.registryRepository !== registries[id] || !/^sha256:[0-9a-f]{64}$/u.test(String(metadata.manifestDigest)) || metadata.archiveSha256 !== archive.sha256) throw new Error("OCI authorization binding mismatch");
+    } else if (attachments.length !== 0 || artifact.ociMetadata !== null && artifact.ociMetadata !== undefined) throw new Error("unexpected OCI authorization binding");
     if (verifyExistingArtifact)
       await assertExistingArtifactMatches(env, row.repository, artifact);
   }

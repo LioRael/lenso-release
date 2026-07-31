@@ -19,6 +19,7 @@ import {
 import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
+import { observeOciImage } from "../registry/oci.js";
 import {
   authorizeProductionBreakGlassRecovery,
   retryProductionBreakGlassRecovery,
@@ -409,6 +410,16 @@ export async function createCoordinatorHandlers(
   const environment = coordinatorEnvironment(input.env.LENSO_COORDINATOR_MODE);
   const shadow = environment === "shadow";
   const dependencyVisible = async (id: string, version: string): Promise<boolean> => {
+    if (id.startsWith("oci:")) {
+      const name = id.slice("oci:".length);
+      const component = registry.packages[id]; if (!component?.registryPath) return false;
+      const observation = await observeOciImage(name, version, {
+        fetch: request,
+        registry: shadow ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL : "https://ghcr.io",
+        repository: component.registryPath,
+      });
+      return "version" in observation && observation.version === version;
+    }
     if (id.startsWith("artifact:")) {
       const component = registry.packages[id];
       if (!component || component.registry !== "github-release") return false;
@@ -611,7 +622,9 @@ export async function createCoordinatorHandlers(
           ? expected.packageId.slice(6)
           : expected.packageId.startsWith("npm:@lenso/")
             ? expected.packageId.slice("npm:@lenso/".length)
-            : expected.packageId.slice("artifact:".length);
+            : expected.packageId.startsWith("oci:")
+              ? expected.packageId.slice("oci:".length)
+              : expected.packageId.slice("artifact:".length);
         const tagName = `${packageName}@${expected.version}`;
         const token = await input.tokens.tokenFor(repository, { contents: "write", actions: "read", metadata: "read" });
         const tagApi = `${input.env.LENSO_SHADOW_GITHUB_API_URL}/repos/${repository}`;
@@ -641,7 +654,8 @@ export async function createCoordinatorHandlers(
             : (url: string) => checkedGithubAsset(request, url, token);
           const packageName = packageId.startsWith("cargo:")
             ? packageId.slice(6)
-            : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length) : packageId.slice("artifact:".length);
+            : packageId.startsWith("npm:@lenso/") ? packageId.slice("npm:@lenso/".length)
+              : packageId.startsWith("oci:") ? packageId.slice("oci:".length) : packageId.slice("artifact:".length);
           const tagName = `${packageName}@${packageVersion}`;
           const expectedTagUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tagName)}`;
           let packedBytes: Uint8Array;
@@ -679,6 +693,20 @@ export async function createCoordinatorHandlers(
             nativeIntegrity = String(dist.integrity);
             publishedAt = String((packument.time as Record<string, unknown>)[packageVersion]);
             registryUrl = tarball;
+          } else if (packageId.startsWith("oci:")) {
+            const component = registry.packages[packageId]; if (!component?.registryPath) throw new Error("OCI registry path is not reviewed");
+            const image = await observeOciImage(packageName, packageVersion, { fetch: request, registry: shadow ? input.env.LENSO_SHADOW_OCI_REGISTRY_URL : "https://ghcr.io", repository: component.registryPath });
+            if (!("version" in image)) return null;
+            const release = shadow
+              ? await checkedShadowGithubJson(request, `${tagApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
+              : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+            if (release.draft !== true || !Array.isArray(release.assets)) return null;
+            const asset = (release.assets as Record<string, unknown>[]).find(({ name }) => name === "lenso-console-release.json");
+            if (!asset?.url || !asset.browser_download_url || expected.provenanceSubject.name !== "lenso-console-release.json") return null;
+            packedBytes = new Uint8Array(await (async () => {
+              const response = await readGithubAsset(String(asset.url)); if (!response.ok) throw new IncompleteEvidenceError("Console install manifest evidence incomplete"); return response.arrayBuffer();
+            })());
+            nativeIntegrity = image.digest; publishedAt = image.publishedAt; registryUrl = image.canonicalUrl;
           } else {
             const release = shadow
               ? await checkedShadowGithubJson(
@@ -753,7 +781,8 @@ export async function createCoordinatorHandlers(
             throw new IncompleteEvidenceError("workflow has not completed successfully");
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
-            : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz` : `${packageName}.tar.gz`;
+             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
+               : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
           let subject;
           if (!recoveryRun) {
             try {
@@ -820,7 +849,7 @@ export async function createCoordinatorHandlers(
               if (subject) break;
             }
           }
-          if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow history");
+           if (!subject) throw new IncompleteEvidenceError("verified artifact provenance is not visible for the accepted workflow history");
           const rulesetDetails = shadow ? [] : await activeRulesetDetails(await githubJson(`${githubApi}/rulesets?includes_parents=true`, token) as unknown, (id) => githubJson(`${githubApi}/rulesets/${id}`, token));
           const immutable = shadow || tagRefIsImmutable(rulesetDetails, `refs/tags/${tagName}`);
           tagWrite = { githubApi: tagApi, token, tagName, immutable };
@@ -1005,7 +1034,8 @@ export async function createCoordinatorHandlers(
               repository: state.repository,
               sourceCommit: state.releaseCommit,
               packedSha256: zero,
-              registryIntegrity: pkg.id.startsWith("cargo:") ? "0".repeat(64) : `sha512-${Buffer.alloc(64).toString("base64")}`,
+              registryIntegrity: pkg.id.startsWith("cargo:") ? "0".repeat(64)
+                : pkg.id.startsWith("npm:") ? `sha512-${Buffer.alloc(64).toString("base64")}` : zero,
               registryUrl: "https://registry.invalid/recovery",
               provenanceUrl: "https://github.com/recovery",
               provenanceSubject: { name: "recovery", digest: zero },
@@ -1361,6 +1391,14 @@ export async function createCoordinatorHandlers(
               if (response.status === 404) return false;
               if (!response.ok) throw new Error(`shadow registry observation ${response.status}`);
               return npmPackumentContainsVersion(await response.json(), version);
+            }
+            if (id.startsWith("oci:")) {
+              const name = id.slice("oci:".length);
+              const component = registry.packages[id]; if (!component?.registryPath) throw new TypeError(`unknown OCI package ${id}`);
+              const observation = await observeOciImage(name, version, { fetch: request, registry: input.env.LENSO_SHADOW_OCI_REGISTRY_URL, repository: component.registryPath });
+              if ("missing" in observation) return false;
+              if ("failure" in observation) throw new Error(`shadow OCI observation ${observation.failure}`);
+              return true;
             }
             const component = registry.packages[id];
             if (!component) throw new TypeError(`unknown package ${id}`);

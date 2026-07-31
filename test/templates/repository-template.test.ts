@@ -255,7 +255,9 @@ describe("repository template workflow contracts", () => {
     expect(source.indexOf("cli.js consume-preflight")).toBeLessThan(source.indexOf("rust-lang/crates-io-auth-action"));
     for (const match of source.matchAll(/uses:\s*([^\s]+)/gu)) expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
     expect(workflow.permissions).toEqual({});
-    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write" });
+    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write", "id-token": "write", attestations: "write", packages: "write" });
+    expect(source).toContain("pnpm run --if-present release:artifacts");
+    expect(source).toContain("LENSO_OCI_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_OCI_TOKEN || github.token }}");
     expect(workflow.jobs.publish.if).toBe(
       "startsWith(github.ref_name, 'release-execution/')",
     );
@@ -562,6 +564,26 @@ describe("publisher preflight execution gate", () => {
       await writeFile(join(fixture.cwd, "generated.txt"), "generated\n"); await writeFile(join(fixture.cwd, ".github/workflows/publish.yml"), `${workflow.toString()}# drift\n`); await expect(preflight(environment)).rejects.toThrow("workflow digest mismatch");
       await writeFile(join(fixture.cwd, ".github/workflows/publish.yml"), workflow); const manifest = JSON.parse(manifestBytes.toString("utf8")); manifest.sourceRevision = "f".repeat(40); await writeFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"), `${JSON.stringify(manifest)}\n`); await expect(preflight(environment)).rejects.toThrow("shared publisher revision mismatch");
     } finally { process.env.PATH = oldPath; process.env.RUNNER_IMAGE = oldRunner; }
+  });
+
+  it("rejects a repository-local OCI destination that contradicts the reviewed component registry", async () => {
+    const fixture = await repositoryFixture();
+    const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
+    const identity = {
+      schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-runtime-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
+      publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest(workflow), sharedRevision: fixture.manifest.sourceRevision, sharedBundleSha256: digest(manifestBytes), runner: "ubuntu-24.04", node: process.version.slice(1), npm: "11.7.0", rust: "1.94.0" },
+      generatedFiles: [{ path: "generated.txt", sha256: digest(Buffer.from("generated\n")) }],
+      packages: [{ id: "oci:lenso-console-service", previousVersion: "0.1.1", nextVersion: "0.2.0", bump: "minor" as const, releaseGroup: "console", userFacing: true, dependencies: [] }],
+    };
+    const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as unknown as JsonValue) as ReleasePlanV1["planId"] };
+    const planBytes = Buffer.from(`${JSON.stringify(plan, null, 2)}\n`); await writeFile(join(fixture.cwd, ".lenso-release/plan.json"), planBytes);
+    await writeFile(join(fixture.cwd, ".lenso-release/config.json"), `${JSON.stringify({ schema: "lenso.repository-config.v1", repository: plan.repository, ociImages: { "oci:lenso-console-service": { archivePath: ".artifacts/console.oci.tar", installManifestPath: ".artifacts/release.json", registryRepository: "attacker/console" } } })}\n`);
+    const bin = join(fixture.cwd, "fake-bin"); await mkdir(bin);
+    for (const [name, body] of [["npm", "#!/bin/sh\necho 11.7.0\n"], ["rustc", "#!/bin/sh\necho 'rustc 1.94.0 (x)'\n"]] as const) { await writeFile(join(bin, name), body); await chmod(join(bin, name), 0o755); }
+    const oldPath = process.env.PATH; const oldRunner = process.env.RUNNER_IMAGE; process.env.PATH = `${bin}:${oldPath}`; process.env.RUNNER_IMAGE = "ubuntu-24.04";
+    const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "redacted", eventId: `sha256:${"e".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };
+    try { await expect(preflight(environment)).rejects.toThrow("unreviewed OCI registry destination"); }
+    finally { process.env.PATH = oldPath; process.env.RUNNER_IMAGE = oldRunner; }
   });
 
   it("recovers an already-published npm archive and enqueues a deterministic receipt", async () => {

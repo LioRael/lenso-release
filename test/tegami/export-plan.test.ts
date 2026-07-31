@@ -193,20 +193,20 @@ Exercise a partial follow-up release.
     })).rejects.toThrow("missing component registry metadata");
   });
 
-  it("maps a Tegami workspace version to a reviewed hosted artifact", async () => {
+  it("maps a Tegami workspace version to a reviewed OCI component", async () => {
     const cwd = await fixture("npm-only");
     const plan = await exportReleasePlan({
       cwd,
       repository: "LioRael/fixture",
       sourceCommit: "1".repeat(40),
       publisher,
-      aliases: { "artifact:lenso-runtime-console": "npm:@fixture/console" },
-      components: metadata(["artifact:lenso-runtime-console", "console", true]),
+      aliases: { "oci:lenso-console-service": "npm:@fixture/console" },
+      components: metadata(["oci:lenso-console-service", "console", true]),
     });
 
     expect(plan.packages).toEqual([
       expect.objectContaining({
-        id: "artifact:lenso-runtime-console",
+        id: "oci:lenso-console-service",
         previousVersion: "1.0.0",
         nextVersion: "1.0.1",
         dependencies: [],
@@ -219,8 +219,8 @@ Exercise a partial follow-up release.
       repository: "LioRael/fixture",
       sourceCommit: "1".repeat(40),
       publisher,
-      aliases: { "artifact:lenso-runtime-console": "npm:@fixture/console" },
-      components: metadata(["artifact:lenso-runtime-console", "console", true]),
+      aliases: { "oci:lenso-console-service": "npm:@fixture/console" },
+      components: metadata(["oci:lenso-console-service", "console", true]),
     })).resolves.toEqual(plan);
   });
 
