@@ -18,16 +18,95 @@ const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 function fail(message) { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes) { return sha256(bytes); }
-export function cargoArchiveEquivalent(reviewed, registry) {
+function tarOctal(field) {
+    const value = Buffer.from(field).toString("ascii").replace(/\0.*$/u, "").trim();
+    if (!/^[0-7]+$/u.test(value))
+        throw new Error("invalid tar octal field");
+    const parsed = Number.parseInt(value, 8);
+    if (!Number.isSafeInteger(parsed))
+        throw new Error("oversized tar field");
+    return parsed;
+}
+function cargoLockRange(tar) {
+    const matches = [];
+    let offset = 0;
+    let ended = false;
+    while (offset + 512 <= tar.length) {
+        const header = tar.subarray(offset, offset + 512);
+        if (header.every((byte) => byte === 0)) {
+            ended = true;
+            break;
+        }
+        const storedChecksum = tarOctal(header.subarray(148, 156));
+        let checksum = 0;
+        for (let index = 0; index < header.length; index += 1)
+            checksum += index >= 148 && index < 156 ? 32 : header[index];
+        if (checksum !== storedChecksum)
+            throw new Error("invalid tar header checksum");
+        const text = (start, end) => header.subarray(start, end).toString("utf8").replace(/\0.*$/u, "");
+        const name = `${text(345, 500)}${text(345, 500) ? "/" : ""}${text(0, 100)}`;
+        if (!name || name.startsWith("/") || name.split("/").includes(".."))
+            throw new Error("unsafe tar path");
+        const size = tarOctal(header.subarray(124, 136));
+        const start = offset + 512;
+        const end = start + size;
+        if (end > tar.length)
+            throw new Error("truncated tar entry");
+        const type = header[156];
+        if ((type === 0 || type === 48) && name.endsWith("/Cargo.lock"))
+            matches.push({ start, end });
+        offset = start + Math.ceil(size / 512) * 512;
+    }
+    if (!ended || matches.length !== 1)
+        throw new Error("Cargo.lock tar entry is missing or ambiguous");
+    return matches[0];
+}
+function normalizeCargoLockChecksums(tar, substitutions) {
+    if (substitutions.length === 0)
+        return tar;
+    const normalized = Buffer.from(tar);
+    const range = cargoLockRange(normalized);
+    for (const { reviewed, registry } of substitutions) {
+        if (reviewed === registry)
+            continue;
+        const needle = Buffer.from(`checksum = "${registry.slice("sha256:".length)}"`);
+        const replacement = Buffer.from(`checksum = "${reviewed.slice("sha256:".length)}"`);
+        let cursor = range.start;
+        let matches = 0;
+        while (cursor + needle.length <= range.end) {
+            const found = normalized.indexOf(needle, cursor);
+            if (found < 0 || found + needle.length > range.end)
+                break;
+            replacement.copy(normalized, found);
+            cursor = found + needle.length;
+            matches += 1;
+        }
+        if (matches !== 1)
+            throw new Error("Cargo.lock checksum substitution is missing or ambiguous");
+    }
+    return normalized;
+}
+export function cargoArchiveEquivalent(reviewed, registry, substitutions = []) {
     if (Buffer.from(reviewed).equals(Buffer.from(registry)))
         return true;
     try {
         const limit = 512 * 1024 * 1024;
-        return gunzipSync(reviewed, { maxOutputLength: limit }).equals(gunzipSync(registry, { maxOutputLength: limit }));
+        const reviewedTar = gunzipSync(reviewed, { maxOutputLength: limit });
+        const registryTar = gunzipSync(registry, { maxOutputLength: limit });
+        return reviewedTar.equals(normalizeCargoLockChecksums(registryTar, substitutions));
     }
     catch {
         return false;
     }
+}
+function cargoDependencyArchiveDigests(plan, item, digests) {
+    const planned = plan.packages.find(({ id }) => id === item.id);
+    if (!planned)
+        fail(`selected package missing from plan: ${item.id}`);
+    return planned.dependencies.flatMap(({ id }) => {
+        const pair = digests.get(id);
+        return pair ? [pair] : [];
+    });
 }
 export function npmRegistryAuthentication(registry) {
     const url = new URL(registry);
@@ -895,6 +974,7 @@ export async function prepareRecovery(environment) {
     await stageCargoArchives(environment.cwd, plan, environment.packages);
     const subjectDirectory = join(environment.cwd, "target/recovery-attestations");
     await mkdir(subjectDirectory, { mode: 0o700 });
+    const cargoDigests = new Map();
     for (const item of publicationOrder(plan, environment.packages)) {
         if (!item.id.startsWith("cargo:"))
             fail("break-glass recovery supports Cargo packages only");
@@ -906,9 +986,13 @@ export async function prepareRecovery(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, cargoDependencyArchiveDigests(plan, item, cargoDigests)) ||
             observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
+        cargoDigests.set(item.id, {
+            reviewed: hash(artifact.bytes),
+            registry: hash(observed.bytes),
+        });
         const subjectPath = join(subjectDirectory, basename(artifact.path));
         const handle = await open(subjectPath, constants.O_CREAT |
             constants.O_EXCL |
@@ -946,6 +1030,7 @@ export async function recoverPublished(environment) {
         fail("fixed-group break-glass recovery is not supported");
     const provenanceUrl = recoveryAttestationUrl(environment);
     const receipts = [];
+    const cargoDigests = new Map();
     for (const item of publicationOrder(plan, environment.packages)) {
         if (!item.id.startsWith("cargo:"))
             fail("break-glass recovery supports Cargo packages only");
@@ -957,9 +1042,13 @@ export async function recoverPublished(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes, cargoDependencyArchiveDigests(plan, item, cargoDigests)) ||
             observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
+        cargoDigests.set(item.id, {
+            reviewed: hash(artifact.bytes),
+            registry: hash(observed.bytes),
+        });
         const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
         assertComponentReceipt(receipt);
         await createImmutableTag(receipt, environment);
