@@ -744,8 +744,8 @@ export async function recoverFailedProductionPartialPlan(
   const publishedPackages = [] as { id: string; version: string }[];
   for (const item of previous.packages)
     if (await facts.packageVersionExists(item.id, item.version)) publishedPackages.push(item);
-  if (publishedPackages.length === 0 || publishedPackages.length === previous.packages.length)
-    throw new Error("publisher did not leave a partial package set");
+  if (publishedPackages.length === 0)
+    throw new Error("publisher did not publish any package");
   if (previous.packages.some(({ id, version }) =>
     id.startsWith("cargo:") &&
     !publishedPackages.some((item) => item.id === id && item.version === version)

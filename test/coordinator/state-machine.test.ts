@@ -984,7 +984,7 @@ describe("atomic coordinator state", () => {
       { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("pending or in-flight");
   });
-  it("authorizes one production recovery only after a mixed immutable publication", async () => {
+  it("authorizes one production recovery after a mixed immutable publication", async () => {
     const failed = state();
     failed.environment = "production";
     failed.outbox[0] = { ...failed.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/42" };
@@ -1005,6 +1005,29 @@ describe("atomic coordinator state", () => {
       },
       "main", "9".repeat(40), new Date("2026-07-11T00:02:00Z"), () => "unsafe-cargo-retry", 42,
     )).rejects.toThrow("forbids missing Cargo");
+    await expect(recoverFailedProductionPartialPlan(
+      new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists() { return false; },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:15Z"), () => "empty-retry", 42,
+    )).rejects.toThrow("did not publish any package");
+    const fullyPublished = await recoverFailedProductionPartialPlan(
+      new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists() { return true; },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:30Z"), () => "receipt-only-nonce", 42,
+    );
+    expect(fullyPublished.state.outbox.find(({ recovery }) => recovery?.kind === "production-partial")?.recovery).toMatchObject({
+      kind: "production-partial",
+      publishedPackages: [
+        { id: "cargo:lenso-contracts", version: "1.0.0" },
+        { id: "npm:@lenso/cli", version: "1.0.0" },
+      ],
+    });
     const store = new MemoryStore(initial);
     const recovered = await recoverFailedProductionPartialPlan(
       store, failed.repository, failed.planId, "production",
