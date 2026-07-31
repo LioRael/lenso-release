@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { gunzipSync } from "node:zlib";
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
 import { canonicalBytes, sha256 } from "../core/canonical.js";
@@ -17,6 +18,17 @@ const PACKAGE = /^(cargo:[a-z0-9]+(?:-[a-z0-9]+)*|npm:@lenso\/[a-z0-9]+(?:-[a-z0
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 function fail(message) { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes) { return sha256(bytes); }
+export function cargoArchiveEquivalent(reviewed, registry) {
+    if (Buffer.from(reviewed).equals(Buffer.from(registry)))
+        return true;
+    try {
+        const limit = 512 * 1024 * 1024;
+        return gunzipSync(reviewed, { maxOutputLength: limit }).equals(gunzipSync(registry, { maxOutputLength: limit }));
+    }
+    catch {
+        return false;
+    }
+}
 export function npmRegistryAuthentication(registry) {
     const url = new URL(registry);
     if (url.username || url.password || url.search || url.hash)
@@ -881,6 +893,8 @@ export async function prepareRecovery(environment) {
     if (selectedFixedGroup(config, environment.packages))
         fail("fixed-group break-glass recovery is not supported");
     await stageCargoArchives(environment.cwd, plan, environment.packages);
+    const subjectDirectory = join(environment.cwd, "target/recovery-attestations");
+    await mkdir(subjectDirectory, { mode: 0o700 });
     for (const item of publicationOrder(plan, environment.packages)) {
         if (!item.id.startsWith("cargo:"))
             fail("break-glass recovery supports Cargo packages only");
@@ -892,9 +906,20 @@ export async function prepareRecovery(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (hash(observed.bytes) !== hash(artifact.bytes) ||
-            observed.integrity !== hash(artifact.bytes).slice("sha256:".length))
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+            observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
+        const subjectPath = join(subjectDirectory, basename(artifact.path));
+        const handle = await open(subjectPath, constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_WRONLY |
+            constants.O_NOFOLLOW, 0o600);
+        try {
+            await handle.writeFile(observed.bytes);
+        }
+        finally {
+            await handle.close();
+        }
     }
 }
 export function validateRecoveryAttestationUrl(value, repository) {
@@ -932,8 +957,8 @@ export async function recoverPublished(environment) {
             !observed.url ||
             !observed.publishedAt)
             fail(`published package is not registry-visible: ${item.id}`);
-        if (hash(observed.bytes) !== hash(artifact.bytes) ||
-            observed.integrity !== hash(artifact.bytes).slice("sha256:".length))
+        if (!cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+            observed.integrity !== hash(observed.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
         const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
         assertComponentReceipt(receipt);

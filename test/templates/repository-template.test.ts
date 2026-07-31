@@ -5,6 +5,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, write
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 
 import { parse } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
+import { cargoArchiveEquivalent, cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -99,6 +100,21 @@ describe("recovery attestation URLs", () => {
   });
 });
 
+describe("Cargo recovery archive equivalence", () => {
+  it("requires identical tar bytes while allowing gzip encoder differences", () => {
+    const tar = Buffer.from("reviewed tar bytes");
+    const first = gzipSync(tar, { level: 1 });
+    const second = gzipSync(tar, { level: 9 });
+    expect(first.equals(second)).toBe(false);
+    expect(cargoArchiveEquivalent(first, second)).toBe(true);
+    expect(cargoArchiveEquivalent(
+      first,
+      gzipSync(Buffer.from("different tar bytes"), { level: 9 }),
+    )).toBe(false);
+    expect(cargoArchiveEquivalent(first, Buffer.from("not gzip"))).toBe(false);
+  });
+});
+
 async function assertVendorLicenses(modules: string): Promise<void> {
   const packages: string[] = [];
   for (const entry of await readdir(modules, { withFileTypes: true })) {
@@ -150,6 +166,9 @@ describe("repository template workflow contracts", () => {
     expect(recovery).toContain("cli.js recover");
     expect(recovery).toContain(
       "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+    );
+    expect(recovery).toContain(
+      "target/recovery-attestations/*.crate",
     );
     expect(recovery).toContain(
       "LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}",
