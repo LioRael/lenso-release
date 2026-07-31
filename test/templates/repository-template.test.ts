@@ -286,6 +286,15 @@ describe("repository template workflow contracts", () => {
     expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
     expect(recovery).not.toContain("NODE_AUTH_TOKEN");
     expect(recovery).not.toContain("crates-io-auth-action");
+    const partialRecovery = await readFile(
+      join(template, ".github/workflows/recover-partial-production.yml"),
+      "utf8",
+    );
+    expect(partialRecovery).not.toMatch(
+      /&recovery-environment|\*recovery-environment|<<:/u,
+    );
+    for (const match of partialRecovery.matchAll(/uses:\s*([^\s]+)/gu))
+      expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
   });
 
   it("uses scoped App authentication and prioritizes fresh intent over a retained plan", async () => {
