@@ -346,7 +346,7 @@ export function assertReleaseEvent(value) {
         ? [...base, "packages"]
         : eventType === "lenso-publish-receipt"
             ? [...base, "correlationId", "receipt"]
-            : base;
+            : [...base, "environment"];
     const event = record(value, "releaseEvent", keys);
     literal(event.schema, "releaseEvent.schema", "lenso.release-event.v1");
     sha256(event.eventId, "releaseEvent.eventId");
@@ -359,7 +359,10 @@ export function assertReleaseEvent(value) {
     url(event.planUrl, "releaseEvent.planUrl");
     sha256(event.planSha256, "releaseEvent.planSha256");
     oid(event.releaseCommit, "releaseEvent.releaseCommit");
-    if (eventType === "lenso-publish-requested") {
+    if (eventType === "lenso-plan-ready") {
+        enumeration(event.environment, "releaseEvent.environment", ["shadow", "production"]);
+    }
+    else if (eventType === "lenso-publish-requested") {
         const packages = array(event.packages, "releaseEvent.packages").map((item, index) => assertEventPackage(item, `releaseEvent.packages[${index}]`));
         unique(packages, "id", "releaseEvent.packages");
     }

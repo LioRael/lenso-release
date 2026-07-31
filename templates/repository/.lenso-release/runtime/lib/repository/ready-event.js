@@ -8,6 +8,9 @@ const bytes = await readFile(".lenso-release/plan.json");
 const plan = JSON.parse(bytes.toString("utf8"));
 assertReleasePlan(plan);
 const releaseCommit = required("GITHUB_SHA");
+const environment = required("LENSO_RELEASE_MODE");
+if (environment !== "shadow" && environment !== "production")
+    throw new Error("LENSO_RELEASE_MODE must be shadow or production");
 if (releaseCommit === plan.sourceCommit)
     throw new Error("ready event requires the reviewed merge commit");
 const identity = {
@@ -15,6 +18,7 @@ const identity = {
     eventType: "lenso-plan-ready",
     issuedAt: new Date().toISOString(), nonce: crypto.randomUUID(), sourceRepository: required("GITHUB_REPOSITORY"),
     expectedAppId: Number(required("APP_ID")), planId: plan.planId,
+    environment,
     planUrl: `https://raw.githubusercontent.com/${plan.repository}/${releaseCommit}/.lenso-release/plan.json`,
     planSha256: sha256(bytes), releaseCommit,
 };
