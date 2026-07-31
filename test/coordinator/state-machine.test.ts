@@ -502,7 +502,7 @@ describe("atomic coordinator state", () => {
     expect(retry.state).toMatchObject({ status: "blocked", reason: "dispatch outcome unknown" });
     expect(retry.state.occupancyKeys.length).toBeGreaterThan(0);
   });
-  it("reconstructs a lost receipt from a reviewed recovery run without publishing", async () => {
+  it.each(["missing", "fixed-group"] as const)("reconstructs a lost %s receipt from a reviewed recovery run without publishing", async (tagMode) => {
     const identity = {
       schema: "lenso.release-plan.v1" as const,
       repository: "LioRael/lenso",
@@ -525,7 +525,9 @@ describe("atomic coordinator state", () => {
     const store = new MemoryStore(snapshot(value));
     const bytes = Buffer.from("published crate");
     const packed = sha256(bytes) as Sha256;
-    let tagReceipt: ComponentReceiptV1 | null = null;
+    const receiptIdentity = { schema: "lenso.component-receipt.v1" as const, environment: "production" as const, planId: value.planId, packageId: value.packages[0]!.id, version: value.packages[0]!.version, repository: value.repository, sourceCommit: value.releaseCommit, packedSha256: packed, registryIntegrity: packed.slice(7), registryUrl: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", provenanceUrl: "https://github.com/LioRael/lenso/attestations/1", provenanceSubject: { name: "lenso-contracts-1.0.0.crate", digest: packed }, workflowUrl: "https://github.com/LioRael/lenso/actions/runs/8", tagUrl: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", publishedAt: "2026-07-11T00:02:00Z" };
+    const expectedReceipt = { ...receiptIdentity, receiptId: sha256(receiptIdentity as JsonValue) as Sha256 } as ComponentReceiptV1;
+    let tagReceipt: unknown | null = tagMode === "fixed-group" ? { schema: "lenso.fixed-group-receipt.v1", group: "lenso", version: "1.0.0", receipts: [expectedReceipt] } : null;
     let creates = 0;
     const observation = () => ({
       registry: { packedBytes: bytes, nativeIntegrity: packed.slice(7), url: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", publishedAt: "2026-07-11T00:02:00Z" },
@@ -538,9 +540,9 @@ describe("atomic coordinator state", () => {
       authenticate: async () => ({ actor: "lenso-app[bot]", appId: 42 }), readPlan: async () => ({ plan, planBytes }),
       observer: { async observe() { return observation(); }, async createAnnotatedTag(_repository, receipt) { creates++; tagReceipt = receipt; } },
     });
-    expect(creates).toBe(1);
+    expect(creates).toBe(tagMode === "missing" ? 1 : 0);
     expect(recovered?.state.status).toBe("verified");
-    expect(recovered?.state.receipts).toEqual([tagReceipt]);
+    expect(recovered?.state.receipts).toEqual([expectedReceipt]);
   });
   it("authorizes one production break-glass recovery outbox for the full plan", async () => {
     const value = state();
