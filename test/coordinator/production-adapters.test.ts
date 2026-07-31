@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -28,6 +28,24 @@ describe("production coordinator adapters", () => {
     expect(productionDependencyUrl("cargo:lenso-module-auth", "0.1.8")).toBe(
       "https://crates.io/api/v1/crates/lenso-module-auth/0.1.8/download",
     );
+  });
+
+  it("preserves a verified immutable tag attestation record URL", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const subject = { name: "lenso-1.0.0.crate", digest };
+    const recordUrl = "https://github.com/LioRael/lenso/attestations/38141732";
+    expect(verifiedProvenanceUrl("LioRael/lenso", digest, subject, {
+      repository: "LioRael/lenso",
+      packedSha256: digest,
+      provenanceSubject: subject,
+      provenanceUrl: recordUrl,
+    })).toBe(recordUrl);
+    expect(verifiedProvenanceUrl("LioRael/lenso", digest, subject, {
+      repository: "LioRael/lenso",
+      packedSha256: digest,
+      provenanceSubject: subject,
+      provenanceUrl: "https://example.com/untrusted",
+    })).toBe(`https://github.com/LioRael/lenso/attestations/${digest.slice(7)}`);
   });
 
   it("identifies allowlisted external observations across crates.io redirects", async () => {

@@ -271,6 +271,34 @@ export function trustedProductionBreakGlassRun(
     );
 }
 
+export function verifiedProvenanceUrl(
+  repository: string,
+  packedDigest: string,
+  subject: { name: string; digest: string },
+  tagReceipt: unknown,
+): string {
+  const digestUrl =
+    `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`;
+  if (typeof tagReceipt !== "object" || tagReceipt === null || Array.isArray(tagReceipt))
+    return digestUrl;
+  const receipt = tagReceipt as Record<string, unknown>;
+  const receiptSubject = receipt.provenanceSubject;
+  const provenanceUrl = receipt.provenanceUrl;
+  if (
+    receipt.repository !== repository ||
+    receipt.packedSha256 !== packedDigest ||
+    !canonicalBytes(receiptSubject as never).equals(canonicalBytes(subject as never)) ||
+    typeof provenanceUrl !== "string"
+  ) return digestUrl;
+  const prefix = `https://github.com/${repository}/attestations/`;
+  const suffix = provenanceUrl.startsWith(prefix)
+    ? provenanceUrl.slice(prefix.length)
+    : "";
+  return /^[1-9][0-9]*$/u.test(suffix) || provenanceUrl === digestUrl
+    ? provenanceUrl
+    : digestUrl;
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -823,7 +851,12 @@ export async function createCoordinatorHandlers(
             provenance: {
               url: shadow
                 ? expected.provenanceUrl
-                : `https://github.com/${repository}/attestations/${packedDigest.slice("sha256:".length)}`,
+                : verifiedProvenanceUrl(
+                    repository,
+                    packedDigest,
+                    subject,
+                    tagReceipt,
+                  ),
               subject,
             },
             workflow: {
