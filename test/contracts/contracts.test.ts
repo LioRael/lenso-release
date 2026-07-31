@@ -107,7 +107,7 @@ const artifactReceipt = {
   receiptId: sha("a"),
   packageId: "artifact:lenso-runtime-console",
   registryIntegrity: sha("e"),
-  registryUrl: "https://github.com/LioRael/lenso-runtime-console/releases/download/v0.1.2/lenso-runtime-console.tar.gz",
+  registryUrl: "https://github.com/LioRael/lenso-console/releases/download/v0.1.2/lenso-runtime-console.tar.gz",
   provenanceSubject: {
     name: "lenso-runtime-console-0.1.2.tar.gz",
     digest: sha("e"),

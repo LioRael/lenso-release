@@ -37,7 +37,7 @@ change as the code. Do not silently infer a new procedure.
 | Catalog worker | Mirrors immutable release records and moves reviewed channel pointers. |
 
 The participating component repositories are `lenso`, `lenso-cli`,
-`lenso-runtime-console`, `lenso-auth-module`, `lenso-audit-log-module`, and
+`lenso-console`, `lenso-auth-module`, `lenso-audit-log-module`, and
 `lenso-organization-module`.
 
 ## Normal reviewed release

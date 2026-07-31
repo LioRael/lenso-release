@@ -218,9 +218,9 @@ describe("production coordinator adapters", () => {
       expect(new Headers(init?.headers).has("authorization")).toBe(false);
       return new Response("archive");
     });
-    await expect(checkedGithubAsset(request as typeof fetch, "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).resolves.toHaveProperty("status", 200);
+    await expect(checkedGithubAsset(request as typeof fetch, "https://api.github.com/repos/LioRael/lenso-console/releases/assets/42", "secret")).resolves.toHaveProperty("status", 200);
     expect(request).toHaveBeenCalledTimes(2);
-    await expect(checkedGithubAsset(async () => new Response(null, { status: 302, headers: { location: "https://evil.example/archive" } }), "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42", "secret")).rejects.toThrow("not trusted");
+    await expect(checkedGithubAsset(async () => new Response(null, { status: 302, headers: { location: "https://evil.example/archive" } }), "https://api.github.com/repos/LioRael/lenso-console/releases/assets/42", "secret")).rejects.toThrow("not trusted");
   });
 
   it("observes shadow GitHub releases and assets only through the configured gateway", async () => {
@@ -234,7 +234,7 @@ describe("production coordinator adapters", () => {
     });
     await expect(checkedShadowGithubJson(
       request as typeof fetch,
-      `${gateway}/repos/LioRael/lenso-runtime-console/releases/tags/v0.1.2`,
+      `${gateway}/repos/LioRael/lenso-console/releases/tags/v0.1.2`,
       gateway,
       "secret",
     )).resolves.toEqual({ draft: true });
@@ -246,7 +246,7 @@ describe("production coordinator adapters", () => {
     )).resolves.toHaveProperty("status", 200);
     await expect(checkedShadowGithubAsset(
       request as typeof fetch,
-      "https://api.github.com/repos/LioRael/lenso-runtime-console/releases/assets/42",
+      "https://api.github.com/repos/LioRael/lenso-console/releases/assets/42",
       gateway,
       "secret",
     )).rejects.toThrow("shadow GitHub request");

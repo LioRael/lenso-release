@@ -36,7 +36,7 @@ packages:
 
 const expectedInventory = {
   "oci:lenso-console-service": [
-    "LioRael/lenso-runtime-console",
+    "LioRael/lenso-console",
     "ghcr",
     "console",
     true,
@@ -183,7 +183,7 @@ const expectedInventory = {
   ],
   "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", "distribution", true, true],
   "npm:@lenso/console-package-api": [
-    "LioRael/lenso-runtime-console",
+    "LioRael/lenso-console",
     "npm",
     "console",
     true,
@@ -197,20 +197,20 @@ const expectedInventory = {
     true
   ],
   "npm:@lenso/remote-module-kit": [
-    "LioRael/lenso-runtime-console",
+    "LioRael/lenso-console",
     "npm",
     "modules",
     true,
     true
   ],
   "npm:@lenso/runtime-console-api": [
-    "LioRael/lenso-runtime-console",
+    "LioRael/lenso-console",
     "npm",
     "console",
     true,
     true
   ],
-  "npm:@lenso/service-kit": ["LioRael/lenso-runtime-console", "npm", "modules", true, true]
+  "npm:@lenso/service-kit": ["LioRael/lenso-console", "npm", "modules", true, true]
 } as const;
 
 const expectedDependencies: Record<string, readonly string[]> = {

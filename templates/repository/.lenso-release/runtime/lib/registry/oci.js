@@ -19,7 +19,7 @@ export async function observeOciImage(name, version, options = {}) {
     if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(repository))
         throw new TypeError("invalid OCI repository");
     const registryName = repository.split("/").at(-1);
-    const canonicalUrl = options.canonicalUrl ?? `https://github.com/LioRael/lenso-runtime-console/pkgs/container/${encodeURIComponent(registryName)}/${encodeURIComponent(version)}`;
+    const canonicalUrl = options.canonicalUrl ?? `https://github.com/LioRael/lenso-console/pkgs/container/${encodeURIComponent(registryName)}/${encodeURIComponent(version)}`;
     const endpoint = new URL(`${registryPrefix}/v2/${repository}/manifests/${encodeURIComponent(version)}`, registry.origin);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
