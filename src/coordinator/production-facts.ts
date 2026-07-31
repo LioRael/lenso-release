@@ -1472,8 +1472,10 @@ export async function createCoordinatorHandlers(
           { repository, workflow: entry.workflow, ref: entry.ref, sha: entry.recovery?.workflowCommit ?? state.releaseCommit },
           entry.eventId, token,
         );
-      const existing = state.outbox.find(({ recovery }) => recovery?.kind === "production-partial");
-      if (existing) {
+      const existing = state.outbox
+        .filter(({ recovery }) => recovery?.kind === "production-partial")
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (existing && !["pending", "in-flight"].includes(existing.status)) {
         await supersedeFailedProductionPartialRecovery(
           input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible }, workflowCommit,
           now(), nonce, input.config.appId,
