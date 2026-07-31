@@ -13,7 +13,7 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
+import { cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
 
@@ -44,6 +44,41 @@ describe("npm shadow registry authentication", () => {
   it("rejects registry URLs that could redirect or disclose credentials", () => {
     expect(() => npmRegistryAuthentication("https://user:secret@registry.example/npm")).toThrow(/must not contain credentials/u);
     expect(() => npmRegistryAuthentication("https://registry.example/npm?target=other")).toThrow(/query parameters/u);
+  });
+});
+
+describe("crates.io archive redirects", () => {
+  it("follows only the official static archive redirect", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: {
+          location:
+            "https://static.crates.io/crates/lenso/lenso-0.3.34.crate",
+        },
+      }))
+      .mockResolvedValueOnce(new Response("crate"));
+    vi.stubGlobal("fetch", request);
+    await expect(fetchCargoArchive(
+      "https://crates.io/api/v1/crates/lenso/0.3.34/download",
+      { "user-agent": "publisher" },
+    )).resolves.toMatchObject({ status: 200 });
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      new URL("https://static.crates.io/crates/lenso/lenso-0.3.34.crate"),
+      { headers: { "user-agent": "publisher" }, redirect: "error" },
+    );
+  });
+
+  it("rejects redirects outside the crates.io archive host", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://example.com/lenso.crate" },
+    })));
+    await expect(fetchCargoArchive(
+      "https://crates.io/api/v1/crates/lenso/0.3.34/download",
+      { "user-agent": "publisher" },
+    )).rejects.toThrow("crates registry redirect is not trusted");
   });
 });
 
