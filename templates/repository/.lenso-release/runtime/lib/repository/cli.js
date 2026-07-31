@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { consumePreflightProof, createPlan, createPreflightProof, publishSelected, recoverPublished, } from "./runtime.js";
+import { consumePreflightProof, createPlan, createPreflightProof, prepareRecovery, publishSelected, recoverPublished, } from "./runtime.js";
 function required(name) {
     const value = process.env[name];
     if (!value)
@@ -45,10 +45,13 @@ else if (command === "publish") {
     const receipts = await publishSelected(environment());
     process.stdout.write(`${JSON.stringify(receipts)}\n`);
 }
+else if (command === "recover-prepare") {
+    await prepareRecovery(environment());
+}
 else if (command === "recover") {
     const receipts = await recoverPublished(environment());
     process.stdout.write(`${JSON.stringify(receipts)}\n`);
 }
 else {
-    throw new Error("usage: runtime plan|preflight|consume-preflight|publish|recover");
+    throw new Error("usage: runtime plan|preflight|consume-preflight|publish|recover-prepare|recover");
 }

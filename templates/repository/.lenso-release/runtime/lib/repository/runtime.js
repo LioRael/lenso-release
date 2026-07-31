@@ -852,7 +852,7 @@ export async function verifyRecoveryAuthorization(environment) {
         fail("authoritative recovery outbox payload mismatch");
     return recovery;
 }
-export async function recoverPublished(environment) {
+async function recoveryPlan(environment) {
     await verifyRecoveryAuthorization(environment);
     const candidateEnvironment = {
         ...environment,
@@ -868,6 +868,10 @@ export async function recoverPublished(environment) {
         candidatePlan.repository !== candidateEnvironment.repository)
         fail("plan identity mismatch");
     exactSelection(candidatePlan, candidateEnvironment.packages);
+    return { candidateEnvironment, plan: candidatePlan };
+}
+export async function prepareRecovery(environment) {
+    const { candidateEnvironment, plan: candidatePlan } = await recoveryPlan(environment);
     const phases = publisherPackagePhases(candidateEnvironment.packages, candidatePlan, "recovery");
     let plan = candidatePlan;
     for (const packages of phases) {
@@ -877,6 +881,45 @@ export async function recoverPublished(environment) {
     if (selectedFixedGroup(config, environment.packages))
         fail("fixed-group break-glass recovery is not supported");
     await stageCargoArchives(environment.cwd, plan, environment.packages);
+    for (const item of publicationOrder(plan, environment.packages)) {
+        if (!item.id.startsWith("cargo:"))
+            fail("break-glass recovery supports Cargo packages only");
+        const artifact = await packedArtifact(environment.cwd, item);
+        const observed = await cargoObservation(item.id.slice("cargo:".length), item.version);
+        if (!observed.exists ||
+            !observed.bytes ||
+            !observed.integrity ||
+            !observed.url ||
+            !observed.publishedAt)
+            fail(`published package is not registry-visible: ${item.id}`);
+        if (hash(observed.bytes) !== hash(artifact.bytes) ||
+            observed.integrity !== hash(artifact.bytes).slice("sha256:".length))
+            fail(`registry archive differs from reviewed artifact: ${item.id}`);
+    }
+}
+export function validateRecoveryAttestationUrl(value, repository) {
+    const url = new URL(value);
+    if (url.origin !== "https://github.com" ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        !url.pathname.startsWith(`/${repository}/attestations/`))
+        fail("official recovery attestation URL is invalid");
+    return url.toString();
+}
+function recoveryAttestationUrl(environment) {
+    const value = process.env.LENSO_RECOVERY_ATTESTATION_URL;
+    if (!value)
+        fail("official recovery attestation URL is required");
+    return validateRecoveryAttestationUrl(value, environment.repository);
+}
+export async function recoverPublished(environment) {
+    const { plan } = await recoveryPlan(environment);
+    const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+    if (selectedFixedGroup(config, environment.packages))
+        fail("fixed-group break-glass recovery is not supported");
+    const provenanceUrl = recoveryAttestationUrl(environment);
     const receipts = [];
     for (const item of publicationOrder(plan, environment.packages)) {
         if (!item.id.startsWith("cargo:"))
@@ -892,7 +935,6 @@ export async function recoverPublished(environment) {
         if (hash(observed.bytes) !== hash(artifact.bytes) ||
             observed.integrity !== hash(artifact.bytes).slice("sha256:".length))
             fail(`registry archive differs from reviewed artifact: ${item.id}`);
-        const provenanceUrl = await createAttestation(artifact.path, artifact.bytes, environment);
         const receipt = receiptFor(plan, item, observed, provenanceUrl, environment);
         assertComponentReceipt(receipt);
         await createImmutableTag(receipt, environment);
