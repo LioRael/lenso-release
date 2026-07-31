@@ -28,7 +28,10 @@ import { acceptReadyEvent } from "../../src/coordinator/ready.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
 import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
 import { scanActiveOutboxRecovery, scanActiveRecovery } from "../../src/coordinator/production-facts.js";
-import { authorizeProductionBreakGlassRecovery } from "../../src/coordinator/break-glass-recovery.js";
+import {
+  authorizeProductionBreakGlassRecovery,
+  retryProductionBreakGlassRecovery,
+} from "../../src/coordinator/break-glass-recovery.js";
 import { HANDLE_EVENT_EXIT, handleEvent, runHandleEventCli } from "../../src/commands/handle-event.js";
 
 const digest = (value: string) => `sha256:${value.repeat(64)}` as const;
@@ -632,6 +635,45 @@ describe("atomic coordinator state", () => {
     ).toMatchObject({
       status: "dispatched",
       runUrl: "https://github.com/LioRael/lenso/actions/runs/9",
+    });
+
+    const retried = await retryProductionBreakGlassRecovery(
+      store,
+      {
+        repository: value.repository,
+        planId: value.planId,
+        plan,
+        defaultBranch: "main",
+        workflowCommit: "6".repeat(40),
+        authorizedRunUrl:
+          "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        now: new Date("2026-07-11T00:05:00Z"),
+        nonce: "break-glass-retry-nonce",
+        appId: 42,
+      },
+      recovery!.eventId,
+    );
+    const retry = retried.state.outbox.find(
+      (entry) =>
+        entry.recovery?.workflowCommit === "6".repeat(40),
+    );
+    expect(retry).toMatchObject({
+      ref: "main",
+      status: "pending",
+      recovery: {
+        authorizedRunUrl:
+          "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        workflowCommit: "6".repeat(40),
+      },
+    });
+    expect(retried.state.packages[0]?.requestEventId).toBe(retry?.eventId);
+    expect(retried.state.attempts.at(-1)).toMatchObject({
+      eventId: retry?.eventId,
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "retried authorized production break-glass recovery",
     });
   });
   it("continues active recovery after incomplete evidence but aborts security errors", async () => {
