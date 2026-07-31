@@ -283,6 +283,14 @@ packages:
     userFacing: true
     publishable: true
     dependencies: []
+  # Retained only to complete the reviewed 0.1.2 replacement release.
+  - id: npm:@lenso/console-package-api
+    repository: LioRael/lenso-console
+    registry: npm
+    releaseGroup: console
+    userFacing: true
+    publishable: true
+    dependencies: []
   - id: npm:@lenso/auth-console
     repository: LioRael/lenso-auth-module
     registry: npm
