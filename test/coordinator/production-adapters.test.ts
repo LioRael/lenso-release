@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -128,6 +128,20 @@ describe("production coordinator adapters", () => {
     expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+  });
+  it("trusts only an exact successful production OCI absence proof", () => {
+    const planId = `sha256:${"a".repeat(64)}`;
+    const head = "2".repeat(40);
+    const run = {
+      event: "workflow_dispatch", head_branch: "main", head_sha: head,
+      display_title: `verify-production-oci-absence:${planId}:oci:lenso-console-service@0.1.4`,
+      status: "completed", conclusion: "success", repository: { full_name: "LioRael/lenso-console" },
+    };
+    const workflow = { path: ".github/workflows/verify-production-oci-absence.yml" };
+    const jobs = [{ name: "verify", conclusion: "success", steps: [{ name: "Prove the production manifest is absent", conclusion: "success" }] }];
+    expect(trustedProductionOciAbsenceRun(run, workflow, jobs, "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(true);
+    expect(trustedProductionOciAbsenceRun({ ...run, head_sha: "3".repeat(40) }, workflow, jobs, "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(false);
+    expect(trustedProductionOciAbsenceRun(run, workflow, [{ ...jobs[0], steps: [] }], "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(false);
   });
   it("retries only an exact conclusively failed recovery run", () => {
     const sha = "2".repeat(40);

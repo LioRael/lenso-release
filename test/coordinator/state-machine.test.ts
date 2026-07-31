@@ -316,7 +316,7 @@ describe("atomic coordinator state", () => {
     value.outbox[0]!.runUrl = "https://github.com/LioRael/lenso/actions/runs/30664174730";
     const store = new MemoryStore(snapshot(value));
     const recovered = await recoverShadowModeMismatchPlan(
-      store, value.repository, value.planId, "30664174730", "production",
+      store, value.repository, value.planId, "30664174730", "https://github.com/LioRael/lenso/actions/runs/30666000000", "production",
       {
         async observeRun() { return { runUrl: value.outbox[0]!.runUrl!, status: "completed", conclusion: "success" }; },
         async packageVersionExists(environment) { return environment === "shadow"; },
@@ -327,8 +327,12 @@ describe("atomic coordinator state", () => {
     expect(recovered.state.outbox).toEqual(value.outbox);
     expect(recovered.state.packages).toEqual(value.packages);
     expect(recovered.state.attempts.at(-1)?.detail).toBe("recovered shadow publisher mode mismatch");
+    expect(recovered.state.evidence.at(-1)).toMatchObject({
+      kind: "production-oci-absence-proof",
+      url: "https://github.com/LioRael/lenso/actions/runs/30666000000",
+    });
     await expect(recoverShadowModeMismatchPlan(
-      new MemoryStore(snapshot(value)), value.repository, value.planId, "30664174730", "production",
+      new MemoryStore(snapshot(value)), value.repository, value.planId, "30664174730", "https://github.com/LioRael/lenso/actions/runs/30666000000", "production",
       {
         async observeRun() { return { runUrl: value.outbox[0]!.runUrl!, status: "completed", conclusion: "success" }; },
         async packageVersionExists() { return true; },
@@ -1177,8 +1181,8 @@ describe("atomic coordinator state", () => {
     expect(await runHandleEventCli(["--retry-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retryFailedShadowPlan: retry }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retry).toHaveBeenCalledOnce();
     const recoverMode = vi.fn(async () => undefined);
-    expect(await runHandleEventCli(["--recover-shadow-mode-mismatch-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a"), "--publisher-run-id", "30664174730"], {}, async () => ({ ready, receipt, recoverShadowModeMismatchPlan: recoverMode }))).toBe(HANDLE_EVENT_EXIT.ok);
-    expect(recoverMode).toHaveBeenCalledWith("LioRael/lenso", digest("a"), "30664174730");
+    expect(await runHandleEventCli(["--recover-shadow-mode-mismatch-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a"), "--publisher-run-id", "30664174730", "--production-absence-run-id", "30666000000"], {}, async () => ({ ready, receipt, recoverShadowModeMismatchPlan: recoverMode }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(recoverMode).toHaveBeenCalledWith("LioRael/lenso", digest("a"), "30664174730", "30666000000");
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {
@@ -1187,6 +1191,7 @@ describe("atomic coordinator state", () => {
       expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u);
       if (file === "recover-shadow-mode-mismatch-plan.yml") {
         expect(workflow).toContain("--publisher-run-id");
+        expect(workflow).toContain("--production-absence-run-id");
         expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}");
       } else {
         expect(workflow).toContain("github.event_path");

@@ -28,7 +28,7 @@ export type EventHandlers = {
   retireFailedShadowPlan?(repository: string, planId: string, eventId: Sha256): Promise<unknown>;
   retryFailedShadowPlan?(repository: string, planId: string): Promise<unknown>;
   recoverFailedProductionPartialPlan?(repository: string, planId: string): Promise<unknown>;
-  recoverShadowModeMismatchPlan?(repository: string, planId: string, publisherRunId: string): Promise<unknown>;
+  recoverShadowModeMismatchPlan?(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<unknown>;
 };
 export type HandlerFactory = (env: NodeJS.ProcessEnv) => Promise<EventHandlers>;
 
@@ -158,11 +158,12 @@ export async function runHandleEventCli(
     }
     if (argv[0] === "--recover-shadow-mode-mismatch-plan") {
       if (
-        argv.length !== 7 || argv[1] !== "--repository" ||
+        argv.length !== 9 || argv[1] !== "--repository" ||
         argv[3] !== "--plan-id" || argv[5] !== "--publisher-run-id" ||
+        argv[7] !== "--production-absence-run-id" ||
         !handlers.recoverShadowModeMismatchPlan
-      ) throw new TypeError("usage: handle-event --recover-shadow-mode-mismatch-plan --repository OWNER/REPO --plan-id SHA256 --publisher-run-id RUN_ID");
-      await handlers.recoverShadowModeMismatchPlan(argv[2]!, argv[4]!, argv[6]!);
+      ) throw new TypeError("usage: handle-event --recover-shadow-mode-mismatch-plan --repository OWNER/REPO --plan-id SHA256 --publisher-run-id RUN_ID --production-absence-run-id RUN_ID");
+      await handlers.recoverShadowModeMismatchPlan(argv[2]!, argv[4]!, argv[6]!, argv[8]!);
       return HANDLE_EVENT_EXIT.ok;
     }
     if (argv[0] === "--recover-failed-production-partial-plan") {
