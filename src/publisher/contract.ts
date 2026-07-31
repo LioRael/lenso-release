@@ -49,7 +49,11 @@ export function executionRef(planId: string): string {
   return `release-execution/${match[1]}`;
 }
 
-function legalPackageSubset(actual: readonly EventPackage[], plan: ReleasePlanV1, context: string): void {
+export function publisherPackagePhases(
+  actual: readonly EventPackage[],
+  plan: ReleasePlanV1,
+  context: string,
+): EventPackage[][] {
   const keys = actual.map(({ id, version }) => `${id}\0${version}`);
   if (actual.length === 0) throw new Error(`${context} package selection mismatch: must not be empty`);
   if (new Set(actual.map(({ id }) => id)).size !== actual.length) {
@@ -71,8 +75,20 @@ function legalPackageSubset(actual: readonly EventPackage[], plan: ReleasePlanV1
     const result = local.length === 0 ? 0 : 1 + Math.max(...local.map(({ id: dependency }) => phase(dependency, new Set(visiting))));
     memo.set(id, result); return result;
   };
-  const phases = new Set(actual.map(({ id }) => phase(id)));
-  if (phases.size !== 1) throw new Error(`${context} package selection crosses dependency phases`);
+  const grouped = new Map<number, EventPackage[]>();
+  for (const item of actual) {
+    const itemPhase = phase(item.id);
+    grouped.set(itemPhase, [...(grouped.get(itemPhase) ?? []), item]);
+  }
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, items]) => items);
+}
+
+function legalPackageSubset(actual: readonly EventPackage[], plan: ReleasePlanV1, context: string): void {
+  if (publisherPackagePhases(actual, plan, context).length !== 1) {
+    throw new Error(`${context} package selection crosses dependency phases`);
+  }
 }
 
 function assertObservedOid(value: string, name: string): void {
