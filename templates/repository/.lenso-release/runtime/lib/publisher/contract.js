@@ -6,7 +6,7 @@ export function executionRef(planId) {
         throw new Error("planId must be a SHA-256 digest");
     return `release-execution/${match[1]}`;
 }
-function legalPackageSubset(actual, plan, context) {
+export function publisherPackagePhases(actual, plan, context) {
     const keys = actual.map(({ id, version }) => `${id}\0${version}`);
     if (actual.length === 0)
         throw new Error(`${context} package selection mismatch: must not be empty`);
@@ -37,9 +37,19 @@ function legalPackageSubset(actual, plan, context) {
         memo.set(id, result);
         return result;
     };
-    const phases = new Set(actual.map(({ id }) => phase(id)));
-    if (phases.size !== 1)
+    const grouped = new Map();
+    for (const item of actual) {
+        const itemPhase = phase(item.id);
+        grouped.set(itemPhase, [...(grouped.get(itemPhase) ?? []), item]);
+    }
+    return [...grouped.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, items]) => items);
+}
+function legalPackageSubset(actual, plan, context) {
+    if (publisherPackagePhases(actual, plan, context).length !== 1) {
         throw new Error(`${context} package selection crosses dependency phases`);
+    }
 }
 function assertObservedOid(value, name) {
     if (!/^[0-9a-f]{40}$/u.test(value))

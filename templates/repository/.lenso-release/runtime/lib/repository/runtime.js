@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
 import { canonicalBytes, sha256 } from "../core/canonical.js";
-import { executionRef, verifyPublisherContract } from "../publisher/contract.js";
+import { executionRef, publisherPackagePhases, verifyPublisherContract, } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 const execFile = promisify(execFileCallback);
 const OID = /^[0-9a-f]{40}$/u;
@@ -840,7 +840,20 @@ export async function recoverPublished(environment) {
         githubSha: environment.releaseCommit,
         refName: executionRef(environment.planId),
     };
-    const plan = await preflight(candidateEnvironment);
+    const planBytes = await safeRead(candidateEnvironment.cwd, ".lenso-release/plan.json");
+    if (hash(planBytes) !== candidateEnvironment.planSha256)
+        fail("plan byte digest mismatch");
+    const candidatePlan = parseJson(planBytes, "release plan");
+    assertReleasePlan(candidatePlan);
+    if (candidatePlan.planId !== candidateEnvironment.planId ||
+        candidatePlan.repository !== candidateEnvironment.repository)
+        fail("plan identity mismatch");
+    exactSelection(candidatePlan, candidateEnvironment.packages);
+    const phases = publisherPackagePhases(candidateEnvironment.packages, candidatePlan, "recovery");
+    let plan = candidatePlan;
+    for (const packages of phases) {
+        plan = await preflight({ ...candidateEnvironment, packages });
+    }
     const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
     if (selectedFixedGroup(config, environment.packages))
         fail("fixed-group break-glass recovery is not supported");
