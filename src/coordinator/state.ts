@@ -316,7 +316,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
           throw new TypeError("outbox recovery invalid");
       } else if (recovery.kind === "production-partial") {
         exactKeys(recovery as unknown as Record<string, unknown>, ["kind", "failedRunUrl", "workflowCommit", "publishedPackages"], "outbox recovery");
-        if (!runUrl.test(recovery.failedRunUrl) || !OID.test(recovery.workflowCommit) || !Array.isArray(recovery.publishedPackages) || recovery.publishedPackages.length === 0 || recovery.publishedPackages.length >= entry.packages.length || recovery.publishedPackages.some((item) => !entry.packages.some(({ id, version }) => id === item.id && version === item.version)))
+        if (!runUrl.test(recovery.failedRunUrl) || !OID.test(recovery.workflowCommit) || !Array.isArray(recovery.publishedPackages) || recovery.publishedPackages.length === 0 || recovery.publishedPackages.length > entry.packages.length || recovery.publishedPackages.some((item) => !entry.packages.some(({ id, version }) => id === item.id && version === item.version)))
           throw new TypeError("outbox recovery invalid");
       } else throw new TypeError("outbox recovery invalid");
       if (state.environment !== "production") throw new TypeError("outbox recovery invalid");
@@ -632,7 +632,7 @@ export async function supersedeFailedProductionPartialRecovery(
   store: GitStateStore,
   repository: string,
   planId: string,
-  facts: FailedShadowRetryFacts,
+  facts: FailedProductionPartialRecoveryFacts,
   workflowCommit: string,
   now: Date,
   nextNonce: () => string,
@@ -650,8 +650,11 @@ export async function supersedeFailedProductionPartialRecovery(
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (!previous || !["in-flight", "dispatched"].includes(previous.status))
     throw new Error("partial recovery dispatch is not supersedable");
-  if (previous.recovery!.workflowCommit === workflowCommit && previous.workflow === ".github/workflows/publish.yml")
-    throw new Error("partial recovery workflow identity did not change");
+  const recovery = previous.recovery;
+  if (!recovery || recovery.kind !== "production-partial")
+    throw new Error("partial recovery authorization is missing");
+  const identityChanged = recovery.workflowCommit !== workflowCommit ||
+    previous.workflow !== ".github/workflows/publish.yml";
   const observed = await facts.observeRun(previous);
   const abandoned = previous.status === "in-flight" && previous.runUrl === null &&
     Boolean(previous.leaseExpiresAt && previous.leaseExpiresAt <= now.toISOString()) && observed === null;
@@ -660,6 +663,14 @@ export async function supersedeFailedProductionPartialRecovery(
     ["failure", "cancelled"].includes(observed.conclusion ?? "");
   if (!abandoned && !failed)
     throw new Error("partial recovery workflow is not conclusively absent or failed");
+  const publishedPackages = [] as { id: string; version: string }[];
+  for (const item of previous.packages)
+    if (await facts.packageVersionExists(item.id, item.version)) publishedPackages.push(item);
+  const publishedKeys = new Set(publishedPackages.map(({ id, version }) => `${id}\0${version}`));
+  if (recovery.publishedPackages.some(({ id, version }) => !publishedKeys.has(`${id}\0${version}`)))
+    throw new Error("partial recovery registry state regressed");
+  if (!identityChanged && publishedPackages.length === recovery.publishedPackages.length)
+    throw new Error("partial recovery workflow identity and registry state did not change");
   const at = now.toISOString();
   const nonce = nextNonce();
   const identity = {
@@ -673,7 +684,7 @@ export async function supersedeFailedProductionPartialRecovery(
   const eventId = sha256(identity as unknown as JsonValue) as Sha256;
   const entry: PlanDispatchOutbox = {
     eventId, nonce, ref: previous.ref, workflow: ".github/workflows/publish.yml",
-    recovery: { ...previous.recovery!, workflowCommit },
+    recovery: { ...recovery, workflowCommit, publishedPackages },
     packages: previous.packages,
     inputs: { event_id: eventId, plan_id: state.planId, plan_sha256: state.planSha256, release_commit: state.releaseCommit, packages_json: JSON.stringify(previous.packages), nonce },
     status: "pending", claimOwner: null, leaseExpiresAt: null, runUrl: null, createdAt: at, updatedAt: at,
