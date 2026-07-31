@@ -28,6 +28,7 @@ export type DispatchCommand = {
   workflow: string;
   ref: string;
   inputs: Record<(typeof PUBLISH_INPUT_FIELDS)[number], string>;
+  expectedSha?: string;
 };
 export type DispatchRunContext = {
   repository: string;
@@ -178,7 +179,12 @@ export async function runDispatchOutbox(
     actions: "write",
     metadata: "read",
   });
-  const context: DispatchRunContext = { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit };
+  const context: DispatchRunContext = {
+    repository,
+    workflow: entry.workflow,
+    ref: entry.ref,
+    sha: entry.recovery?.workflowCommit ?? state.releaseCommit,
+  };
   const existing = await dispatcher.findByEventId(context, entry.eventId, token);
   const canonicalRun = (run: ObservedWorkflowRun): ObservedWorkflowRun => {
     const parsed = new URL(run.runUrl);
@@ -290,6 +296,7 @@ export async function runDispatchOutbox(
             workflow: currentEntry.workflow,
             ref: currentEntry.ref,
             inputs: currentEntry.inputs,
+            expectedSha: context.sha,
           },
           entry.eventId,
           token,

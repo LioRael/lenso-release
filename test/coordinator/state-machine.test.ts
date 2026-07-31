@@ -28,6 +28,7 @@ import { acceptReadyEvent } from "../../src/coordinator/ready.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
 import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
 import { scanActiveOutboxRecovery, scanActiveRecovery } from "../../src/coordinator/production-facts.js";
+import { authorizeProductionBreakGlassRecovery } from "../../src/coordinator/break-glass-recovery.js";
 import { HANDLE_EVENT_EXIT, handleEvent, runHandleEventCli } from "../../src/commands/handle-event.js";
 
 const digest = (value: string) => `sha256:${value.repeat(64)}` as const;
@@ -528,6 +529,110 @@ describe("atomic coordinator state", () => {
     expect(creates).toBe(1);
     expect(recovered?.state.status).toBe("verified");
     expect(recovered?.state.receipts).toEqual([tagReceipt]);
+  });
+  it("authorizes one production break-glass recovery outbox for the full plan", async () => {
+    const value = state();
+    value.outbox[0] = {
+      ...value.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/7",
+    };
+    const store = new MemoryStore(snapshot(value));
+    const plan = {
+      schema: "lenso.release-plan.v1",
+      planId: value.planId,
+      repository: value.repository,
+      sourceCommit: value.sourceCommit,
+      tegamiVersion: "1.2.5",
+      publisher: {
+        workflow: ".github/workflows/publish.yml",
+        workflowSha256: digest("1"),
+        sharedRevision: "4".repeat(40),
+        sharedBundleSha256: digest("2"),
+        runner: "ubuntu-24.04",
+        node: "24.0.0",
+        npm: "11.7.0",
+        rust: "1.94.0",
+      },
+      generatedFiles: [{ path: "Cargo.lock", sha256: digest("3") }],
+      packages: [{
+        id: value.packages[0]!.id,
+        previousVersion: "0.9.0",
+        nextVersion: value.packages[0]!.version,
+        bump: "major",
+        releaseGroup: "foundation",
+        userFacing: true,
+        dependencies: [],
+      }],
+    } as ReleasePlanV1;
+    const authorized = await authorizeProductionBreakGlassRecovery(store, {
+      repository: value.repository,
+      planId: value.planId,
+      plan,
+      defaultBranch: "main",
+      workflowCommit: "5".repeat(40),
+      authorizedRunUrl: "https://github.com/LioRael/lenso/actions/runs/8",
+      authorizedRunSha256: digest("9"),
+      now: new Date("2026-07-11T00:03:00Z"),
+      nonce: "break-glass-recovery-nonce",
+      appId: 42,
+    });
+    const recovery = authorized.state.outbox.find((entry) => entry.recovery);
+    expect(recovery).toMatchObject({
+      ref: "main",
+      workflow: ".github/workflows/publish.yml",
+      status: "pending",
+      recovery: {
+        kind: "production-break-glass",
+        authorizedRunUrl: "https://github.com/LioRael/lenso/actions/runs/8",
+        authorizedRunSha256: digest("9"),
+        workflowCommit: "5".repeat(40),
+      },
+    });
+    expect(authorized.state.packages[0]).toMatchObject({
+      status: "dispatched",
+      requestEventId: recovery!.eventId,
+    });
+    expect(authorized.state.attempts.at(-1)).toMatchObject({
+      eventId: recovery!.eventId,
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "authorized production break-glass recovery",
+    });
+
+    const dispatch = vi.fn(async (command, eventId) =>
+      observedRun({
+        repository: command.repository,
+        workflow: command.workflow,
+        ref: command.ref,
+        sha: command.expectedSha,
+      }, eventId, 9)
+    );
+    const dispatched = await runDispatchOutbox(
+      store,
+      value.repository,
+      value.planId,
+      {
+        async findByEventId() { return null; },
+        dispatch,
+      },
+      { async tokenFor() { return "secret"; } },
+      () => new Date("2026-07-11T00:04:00Z"),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ref: "main",
+        expectedSha: "5".repeat(40),
+      }),
+      recovery!.eventId,
+      "secret",
+    );
+    expect(
+      dispatched.state.outbox.find(({ eventId }) => eventId === recovery!.eventId),
+    ).toMatchObject({
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/9",
+    });
   });
   it("continues active recovery after incomplete evidence but aborts security errors", async () => {
     const first = state();

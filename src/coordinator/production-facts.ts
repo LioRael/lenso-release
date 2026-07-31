@@ -5,6 +5,7 @@ import type {
   ReleaseEventV1,
   ReleasePlanV1,
 } from "../contracts/types.js";
+import { assertReleasePlan } from "../contracts/validate.js";
 import { loadComponents } from "../config/components.js";
 import { sha256 } from "../core/canonical.js";
 import { canonicalBytes } from "../core/canonical.js";
@@ -18,6 +19,7 @@ import {
 import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
+import { authorizeProductionBreakGlassRecovery } from "./break-glass-recovery.js";
 
 type Input = {
   config: { appId: number; actor: string };
@@ -200,6 +202,46 @@ export function trustedRecoveryProvenanceRun(
     trustedRecoveryRun(run, jobs, comparison, repository, defaultBranch, match![1]!);
 }
 
+const BREAK_GLASS_REQUIRED_STEPS = [
+  "Run release gate",
+  "Run package publish preflight",
+  "Build release package",
+  "Publish Lenso crates to crates.io",
+  "Publish GitHub Release",
+] as const;
+
+export function trustedProductionBreakGlassRun(
+  run: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  executionRef: string,
+  releaseCommit: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  const packageJob = jobs.find((job) => job.name === "package");
+  const steps = Array.isArray(packageJob?.steps)
+    ? packageJob.steps as Record<string, unknown>[]
+    : [];
+  return run.event === "workflow_dispatch" &&
+    run.name === "release" &&
+    run.display_title === "release" &&
+    run.path === ".github/workflows/release.yml" &&
+    runRepository?.full_name === repository &&
+    run.head_branch === executionRef &&
+    run.head_sha === releaseCommit &&
+    run.status === "completed" &&
+    run.conclusion === "success" &&
+    packageJob?.status === "completed" &&
+    packageJob.conclusion === "success" &&
+    BREAK_GLASS_REQUIRED_STEPS.every((name) =>
+      steps.some((step) =>
+        step.name === name &&
+        step.status === "completed" &&
+        step.conclusion === "success"
+      )
+    );
+}
+
 export async function scanActiveRecovery(
   plans: Record<string, PlanStateV1>,
   recover: (state: PlanStateV1, pkg: PlanStatePackage) => Promise<void>,
@@ -284,6 +326,11 @@ export async function createCoordinatorHandlers(
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
   recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+  recoverBreakGlassPlan(
+    repository: string,
+    planId: string,
+    breakGlassRunId: string,
+  ): Promise<StoredPlanState>;
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
 }> {
@@ -339,6 +386,11 @@ export async function createCoordinatorHandlers(
     ready(value: unknown): Promise<StoredPlanState>;
     receipt(value: unknown): Promise<StoredPlanState>;
     recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+    recoverBreakGlassPlan(
+      repository: string,
+      planId: string,
+      breakGlassRunId: string,
+    ): Promise<StoredPlanState>;
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   } = {
@@ -901,6 +953,238 @@ export async function createCoordinatorHandlers(
             },
           });
       });
+    },
+    async recoverBreakGlassPlan(repository, planId, breakGlassRunId) {
+      if (environment !== "production")
+        throw new Error("break-glass recovery is production-only");
+      if (repository !== "LioRael/lenso")
+        throw new Error("break-glass recovery is not approved for this repository");
+      if (!/^sha256:[0-9a-f]{64}$/u.test(planId))
+        throw new TypeError("break-glass recovery plan ID invalid");
+      if (!/^[1-9][0-9]*$/u.test(breakGlassRunId))
+        throw new TypeError("break-glass recovery run ID invalid");
+
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const existing = state.outbox.find(
+        (entry) =>
+          entry.recovery?.kind === "production-break-glass" &&
+          entry.recovery.authorizedRunUrl ===
+            `https://github.com/${repository}/actions/runs/${breakGlassRunId}`,
+      );
+      if (existing) {
+        return runDispatchOutbox(
+          input.store,
+          repository,
+          planId,
+          input.dispatcher,
+          input.tokens,
+          now,
+        );
+      }
+
+      const token = await input.tokens.tokenFor(repository, {
+        actions: "read",
+        contents: "read",
+        metadata: "read",
+      });
+      const githubApi = `https://api.github.com/repos/${repository}`;
+      const run = await githubJson(
+        `${githubApi}/actions/runs/${breakGlassRunId}`,
+        token,
+      );
+      const jobsResponse = await githubJson(
+        `${githubApi}/actions/runs/${breakGlassRunId}/jobs?per_page=100`,
+        token,
+      );
+      const jobs = Array.isArray(jobsResponse.jobs)
+        ? jobsResponse.jobs as Record<string, unknown>[]
+        : [];
+      if (
+        !trustedProductionBreakGlassRun(
+          run,
+          jobs,
+          repository,
+          state.executionRef.name,
+          state.releaseCommit,
+        )
+      )
+        throw new Error("break-glass workflow evidence is not trusted");
+      const runUrl =
+        `https://github.com/${repository}/actions/runs/${breakGlassRunId}`;
+      if (run.html_url !== runUrl)
+        throw new Error("break-glass workflow URL is not canonical");
+      if (
+        Object.values(snapshot.plans).some((candidate) =>
+          candidate.planId !== planId &&
+          candidate.evidence.some(({ url }) => url === runUrl)
+        )
+      )
+        throw new Error("break-glass workflow evidence is already bound");
+
+      const failedOutbox = state.outbox.find(
+        ({ status, runUrl: url }) => status === "dispatched" && url !== null,
+      );
+      if (!failedOutbox?.runUrl)
+        throw new Error("reviewed publisher failure binding is missing");
+      const failedRunId =
+        /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)$/u
+          .exec(failedOutbox.runUrl)?.[1];
+      if (!failedRunId)
+        throw new Error("reviewed publisher run URL is invalid");
+      const failedRun = await githubJson(
+        `${githubApi}/actions/runs/${failedRunId}`,
+        token,
+      );
+      if (
+        failedRun.event !== "workflow_dispatch" ||
+        failedRun.path !== failedOutbox.workflow ||
+        failedRun.head_branch !== state.executionRef.name ||
+        failedRun.head_sha !== state.releaseCommit ||
+        failedRun.status !== "completed" ||
+        failedRun.conclusion === "success" ||
+        failedRun.display_title !==
+          `lenso-publish-requested:${failedOutbox.eventId}`
+      )
+        throw new Error("reviewed publisher failure is not conclusive");
+
+      const planBytes = await githubBytes(
+        repository,
+        planPath,
+        state.releaseCommit,
+        token,
+      );
+      const plan = JSON.parse(Buffer.from(planBytes).toString("utf8")) as ReleasePlanV1;
+      assertReleasePlan(plan);
+      if (
+        plan.planId !== state.planId ||
+        plan.repository !== state.repository ||
+        sha256(planBytes) !== state.planSha256
+      )
+        throw new Error("stored break-glass plan binding contradiction");
+
+      const publicPackages: Record<string, string>[] = [];
+      for (const item of state.packages) {
+        if (!item.id.startsWith("cargo:"))
+          throw new Error("approved break-glass recovery supports Cargo only");
+        const name = item.id.slice("cargo:".length);
+        const metadataResponse = await checkedExternal(
+          request,
+          `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(item.version)}`,
+        );
+        const metadata = await metadataResponse.json() as Record<string, unknown>;
+        const version = metadata.version as Record<string, unknown> | undefined;
+        const checksum = String(version?.checksum ?? "");
+        if (
+          version?.crate !== name ||
+          version?.num !== item.version ||
+          !/^[0-9a-f]{64}$/u.test(checksum)
+        )
+          throw new Error(`public Cargo metadata contradiction: ${item.id}`);
+        const archiveResponse = await checkedExternal(
+          request,
+          `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(item.version)}/download`,
+        );
+        const archive = new Uint8Array(await archiveResponse.arrayBuffer());
+        const digest = sha256(archive);
+        if (digest !== `sha256:${checksum}`)
+          throw new Error(`public Cargo archive contradiction: ${item.id}`);
+        publicPackages.push({
+          id: item.id,
+          version: item.version,
+          digest,
+          url: archiveResponse.url ||
+            `https://static.crates.io/crates/${name}/${name}-${item.version}.crate`,
+        });
+      }
+      publicPackages.sort((left, right) =>
+        `${left.id}:${left.version}`.localeCompare(`${right.id}:${right.version}`)
+      );
+
+      const framework = state.packages.find(({ id }) => id === "cargo:lenso");
+      if (!framework) throw new Error("framework release package is missing");
+      const release = await githubJson(
+        `${githubApi}/releases/tags/${encodeURIComponent(`v${framework.version}`)}`,
+        token,
+      );
+      if (
+        release.draft !== false ||
+        release.prerelease !== false ||
+        release.tag_name !== `v${framework.version}` ||
+        release.target_commitish !== state.releaseCommit
+      )
+        throw new Error("GitHub Release contradiction");
+
+      const repositoryMetadata = await githubJson(githubApi, token);
+      const defaultBranch = String(repositoryMetadata.default_branch);
+      const defaultRef = await githubJson(
+        `${githubApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+        token,
+      );
+      const workflowCommit = String(
+        (defaultRef.object as Record<string, unknown>).sha,
+      );
+      if (!/^[0-9a-f]{40}$/u.test(workflowCommit))
+        throw new Error("recovery workflow commit is invalid");
+      const workflowBytes = await githubBytes(
+        repository,
+        plan.publisher.workflow,
+        workflowCommit,
+        token,
+      );
+      const authorizedRunSha256 = sha256({
+        schema: "lenso.production-break-glass-recovery.v1",
+        repository,
+        planId: state.planId,
+        planSha256: state.planSha256,
+        releaseCommit: state.releaseCommit,
+        failedReviewedRun: {
+          id: failedRunId,
+          url: failedOutbox.runUrl,
+          conclusion: String(failedRun.conclusion),
+        },
+        breakGlassRun: {
+          id: breakGlassRunId,
+          url: runUrl,
+          headSha: String(run.head_sha),
+        },
+        publicPackages,
+        githubRelease: {
+          id: String(release.id),
+          url: String(release.html_url),
+          tag: String(release.tag_name),
+          target: String(release.target_commitish),
+        },
+        recoveryWorkflow: {
+          branch: defaultBranch,
+          commit: workflowCommit,
+          sha256: sha256(workflowBytes),
+        },
+      } as never) as `sha256:${string}`;
+      const authorized = await authorizeProductionBreakGlassRecovery(
+        input.store,
+        {
+          repository,
+          planId: planId as `sha256:${string}`,
+          plan,
+          defaultBranch,
+          workflowCommit,
+          authorizedRunUrl: runUrl,
+          authorizedRunSha256,
+          now: now(),
+          nonce: nonce(),
+          appId: input.config.appId,
+        },
+      );
+      return runDispatchOutbox(
+        input.store,
+        authorized.state.repository,
+        authorized.state.planId,
+        input.dispatcher,
+        input.tokens,
+        now,
+      );
     },
     async retireFailedShadowPlan(repository, planId, eventId) {
       const snapshot = await input.store.readSnapshot();
