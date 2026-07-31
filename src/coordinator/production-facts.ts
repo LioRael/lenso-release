@@ -1,5 +1,6 @@
 import type {
   ComponentReceiptV1,
+  PlanDispatchOutbox,
   PlanStatePackage,
   PlanStateV1,
   ReleaseEventV1,
@@ -16,7 +17,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, recoverFailedProductionPartialPlan, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -1447,19 +1448,24 @@ export async function createCoordinatorHandlers(
       const defaultBranch = String(metadata.default_branch);
       const defaultRef = await githubJson(`https://api.github.com/repos/${repository}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
       const workflowCommit = String((defaultRef.object as Record<string, unknown> | undefined)?.sha);
-      await recoverFailedProductionPartialPlan(
-        input.store, repository, planId, input.env.LENSO_COORDINATOR_MODE,
-        {
-          async observeRun(entry) {
-            return input.dispatcher.findByEventId(
-              { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit },
-              entry.eventId, token,
-            );
-          },
-          packageVersionExists: dependencyVisible,
-        },
-        defaultBranch, workflowCommit, now(), nonce, input.config.appId,
-      );
+      const observeRun = async (entry: PlanDispatchOutbox) =>
+        input.dispatcher.findByEventId(
+          { repository, workflow: entry.workflow, ref: entry.ref, sha: entry.recovery?.workflowCommit ?? state.releaseCommit },
+          entry.eventId, token,
+        );
+      const existing = state.outbox.find(({ recovery }) => recovery?.kind === "production-partial");
+      if (existing && existing.recovery!.workflowCommit !== workflowCommit) {
+        await supersedeFailedProductionPartialRecovery(
+          input.store, repository, planId, { observeRun }, workflowCommit,
+          now(), nonce, input.config.appId,
+        );
+      } else {
+        await recoverFailedProductionPartialPlan(
+          input.store, repository, planId, input.env.LENSO_COORDINATOR_MODE,
+          { observeRun, packageVersionExists: dependencyVisible },
+          defaultBranch, workflowCommit, now(), nonce, input.config.appId,
+        );
+      }
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
     },
   };

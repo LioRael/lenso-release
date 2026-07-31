@@ -21,6 +21,7 @@ import {
   retryFailedShadowPlan,
   planStatePath,
   StateConflictError,
+  supersedeFailedProductionPartialRecovery,
   transact,
   type GitStateStore,
   type ReleaseStateSnapshot,
@@ -1024,6 +1025,22 @@ describe("atomic coordinator state", () => {
     );
     expect(replayNonce).not.toHaveBeenCalled();
     expect(replayed.state).toEqual(recovered.state);
+    const stored = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
+    const abandoned = stored.outbox.find(({ recovery }) => recovery?.kind === "production-partial")!;
+    abandoned.status = "in-flight";
+    abandoned.claimOwner = "claim";
+    abandoned.leaseExpiresAt = "2026-07-11T00:04:00.000Z";
+    abandoned.updatedAt = "2026-07-11T00:03:30.000Z";
+    const superseded = await supersedeFailedProductionPartialRecovery(
+      store, failed.repository, failed.planId,
+      { async observeRun() { return null; } },
+      "8".repeat(40), new Date("2026-07-11T00:05:00Z"), () => "supersede-nonce", 42,
+    );
+    expect(superseded.state.outbox.find(({ eventId }) => eventId === abandoned.eventId)).toMatchObject({ status: "cancelled", runUrl: null });
+    const replacement = superseded.state.outbox.find(({ status }) => status === "pending")!;
+    expect(replacement.recovery).toMatchObject({ kind: "production-partial", workflowCommit: "8".repeat(40) });
+    expect(superseded.state.packages.every(({ requestEventId }) => requestEventId === replacement.eventId)).toBe(true);
+    expect(superseded.state.attempts.at(-1)?.detail).toBe("retried production partial recovery");
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));

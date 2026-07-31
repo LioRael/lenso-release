@@ -28,6 +28,8 @@ const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
 export const AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY =
   "authorized production partial recovery";
+export const RETRIED_PRODUCTION_PARTIAL_RECOVERY =
+  "retried production partial recovery";
 export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
   "authorized production break-glass recovery";
 export const RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
@@ -458,7 +460,8 @@ export function assertLegalTransition(
   );
   const partialRecoveryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" &&
-    detail === AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY
+    (detail === AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY ||
+      detail === RETRIED_PRODUCTION_PARTIAL_RECOVERY)
   );
   const retryOutbox = retryAttempt
     ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)
@@ -507,7 +510,8 @@ export function assertLegalTransition(
       before.status === after.status ||
       (before.status === "pending" && ["in-flight", "cancelled"].includes(after.status)) ||
       (before.status === "in-flight" && after.status === "dispatched") ||
-      (before.status === "in-flight" && after.status === "in-flight");
+      (before.status === "in-flight" && after.status === "in-flight") ||
+      (before.status === "in-flight" && after.status === "cancelled" && before.recovery?.kind === "production-partial");
     if (!allowed) throw new TypeError("illegal outbox transition");
     for (const field of ["eventId", "nonce", "ref", "workflow", "createdAt"] as const)
       if (before[field] !== after[field])
@@ -623,6 +627,68 @@ export type FailedShadowRetryFacts = {
 export type FailedProductionPartialRecoveryFacts = FailedShadowRetryFacts & {
   packageVersionExists(id: string, version: string): Promise<boolean>;
 };
+
+export async function supersedeFailedProductionPartialRecovery(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  facts: FailedShadowRetryFacts,
+  workflowCommit: string,
+  now: Date,
+  nextNonce: () => string,
+  appId: number,
+): Promise<StoredPlanState> {
+  if (!OID.test(workflowCommit)) throw new TypeError("partial recovery workflow commit invalid");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (!state || state.environment !== "production" || state.status !== "publishing" || state.reason !== null || state.receipts.length !== 0)
+    throw new Error("production partial recovery plan is required");
+  const previous = state.outbox
+    .filter(({ recovery }) => recovery?.kind === "production-partial")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  if (!previous || previous.status !== "in-flight" || previous.runUrl !== null || !previous.leaseExpiresAt || previous.leaseExpiresAt > now.toISOString())
+    throw new Error("partial recovery dispatch lease is not abandoned");
+  if (previous.recovery!.workflowCommit === workflowCommit)
+    throw new Error("partial recovery workflow commit did not change");
+  if (await facts.observeRun(previous))
+    throw new Error("partial recovery workflow run already exists");
+  const at = now.toISOString();
+  const nonce = nextNonce();
+  const identity = {
+    schema: "lenso.release-event.v1", eventType: "lenso-publish-requested", issuedAt: at,
+    nonce, sourceRepository: "LioRael/lenso-release", expectedAppId: appId,
+    planId: state.planId,
+    planUrl: `https://raw.githubusercontent.com/${state.repository}/${state.releaseCommit}/.lenso-release/plan.json`,
+    planSha256: state.planSha256, releaseCommit: state.releaseCommit,
+    packages: previous.packages,
+  } as const;
+  const eventId = sha256(identity as unknown as JsonValue) as Sha256;
+  const entry: PlanDispatchOutbox = {
+    eventId, nonce, ref: previous.ref, workflow: previous.workflow,
+    recovery: { ...previous.recovery!, workflowCommit },
+    packages: previous.packages,
+    inputs: { event_id: eventId, plan_id: state.planId, plan_sha256: state.planSha256, release_commit: state.releaseCommit, packages_json: JSON.stringify(previous.packages), nonce },
+    status: "pending", claimOwner: null, leaseExpiresAt: null, runUrl: null, createdAt: at, updatedAt: at,
+  };
+  const committed = await transact(store, (current) => {
+    const candidate = current.plans[path];
+    if (!candidate || candidate.revision !== state.revision)
+      throw new StateConflictError("plan changed while abandoned recovery was observed");
+    const result: PlanStateV1 = {
+      ...candidate,
+      packages: candidate.packages.map((item) => ({ ...item, requestEventId: eventId })),
+      attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: RETRIED_PRODUCTION_PARTIAL_RECOVERY }],
+      outbox: candidate.outbox.map((item) => item.eventId === previous.eventId ? { ...item, status: "cancelled" as const, claimOwner: null, leaseExpiresAt: null, updatedAt: at } : item).concat(entry).sort((left, right) => left.eventId.localeCompare(right.eventId)),
+      revision: candidate.revision + 1, updatedAt: at,
+    };
+    assertLegalTransition(candidate, result);
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: committed.plans[path]!, headSha: committed.headSha };
+}
 
 export async function recoverFailedProductionPartialPlan(
   store: GitStateStore,
