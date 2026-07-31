@@ -1042,7 +1042,10 @@ describe("atomic coordinator state", () => {
     abandoned.updatedAt = "2026-07-11T00:03:30.000Z";
     const superseded = await supersedeFailedProductionPartialRecovery(
       store, failed.repository, failed.planId,
-      { async observeRun() { return null; } },
+      {
+        async observeRun() { return null; },
+        async packageVersionExists(id) { return id.startsWith("cargo:"); },
+      },
       "9".repeat(40), new Date("2026-07-11T00:05:00Z"), () => "supersede-nonce", 42,
     );
     expect(superseded.state.outbox.find(({ eventId }) => eventId === abandoned.eventId)).toMatchObject({ status: "cancelled", runUrl: null });
@@ -1058,13 +1061,19 @@ describe("atomic coordinator state", () => {
     failedRecovery.updatedAt = "2026-07-11T00:05:30.000Z";
     const retriedFailure = await supersedeFailedProductionPartialRecovery(
       store, failed.repository, failed.planId,
-      { async observeRun() { return { runUrl: failedRecovery.runUrl!, status: "completed", conclusion: "failure" }; } },
-      "7".repeat(40), new Date("2026-07-11T00:06:00Z"), () => "failed-run-retry", 42,
+      {
+        async observeRun() { return { runUrl: failedRecovery.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists() { return true; },
+      },
+      "9".repeat(40), new Date("2026-07-11T00:06:00Z"), () => "failed-run-retry", 42,
     );
     expect(retriedFailure.state.outbox.find(({ eventId }) => eventId === failedRecovery.eventId)).toMatchObject({ status: "dispatched", runUrl: failedRecovery.runUrl });
     expect(retriedFailure.state.outbox.find(({ status }) => status === "pending")).toMatchObject({
       workflow: ".github/workflows/publish.yml",
-      recovery: { workflowCommit: "7".repeat(40) },
+      recovery: { workflowCommit: "9".repeat(40) },
+    });
+    expect(retriedFailure.state.outbox.find(({ status }) => status === "pending")?.recovery).toMatchObject({
+      publishedPackages: failedRecovery.packages,
     });
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {

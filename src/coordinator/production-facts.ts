@@ -1454,12 +1454,9 @@ export async function createCoordinatorHandlers(
           entry.eventId, token,
         );
       const existing = state.outbox.find(({ recovery }) => recovery?.kind === "production-partial");
-      if (existing && (
-        existing.recovery!.workflowCommit !== workflowCommit ||
-        existing.workflow !== ".github/workflows/publish.yml"
-      )) {
+      if (existing) {
         await supersedeFailedProductionPartialRecovery(
-          input.store, repository, planId, { observeRun }, workflowCommit,
+          input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible }, workflowCommit,
           now(), nonce, input.config.appId,
         );
       } else {

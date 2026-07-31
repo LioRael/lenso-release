@@ -237,6 +237,13 @@ package set, use the reviewed `recover-failed-production-partial-plan` workflow:
 5. The component publishes only versions still absent from the registry and
    submits receipts for both the pre-existing and newly published artifacts.
    It never requests a Cargo credential or overwrites an immutable version.
+   If publication succeeds but registry propagation exceeds the workflow's
+   visibility window, do not republish. After the failed run is conclusive, the
+   coordinator may supersede it only after independently observing that the
+   previously published set did not regress and that the new immutable version
+   appeared. The replacement authorization records the expanded published set;
+   the component then verifies every registry byte and submits receipts without
+   a registry upload.
 6. Verify public registry bytes and a fresh install independently, then verify
    that the coordinator marks every package `received` and the plan `verified`.
 
