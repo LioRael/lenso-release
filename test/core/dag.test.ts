@@ -196,6 +196,13 @@ const expectedInventory = {
     true,
     true
   ],
+  "npm:@lenso/console-package-api": [
+    "LioRael/lenso-console",
+    "npm",
+    "console",
+    true,
+    true
+  ],
   "npm:@lenso/organization-console": [
     "LioRael/lenso-organization-module",
     "npm",
@@ -372,6 +379,7 @@ const expectedDependencies: Record<string, readonly string[]> = {
   "npm:@lenso/auth-device-console": ["npm:@lenso/console-bridge"],
   "npm:@lenso/auth-provider-console": ["npm:@lenso/console-bridge"],
   "npm:@lenso/organization-console": ["npm:@lenso/console-bridge"],
+  "npm:@lenso/console-package-api": [],
   "npm:@lenso/service-kit": [],
   "catalog:lenso-official-module-catalog": [
     "oci:lenso-console-service",
