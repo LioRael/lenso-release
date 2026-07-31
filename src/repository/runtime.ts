@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { gunzipSync } from "node:zlib";
 
 import { loadComponents } from "../config/components.js";
 import { assertComponentReceipt, assertReleasePlan } from "../contracts/validate.js";
@@ -73,6 +74,20 @@ type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; authorization:
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
+export function cargoArchiveEquivalent(
+  reviewed: Uint8Array,
+  registry: Uint8Array,
+): boolean {
+  if (Buffer.from(reviewed).equals(Buffer.from(registry))) return true;
+  try {
+    const limit = 512 * 1024 * 1024;
+    return gunzipSync(reviewed, { maxOutputLength: limit }).equals(
+      gunzipSync(registry, { maxOutputLength: limit }),
+    );
+  } catch {
+    return false;
+  }
+}
 export function npmRegistryAuthentication(registry: string): { registry: string; authKey: string } {
   const url = new URL(registry);
   if (url.username || url.password || url.search || url.hash) fail("npm registry URL must not contain credentials, query parameters, or a fragment");
@@ -791,6 +806,11 @@ export async function prepareRecovery(
   if (selectedFixedGroup(config, environment.packages))
     fail("fixed-group break-glass recovery is not supported");
   await stageCargoArchives(environment.cwd, plan, environment.packages);
+  const subjectDirectory = join(
+    environment.cwd,
+    "target/recovery-attestations",
+  );
+  await mkdir(subjectDirectory, { mode: 0o700 });
   for (const item of publicationOrder(plan, environment.packages)) {
     if (!item.id.startsWith("cargo:"))
       fail("break-glass recovery supports Cargo packages only");
@@ -808,10 +828,24 @@ export async function prepareRecovery(
     )
       fail(`published package is not registry-visible: ${item.id}`);
     if (
-      hash(observed.bytes) !== hash(artifact.bytes) ||
-      observed.integrity !== hash(artifact.bytes).slice("sha256:".length)
+      !cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+      observed.integrity !== hash(observed.bytes).slice("sha256:".length)
     )
       fail(`registry archive differs from reviewed artifact: ${item.id}`);
+    const subjectPath = join(subjectDirectory, basename(artifact.path));
+    const handle = await open(
+      subjectPath,
+      constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_WRONLY |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(observed.bytes);
+    } finally {
+      await handle.close();
+    }
   }
 }
 
@@ -867,8 +901,8 @@ export async function recoverPublished(
     )
       fail(`published package is not registry-visible: ${item.id}`);
     if (
-      hash(observed.bytes) !== hash(artifact.bytes) ||
-      observed.integrity !== hash(artifact.bytes).slice("sha256:".length)
+      !cargoArchiveEquivalent(artifact.bytes, observed.bytes) ||
+      observed.integrity !== hash(observed.bytes).slice("sha256:".length)
     )
       fail(`registry archive differs from reviewed artifact: ${item.id}`);
     const receipt = receiptFor(
