@@ -521,6 +521,7 @@ describe("atomic coordinator state", () => {
     value.status = "blocked";
     value.reason = "provenance contradiction";
     value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
+    value.outbox.push({ ...value.outbox[0]!, eventId: digest("d"), nonce: "superseded-nonce", inputs: { ...value.outbox[0]!.inputs, event_id: digest("d"), nonce: "superseded-nonce" }, status: "cancelled", runUrl: null });
     value.occupancyKeys = ["package:cargo:lenso-contracts:1.0.0", `plan:${value.repository}:${value.planId}`].sort();
     const store = new MemoryStore(snapshot(value));
     const bytes = Buffer.from("published crate");
