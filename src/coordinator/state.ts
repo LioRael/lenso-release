@@ -243,9 +243,11 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
   const packages = state.packages as Record<string, unknown>[];
   const packageKeys: string[] = [];
   for (const item of packages) {
+    const packageFields = ["id", "version", "phase", "status", "requestEventId"];
+    if (Object.hasOwn(item, "registryPath")) packageFields.push("registryPath");
     exactKeys(
       item,
-      ["id", "version", "registryPath", "phase", "status", "requestEventId"],
+      packageFields,
       "package",
     );
     const key = `${item.id}:${item.version}`;
@@ -256,7 +258,7 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
         ? typeof item.registryPath !== "string" ||
           !/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u.test(item.registryPath) ||
           item.registryPath.includes("..")
-        : item.registryPath !== null) ||
+        : item.registryPath !== undefined && item.registryPath !== null) ||
       !Number.isSafeInteger(item.phase) ||
       Number(item.phase) < 0 ||
       !["pending", "dispatched", "received"].includes(String(item.status))
