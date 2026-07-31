@@ -334,6 +334,28 @@ async function requestJson(url: string, init?: RequestInit): Promise<{ response:
 }
 
 const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/LioRael/lenso-release)";
+export async function fetchCargoArchive(
+  download: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const source = new URL(download);
+  const response = await fetch(download, { headers, redirect: "manual" });
+  if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+  const location = response.headers.get("location");
+  if (!location) fail("crates registry redirect location is missing");
+  const target = new URL(location, source);
+  if (
+    source.origin !== "https://crates.io" ||
+    target.origin !== "https://static.crates.io" ||
+    target.username !== "" ||
+    target.password !== "" ||
+    target.search !== "" ||
+    target.hash !== "" ||
+    !target.pathname.startsWith("/crates/")
+  )
+    fail("crates registry redirect is not trusted");
+  return fetch(target, { headers, redirect: "error" });
+}
 async function npmObservation(name: string, version: string): Promise<RegistryObservation> {
   const base = process.env.LENSO_NPM_REGISTRY_URL ?? "https://registry.npmjs.org";
   const encoded = name.replace("/", "%2f");
@@ -363,7 +385,7 @@ async function cargoObservation(name: string, version: string): Promise<Registry
   const checksum = String(crate?.checksum ?? "");
   const publishedAt = String(crate?.created_at ?? "");
   const download = `${base}/api/v1/crates/${encodeURIComponent(name)}/${version}/download`;
-  const artifact = await fetch(download, { headers, redirect: "error" });
+  const artifact = await fetchCargoArchive(download, headers);
   if (!artifact.ok || !checksum || !publishedAt) fail("crates registry observation incomplete");
   return { exists: true, bytes: new Uint8Array(await artifact.arrayBuffer()), integrity: checksum, url: download, publishedAt };
 }
