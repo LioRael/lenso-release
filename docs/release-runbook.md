@@ -56,7 +56,8 @@ The participating component repositories are `lenso`, `lenso-cli`,
    commits, package set, generated lock, plan digest, and CI evidence. A changed
    plan invalidates prior approval.
 5. Merge the reviewed release PR. The plan workflow emits an authenticated ready
-   event to the coordinator.
+   event to the coordinator. The event binds the reviewed repository release mode;
+   the coordinator rejects it unless that mode exactly matches its own environment.
 6. The coordinator re-reads GitHub facts, validates the plan and component catalog,
    consumes a one-use nonce, creates the protected exact execution ref, and
    dispatches the component's `.github/workflows/publish.yml` with the exact plan
@@ -274,6 +275,20 @@ proof consumption, the Shadow Gateway re-reads every already-present package and
 requires its exact SHA-256 digest to match the newly sealed artifact before it signs
 publication authorization. Any missing bytes or digest mismatch stops recovery.
 
+If an older runtime emitted a ready event without binding the repository release
+mode and a successful shadow publisher was consequently recorded as production,
+use `recover-shadow-mode-mismatch-plan` only for that historical state. Supply the
+exact repository, plan ID, and successful publisher run ID. The workflow requires
+an untouched production-labelled publishing plan with no receipts, one original
+dispatch covering the complete package set, a successful exact execution-ref run,
+every selected npm/OCI version present in shadow, and every selected version absent
+from production. It changes only the stored environment and appends recovery
+evidence; plan, commit, execution ref, dispatch, nonce, packages, and occupancy stay
+unchanged. After it succeeds, set `LENSO_COORDINATOR_MODE` to `shadow` and run
+`recover-receipts`; full byte, provenance, tag, workflow, and receipt verification
+must make the plan `verified` before any production promotion. Never use this path
+to reinterpret a run that wrote any production registry.
+
 ## Break-glass publishing
 
 Break-glass publishing is an exception, not an alternate workflow. Use it only when
@@ -324,6 +339,8 @@ If one item is false, report the release as partial and name the blocker.
   receipt receiver.
 - [`.github/workflows/recover-receipts.yml`](../.github/workflows/recover-receipts.yml):
   scheduled recovery.
+- [`.github/workflows/recover-shadow-mode-mismatch-plan.yml`](../.github/workflows/recover-shadow-mode-mismatch-plan.yml):
+  fail-closed repair for a historical production-labelled shadow run.
 - [`.github/workflows/recover-break-glass-plan.yml`](../.github/workflows/recover-break-glass-plan.yml):
   exact, production-only recovery authorization for a fully published Cargo plan.
 - [`shadow-gateway/`](../shadow-gateway/): isolated registry, release, and

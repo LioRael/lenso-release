@@ -325,6 +325,7 @@ describe("repository template workflow contracts", () => {
     const source = await readFile(join(template, ".github/workflows/release-plan.yml"), "utf8");
     expect(source).toContain("x-access-token:${GH_TOKEN}");
     expect(source).toContain("ready-event.js");
+    expect(source).toContain("LENSO_RELEASE_MODE: ${{ vars.LENSO_RELEASE_MODE }}");
     expect(source).toContain("owner: ${{ github.repository_owner }}");
     expect(source).toContain("${{ github.event.repository.name }}");
     expect(source).toContain("lenso-release");
