@@ -120,14 +120,20 @@ const expectedInventory = {
     true
   ],
   "cargo:lenso-module-story": ["LioRael/lenso", "crates-io", "modules", true, true],
+  "cargo:lenso-module-management": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-autonomous-service": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-operator": ["LioRael/lenso", "crates-io", "host", false, true],
-  "cargo:lenso-platform-admin": ["LioRael/lenso", "crates-io", "host", true, true],
-  "cargo:lenso-platform-admin-data": ["LioRael/lenso", "crates-io", "host", true, true],
   "cargo:lenso-platform-core": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-platform-http": ["LioRael/lenso", "crates-io", "foundation", true, true],
   "cargo:lenso-platform-module": ["LioRael/lenso", "crates-io", "foundation", true, true],
-  "cargo:lenso-platform-module-remote": [
+  "cargo:lenso-platform-module-management": [
+    "LioRael/lenso",
+    "crates-io",
+    "foundation",
+    true,
+    true
+  ],
+  "cargo:lenso-platform-provider": [
     "LioRael/lenso",
     "crates-io",
     "foundation",
@@ -182,7 +188,7 @@ const expectedInventory = {
     true
   ],
   "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", "distribution", true, true],
-  "npm:@lenso/console-package-api": [
+  "npm:@lenso/console-bridge": [
     "LioRael/lenso-console",
     "npm",
     "console",
@@ -196,21 +202,7 @@ const expectedInventory = {
     true,
     true
   ],
-  "npm:@lenso/remote-module-kit": [
-    "LioRael/lenso-console",
-    "npm",
-    "modules",
-    true,
-    true
-  ],
-  "npm:@lenso/runtime-console-api": [
-    "LioRael/lenso-console",
-    "npm",
-    "console",
-    true,
-    true
-  ],
-  "npm:@lenso/service-kit": ["LioRael/lenso-console", "npm", "modules", true, true]
+  "npm:@lenso/service-kit": ["LioRael/lenso", "npm", "modules", true, true]
 } as const;
 
 const expectedDependencies: Record<string, readonly string[]> = {
@@ -224,7 +216,15 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-runtime"
   ],
-  "cargo:lenso-platform-module-remote": [
+  "cargo:lenso-module-management": ["cargo:lenso-contracts"],
+  "cargo:lenso-platform-module-management": [
+    "cargo:lenso-contracts",
+    "cargo:lenso-module-management",
+    "cargo:lenso-platform-core",
+    "cargo:lenso-platform-http"
+  ],
+  "cargo:lenso-platform-provider": [
+    "cargo:lenso-module-management",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module",
@@ -322,12 +322,13 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-module-auth-password",
     "cargo:lenso-module-auth-phone",
     "cargo:lenso-module-story",
-    "cargo:lenso-platform-admin-data",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
     "cargo:lenso-platform-module",
-    "cargo:lenso-platform-module-remote",
-    "cargo:lenso-platform-runtime"
+    "cargo:lenso-platform-module-management",
+    "cargo:lenso-platform-provider",
+    "cargo:lenso-platform-runtime",
+    "cargo:lenso-module-management"
   ],
   "cargo:lenso-module-organization": [
     "cargo:lenso-module-audit-log",
@@ -337,18 +338,6 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-platform-module"
   ],
   "cargo:lenso-service": ["cargo:lenso-contracts"],
-  "cargo:lenso-platform-admin-data": [
-    "cargo:lenso-platform-core",
-    "cargo:lenso-platform-http",
-    "cargo:lenso-platform-module",
-    "cargo:lenso-service"
-  ],
-  "cargo:lenso-platform-admin": [
-    "cargo:lenso-platform-core",
-    "cargo:lenso-platform-http",
-    "cargo:lenso-platform-module",
-    "cargo:lenso-service"
-  ],
   "cargo:lenso-migrate": ["cargo:lenso-bootstrap", "cargo:lenso-platform-core"],
   "cargo:lenso-worker": [
     "cargo:lenso-bootstrap",
@@ -357,11 +346,9 @@ const expectedDependencies: Record<string, readonly string[]> = {
   ],
   "cargo:lenso-api": [
     "cargo:lenso-bootstrap",
-    "cargo:lenso-platform-admin",
-    "cargo:lenso-platform-admin-data",
     "cargo:lenso-platform-core",
     "cargo:lenso-platform-http",
-    "cargo:lenso-platform-module-remote",
+    "cargo:lenso-platform-provider",
     "cargo:lenso-platform-runtime",
     "cargo:lenso-service"
   ],
@@ -379,11 +366,11 @@ const expectedDependencies: Record<string, readonly string[]> = {
   ],
   "cargo:lenso-cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-service"],
   "npm:@lenso/cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-cli"],
-  "npm:@lenso/auth-console": ["npm:@lenso/runtime-console-api"],
-  "npm:@lenso/auth-device-console": ["npm:@lenso/runtime-console-api"],
-  "npm:@lenso/auth-provider-console": ["npm:@lenso/runtime-console-api"],
-  "npm:@lenso/organization-console": ["npm:@lenso/runtime-console-api"],
-  "npm:@lenso/service-kit": ["npm:@lenso/remote-module-kit"],
+  "npm:@lenso/auth-console": ["npm:@lenso/console-bridge"],
+  "npm:@lenso/auth-device-console": ["npm:@lenso/console-bridge"],
+  "npm:@lenso/auth-provider-console": ["npm:@lenso/console-bridge"],
+  "npm:@lenso/organization-console": ["npm:@lenso/console-bridge"],
+  "npm:@lenso/service-kit": [],
   "catalog:lenso-official-module-catalog": [
     "oci:lenso-console-service",
     "cargo:lenso-module-audit-log",
@@ -431,13 +418,9 @@ describe("component release graph", () => {
     expect(
       topologicalPhases(registry, [
         "npm:@lenso/service-kit",
-        "npm:@lenso/runtime-console-api",
-        "npm:@lenso/remote-module-kit"
+        "npm:@lenso/console-bridge"
       ])
-    ).toEqual([
-      ["npm:@lenso/remote-module-kit", "npm:@lenso/runtime-console-api"],
-      ["npm:@lenso/service-kit"]
-    ]);
+    ).toEqual([["npm:@lenso/console-bridge", "npm:@lenso/service-kit"]]);
     expect(topologicalPhases(registry, ["npm:@lenso/service-kit"])).toEqual([
       ["npm:@lenso/service-kit"]
     ]);
