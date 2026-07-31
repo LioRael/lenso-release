@@ -751,7 +751,7 @@ export async function recoverFailedProductionPartialPlan(
   } as const;
   const eventId = sha256(identity as unknown as JsonValue) as Sha256;
   const entry: PlanDispatchOutbox = {
-    eventId, nonce, ref: workflowRef, workflow: ".github/workflows/recover-partial-production.yml",
+    eventId, nonce, ref: workflowRef, workflow: ".github/workflows/publish.yml",
     recovery: { kind: "production-partial", failedRunUrl: previous.runUrl, workflowCommit, publishedPackages },
     packages: previous.packages,
     inputs: { event_id: eventId, plan_id: state.planId, plan_sha256: state.planSha256, release_commit: state.releaseCommit, packages_json: JSON.stringify(previous.packages), nonce },

@@ -213,7 +213,35 @@ Cargo artifact but the normal publisher emitted no receipt, use the reviewed
 
 Do not use this path for a partial publication, a plan with accepted receipts, a
 non-Cargo package set, a different component repository, or an unreviewed
-break-glass workflow. Those cases require a separately reviewed recovery design.
+break-glass workflow.
+
+For a production plan that failed after publishing only part of an atomic mixed
+package set, use the reviewed `recover-failed-production-partial-plan` workflow:
+
+1. The coordinator requires the original publisher and every prior partial
+   recovery to be conclusively failed or cancelled, requires no accepted
+   receipts, and independently observes a non-empty strict subset of the planned
+   versions in public registries.
+2. Recovery is allowed only when every Cargo package already exists. A missing
+   Cargo version fails closed because crates.io trusted publishing is reserved
+   for the normal reviewed publisher.
+3. The coordinator records a one-use recovery authorization and dispatches the
+   component's reviewed `publish.yml` from the current default-branch commit.
+   The normal `publish` job remains restricted to the protected execution ref;
+   the partial recovery job runs only on the default branch for a package set
+   containing npm or OCI artifacts.
+4. The component resolves the authoritative failed publisher, re-downloads its
+   release artifacts where required, checks out the reviewed release commit,
+   rebuilds every package, and matches existing registry bytes before creating
+   an official GitHub provenance attestation.
+5. The component publishes only versions still absent from the registry and
+   submits receipts for both the pre-existing and newly published artifacts.
+   It never requests a Cargo credential or overwrites an immutable version.
+6. Verify public registry bytes and a fresh install independently, then verify
+   that the coordinator marks every package `received` and the plan `verified`.
+
+Do not manually dispatch either the component `publish.yml` or the legacy
+`recover-partial-production.yml`; only the coordinator-issued binding is valid.
 
 If a shadow publisher fails, the reviewed `retire-failed-shadow-plan` workflow may
 release the stale coordinator occupancy. It fails closed unless every dispatched
