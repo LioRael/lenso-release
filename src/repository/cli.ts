@@ -5,8 +5,11 @@ import {
   createPlan,
   createPreflightProof,
   prepareRecovery,
+  preparePartialRecovery,
   publishSelected,
+  recoverPartialPublished,
   recoverPublished,
+  verifyRecoveryAuthorization,
   type RuntimeEnvironment,
 } from "./runtime.js";
 
@@ -28,7 +31,7 @@ function parsePackages(value: string): { id: string; version: string }[] {
 
 function environment(): RuntimeEnvironment { return {
   cwd: process.env.LENSO_RUNTIME_CWD ?? process.cwd(), repository: required("GITHUB_REPOSITORY"), releaseCommit: required("INPUT_RELEASE_COMMIT"),
-  githubSha: required("GITHUB_SHA"), refName: required("GITHUB_REF_NAME"), workflowPath: ".github/workflows/publish.yml",
+  githubSha: required("GITHUB_SHA"), refName: required("GITHUB_REF_NAME"), workflowPath: process.env.LENSO_WORKFLOW_PATH ?? ".github/workflows/publish.yml",
   runId: required("GITHUB_RUN_ID"), runUrl: `${required("GITHUB_SERVER_URL")}/${required("GITHUB_REPOSITORY")}/actions/runs/${required("GITHUB_RUN_ID")}`,
   githubToken: required("LENSO_APP_TOKEN"), eventId: required("INPUT_EVENT_ID"), nonce: required("INPUT_NONCE"), planId: required("INPUT_PLAN_ID"),
   planSha256: required("INPUT_PLAN_SHA256"), packages: parsePackages(required("INPUT_PACKAGES_JSON")),
@@ -49,8 +52,18 @@ if (command === "plan") {
 } else if (command === "recover") {
   const receipts = await recoverPublished(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
+} else if (command === "recover-partial-prepare") {
+  await preparePartialRecovery(environment());
+} else if (command === "recover-partial") {
+  const receipts = await recoverPartialPublished(environment());
+  process.stdout.write(`${JSON.stringify(receipts)}\n`);
+} else if (command === "recover-partial-failed-run-id") {
+  const authorization = await verifyRecoveryAuthorization(environment(), "production-partial") as { failedRunUrl: string };
+  const runId = /\/actions\/runs\/([1-9][0-9]*)$/u.exec(authorization.failedRunUrl)?.[1];
+  if (!runId) throw new Error("partial recovery failed run URL is invalid");
+  process.stdout.write(`${runId}\n`);
 } else {
   throw new Error(
-    "usage: runtime plan|preflight|consume-preflight|publish|recover-prepare|recover",
+    "usage: runtime plan|preflight|consume-preflight|publish|recover-prepare|recover|recover-partial-prepare|recover-partial|recover-partial-failed-run-id",
   );
 }

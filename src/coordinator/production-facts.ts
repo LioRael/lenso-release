@@ -16,7 +16,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, retireFailedShadowPlan, retryFailedShadowPlan, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -147,7 +147,7 @@ export function productionDependencyUrl(id: string, version: string): string {
     return `https://crates.io/api/v1/crates/${name}/${encodeURIComponent(version)}/download`;
   }
   if (id.startsWith("npm:"))
-    return `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}`;
+    return `https://registry.npmjs.org/${encodeURIComponent(id.slice(4))}/${encodeURIComponent(version)}`;
   throw new TypeError(`unsupported registry dependency ${id}`);
 }
 
@@ -391,6 +391,7 @@ export async function createCoordinatorHandlers(
   ): Promise<StoredPlanState>;
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
+  recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
     ? new URL("../../../config/components.yaml", import.meta.url).pathname
@@ -461,6 +462,7 @@ export async function createCoordinatorHandlers(
     ): Promise<StoredPlanState>;
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
+    recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
   } = {
     async ready(value) {
       const event = value as Extract<
@@ -1146,7 +1148,7 @@ export async function createCoordinatorHandlers(
             workflowCommit,
             authorizedRunUrl,
             authorizedRunSha256:
-              existing.recovery!.authorizedRunSha256,
+              (existing.recovery as Extract<NonNullable<typeof existing.recovery>, { kind: "production-break-glass" }>).authorizedRunSha256,
             now: now(),
             nonce: nonce(),
             appId: input.config.appId,
@@ -1433,6 +1435,30 @@ export async function createCoordinatorHandlers(
         now(),
         nonce,
         input.config.appId,
+      );
+      return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
+    },
+    async recoverFailedProductionPartialPlan(repository, planId) {
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const token = await input.tokens.tokenFor(repository, { actions: "read", contents: "read", metadata: "read" });
+      const metadata = await githubJson(`https://api.github.com/repos/${repository}`, token);
+      const defaultBranch = String(metadata.default_branch);
+      const defaultRef = await githubJson(`https://api.github.com/repos/${repository}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
+      const workflowCommit = String((defaultRef.object as Record<string, unknown> | undefined)?.sha);
+      await recoverFailedProductionPartialPlan(
+        input.store, repository, planId, input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              { repository, workflow: entry.workflow, ref: entry.ref, sha: state.releaseCommit },
+              entry.eventId, token,
+            );
+          },
+          packageVersionExists: dependencyVisible,
+        },
+        defaultBranch, workflowCommit, now(), nonce, input.config.appId,
       );
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
     },

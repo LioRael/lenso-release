@@ -16,6 +16,7 @@ import {
   assertPlanState,
   assertReleaseStateSnapshot,
   cancelPlan,
+  recoverFailedProductionPartialPlan,
   retireFailedShadowPlan,
   retryFailedShadowPlan,
   planStatePath,
@@ -978,6 +979,51 @@ describe("atomic coordinator state", () => {
       new MemoryStore(snapshot(running)), running.repository, running.planId, "shadow",
       { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("pending or in-flight");
+  });
+  it("authorizes one production recovery only after a mixed immutable publication", async () => {
+    const failed = state();
+    failed.environment = "production";
+    failed.outbox[0] = { ...failed.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/42" };
+    const npm = { id: "npm:@lenso/cli" as const, version: "1.0.0", registryPath: null, phase: 0, status: "dispatched" as const, requestEventId: failed.outbox[0]!.eventId };
+    failed.packages.push(npm);
+    failed.packages.sort((left, right) => `${left.id}:${left.version}`.localeCompare(`${right.id}:${right.version}`));
+    failed.outbox[0]!.packages = failed.packages.map(({ id, version }) => ({ id, version }));
+    failed.outbox[0]!.inputs.packages_json = JSON.stringify(failed.outbox[0]!.packages);
+    failed.occupancyKeys.push("package:npm:@lenso/cli:1.0.0");
+    failed.occupancyKeys.sort();
+    const initial = snapshot(failed);
+    initial.occupiedPackages["package:npm:@lenso/cli:1.0.0"] = failed.planId;
+    const store = new MemoryStore(initial);
+    const recovered = await recoverFailedProductionPartialPlan(
+      store, failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists(id) { return id.startsWith("cargo:"); },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:03:00Z"), () => "partial-nonce", 42,
+    );
+    const entry = recovered.state.outbox.find(({ recovery }) => recovery?.kind === "production-partial")!;
+    expect(entry).toMatchObject({
+      ref: "main",
+      workflow: ".github/workflows/recover-partial-production.yml",
+      status: "pending",
+      recovery: {
+        kind: "production-partial",
+        failedRunUrl: failed.outbox[0]!.runUrl,
+        workflowCommit: "9".repeat(40),
+        publishedPackages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }],
+      },
+    });
+    expect(recovered.state.packages.every(({ requestEventId }) => requestEventId === entry.eventId)).toBe(true);
+    expect(recovered.state.attempts.at(-1)).toMatchObject({ kind: "recovery", outcome: "accepted", detail: "authorized production partial recovery" });
+    const replayNonce = vi.fn(() => "unexpected");
+    const replayed = await recoverFailedProductionPartialPlan(
+      store, failed.repository, failed.planId, "production",
+      { async observeRun() { throw new Error("must not observe twice"); }, async packageVersionExists() { throw new Error("must not observe twice"); } },
+      "main", "9".repeat(40), new Date(), replayNonce, 42,
+    );
+    expect(replayNonce).not.toHaveBeenCalled();
+    expect(replayed.state).toEqual(recovered.state);
   });
   it("routes CLI ready and receipt payloads with explicit exit codes", async () => {
     const ready = vi.fn(async () => ({ state: state(), headSha: "3".repeat(40) }));
