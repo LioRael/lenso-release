@@ -508,7 +508,7 @@ export function assertLegalTransition(
     (previous.status === "publishing" &&
       ["verified", "blocked"].includes(next.status)) ||
     (previous.status === "blocked" &&
-      next.status === "publishing" &&
+      ["publishing", "verified"].includes(next.status) &&
       next.evidence.some(({ kind }) => kind === "recovery"));
   if (!legal)
     throw new TypeError(

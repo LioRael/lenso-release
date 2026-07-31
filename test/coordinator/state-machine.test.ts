@@ -511,6 +511,8 @@ describe("atomic coordinator state", () => {
     value.planId = plan.planId;
     value.planSha256 = sha256(planBytes) as Sha256;
     value.executionRef.name = `release-execution/${plan.planId.slice(7)}`;
+    value.status = "blocked";
+    value.reason = "registry contradiction";
     value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
     value.occupancyKeys = ["package:cargo:lenso-contracts:1.0.0", `plan:${value.repository}:${value.planId}`].sort();
     const store = new MemoryStore(snapshot(value));
@@ -678,6 +680,8 @@ describe("atomic coordinator state", () => {
   });
   it("continues active recovery after incomplete evidence but aborts security errors", async () => {
     const first = state();
+    first.status = "blocked";
+    first.reason = "registry contradiction";
     const second = structuredClone(first);
     second.repository = "LioRael/lenso-cli";
     const calls: string[] = [];
