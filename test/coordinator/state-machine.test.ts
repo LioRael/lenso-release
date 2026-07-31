@@ -266,6 +266,9 @@ describe("atomic coordinator state", () => {
     );
     expect(() => planStatePath("../lenso", digest("a"))).toThrow("repository");
     expect(() => assertPlanState(state())).not.toThrow();
+    const legacyPackageShape = state();
+    delete (legacyPackageShape.packages[0] as Partial<(typeof legacyPackageShape.packages)[number]>).registryPath;
+    expect(() => assertPlanState(legacyPackageShape)).not.toThrow();
     const missingActiveEnvironment = state();
     delete missingActiveEnvironment.environment;
     expect(() => assertPlanState(missingActiveEnvironment)).toThrow("active state environment is required");
