@@ -10,7 +10,7 @@ import { loadComponents } from "../config/components.js";
 import { sha256 } from "../core/canonical.js";
 import { canonicalBytes } from "../core/canonical.js";
 import { acceptReadyEvent } from "./ready.js";
-import { acceptReceiptEvent, IncompleteEvidenceError, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
+import { acceptReceiptEvent, IncompleteEvidenceError, receiptRecoveryEligible, recoverLostReceipt, type ReceiptDependencies, type ReceiptObservation, type ReceiptObservationContext } from "./receipt.js";
 import {
   runDispatchOutbox,
   type AppTokenProvider,
@@ -278,7 +278,7 @@ export async function scanActiveRecovery(
   const recovered: string[] = [];
   const incomplete: string[] = [];
   for (const state of Object.values(plans).sort((a, b) => `${a.repository}:${a.planId}`.localeCompare(`${b.repository}:${b.planId}`))) {
-    if (state.status !== "publishing" && !(state.status === "blocked" && state.reason === "dispatch outcome unknown")) continue;
+    if (!receiptRecoveryEligible(state)) continue;
     for (const pkg of [...state.packages].sort((a, b) => `${a.id}:${a.version}`.localeCompare(`${b.id}:${b.version}`))) {
       if (pkg.status !== "dispatched") continue;
       const key = `${state.repository}:${state.planId}:${pkg.id}:${pkg.version}`;
@@ -633,7 +633,7 @@ export async function createCoordinatorHandlers(
             packedBytes = new Uint8Array(await artifact.arrayBuffer());
             nativeIntegrity = String(version.checksum);
             publishedAt = String(version.created_at);
-            registryUrl = artifact.url || `https://static.crates.io/crates/${packageName}/${packageName}-${packageVersion}.crate`;
+            registryUrl = artifactUrl;
           } else if (packageId.startsWith("npm:")) {
             const name = `@lenso/${packageName}`;
             const packumentUrl = `${shadow ? input.env.LENSO_SHADOW_NPM_REGISTRY_URL : "https://registry.npmjs.org"}/${encodeURIComponent(name)}`;

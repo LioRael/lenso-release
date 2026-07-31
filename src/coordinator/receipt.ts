@@ -16,6 +16,15 @@ export type ReceiptObserver = { observe(context: ReceiptObservationContext, pack
 export type ReceiptDependencies = { store: GitStateStore; observer: ReceiptObserver; authenticate(value: unknown): Promise<{ actor: string; appId: number }>; expectedActor: string; readPlan(repository: string, releaseCommit: string): Promise<{ plan: unknown; planBytes: Uint8Array }>; dependenciesVisible?(plan: ReleasePlanV1, packageIds: string[]): Promise<boolean>; environment: ComponentReceiptV1["environment"]; recovery?: boolean; now(): Date; nonce(): string; appId: number };
 
 const equal = (a: unknown, b: unknown) => canonicalBytes(a as never).equals(canonicalBytes(b as never));
+const RECOVERABLE_RECEIPT_BLOCK_REASONS = new Set([
+  "dispatch outcome unknown",
+  "registry contradiction",
+]);
+export function receiptRecoveryEligible(state: PlanStateV1): boolean {
+  return state.status === "publishing" ||
+    (state.status === "blocked" &&
+      RECOVERABLE_RECEIPT_BLOCK_REASONS.has(state.reason ?? ""));
+}
 function normalizeLegacyRecoveryReceipt(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const receipt = value as Record<string, unknown>;
@@ -67,7 +76,7 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
   const auth = await deps.authenticate(value); if (value.expectedAppId !== deps.appId || auth.appId !== deps.appId || auth.actor !== deps.expectedActor) throw new Error("receipt GitHub App authentication mismatch");
   const receipt = value.receipt; const path = planStatePath(receipt.repository, receipt.planId); const snapshot = await deps.store.readSnapshot(); const current = snapshot.plans[path]; if (!current) throw new Error("plan state not found");
   if (current.status === "verified" && current.receipts.some((item) => equal(item, receipt))) return { state: current, headSha: snapshot.headSha };
-  if (current.status === "blocked" && (!deps.recovery || current.reason !== "dispatch outcome unknown")) throw new Error("blocked plan requires explicit recovery");
+  if (current.status === "blocked" && (!deps.recovery || !receiptRecoveryEligible(current))) throw new Error("blocked plan requires explicit recovery");
   if (current.receipts.some((item) => equal(item, receipt))) return { state: current, headSha: snapshot.headSha };
   if (receipt.planId !== current.planId || receipt.repository !== current.repository || receipt.sourceCommit !== current.releaseCommit || value.planId !== current.planId || value.releaseCommit !== current.releaseCommit) return block(deps, path, value.eventId, "receipt identity contradiction");
   const selected = current.packages.find(({ id, version }) => id === receipt.packageId && version === receipt.version); if (!selected || selected.requestEventId !== value.correlationId) return block(deps, path, value.eventId, "receipt package correlation contradiction");
@@ -98,7 +107,7 @@ export async function acceptReceiptEvent(value: unknown, deps: ReceiptDependenci
 }
 
 export async function recoverLostReceipt(repository: string, planId: string, packageId: string, version: string, deps: ReceiptDependencies): Promise<StoredPlanState | null> {
-  const snapshot = await deps.store.readSnapshot(); const state = snapshot.plans[planStatePath(repository, planId)]; if (!state) throw new Error("plan state not found"); if (state.status === "blocked" && state.reason !== "dispatch outcome unknown") throw new Error("blocked plan is not recoverable");
+  const snapshot = await deps.store.readSnapshot(); const state = snapshot.plans[planStatePath(repository, planId)]; if (!state) throw new Error("plan state not found"); if (!receiptRecoveryEligible(state)) throw new Error("blocked plan is not recoverable");
   const selected = state.packages.find((item) => item.id === packageId && item.version === version); const requestId = selected?.requestEventId; if (!requestId) throw new Error("package was not dispatched");
   const outbox = state.outbox.find(({ eventId }) => eventId === requestId); if (!outbox || !outbox.packages.some(({ id, version: selectedVersion }) => id === packageId && selectedVersion === version)) throw new Error("package outbox binding missing");
   const context: ReceiptObservationContext = { repository, releaseCommit: state.releaseCommit, eventId: requestId, executionRef: state.executionRef.name, workflow: outbox.workflow, packages: outbox.packages };
