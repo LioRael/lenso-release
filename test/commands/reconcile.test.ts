@@ -190,8 +190,8 @@ describe("immutable registry observations", () => {
       if (url.includes("/git/ref/")) return new Response(JSON.stringify({ object: { type: "tag", sha: "c".repeat(40) } }));
       return new Response(JSON.stringify({ tag: "lenso-runtime-console@1.2.3", message: JSON.stringify({ schema: "lenso.component-receipt.v1", packageId: "artifact:lenso-runtime-console", version: "1.2.3", registryIntegrity: `sha256:${digest}`, publishedAt: "2026-07-11T00:00:00Z" }) }));
     });
-    await expect(observeGithubArtifact("LioRael/lenso-runtime-console", "lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
-    await expect(observeGithubTag("LioRael/lenso-runtime-console", "lenso-runtime-console@1.2.3", "artifact:lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
+    await expect(observeGithubArtifact("LioRael/lenso-console", "lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
+    await expect(observeGithubTag("LioRael/lenso-console", "lenso-runtime-console@1.2.3", "artifact:lenso-runtime-console", "1.2.3", { fetch })).resolves.toMatchObject({ version: "1.2.3", digest: `sha256:${digest}` });
   });
 
   it("distinguishes GitHub 404, HTTP, transport, and timeout without leaking errors", async () => {

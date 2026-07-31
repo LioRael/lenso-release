@@ -248,14 +248,14 @@ packages:
       - cargo:lenso-platform-http
       - cargo:lenso-platform-module
   - id: npm:@lenso/runtime-console-api
-    repository: LioRael/lenso-runtime-console
+    repository: LioRael/lenso-console
     registry: npm
     releaseGroup: console
     userFacing: true
     publishable: true
     dependencies: []
   - id: npm:@lenso/console-package-api
-    repository: LioRael/lenso-runtime-console
+    repository: LioRael/lenso-console
     registry: npm
     releaseGroup: console
     userFacing: true
@@ -290,14 +290,14 @@ packages:
     publishable: true
     dependencies: [npm:@lenso/runtime-console-api]
   - id: npm:@lenso/remote-module-kit
-    repository: LioRael/lenso-runtime-console
+    repository: LioRael/lenso-console
     registry: npm
     releaseGroup: modules
     userFacing: true
     publishable: true
     dependencies: []
   - id: npm:@lenso/service-kit
-    repository: LioRael/lenso-runtime-console
+    repository: LioRael/lenso-console
     registry: npm
     releaseGroup: modules
     userFacing: true
@@ -406,7 +406,7 @@ packages:
     publishable: false
     dependencies: []
   - id: oci:lenso-console-service
-    repository: LioRael/lenso-runtime-console
+    repository: LioRael/lenso-console
     registry: ghcr
     registryPath: liorael/lenso-console
     releaseGroup: console

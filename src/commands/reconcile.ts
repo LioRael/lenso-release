@@ -257,7 +257,10 @@ async function sourceVersion(root: string, id: string): Promise<VersionObservati
     for (const path of await findFiles(root, "package.json")) {
       try {
         const manifest = JSON.parse(await readFile(path, "utf8")) as { name?: unknown; version?: unknown };
-        if (manifest.name === "@lenso/runtime-console" && typeof manifest.version === "string") return manifest.version;
+        if (
+          (manifest.name === "@lenso/console" || manifest.name === "@lenso/runtime-console")
+          && typeof manifest.version === "string"
+        ) return manifest.version;
       } catch { /* continue */ }
     }
   } else if (kind === "cargo") {

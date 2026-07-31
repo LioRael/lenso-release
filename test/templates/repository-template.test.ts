@@ -471,7 +471,7 @@ describe("transactional template synchronization", () => {
 
 async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string; releaseCommit: string; manifest: any }> {
   const cwd = await temp(); await cp(template, cwd, { recursive: true });
-  await writeFile(join(cwd, ".lenso-release/config.json"), `${JSON.stringify({ schema: "lenso.repository-config.v1", repository: "LioRael/lenso-runtime-console" })}\n`);
+  await writeFile(join(cwd, ".lenso-release/config.json"), `${JSON.stringify({ schema: "lenso.repository-config.v1", repository: "LioRael/lenso-console" })}\n`);
   await execute("git", ["init", "-b", "main"], { cwd }); await execute("git", ["config", "user.email", "test@example.com"], { cwd }); await execute("git", ["config", "user.name", "Test"], { cwd });
   await writeFile(join(cwd, "generated.txt"), "generated\n"); await execute("git", ["add", "."], { cwd }); await execute("git", ["commit", "-m", "source"], { cwd });
   const sourceCommit = (await execute("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
@@ -545,7 +545,7 @@ describe("publisher preflight execution gate", () => {
     const fixture = await repositoryFixture();
     const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
     const identity = {
-      schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-runtime-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
+      schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
       publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest(workflow), sharedRevision: fixture.manifest.sourceRevision, sharedBundleSha256: digest(manifestBytes), runner: "ubuntu-24.04", node: process.version.slice(1), npm: "11.7.0", rust: "1.94.0" },
       generatedFiles: [{ path: "generated.txt", sha256: digest(Buffer.from("generated\n")) }],
       packages: [{ id: "npm:@lenso/runtime-console-api", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "console", userFacing: true, dependencies: [] }],
@@ -572,7 +572,7 @@ describe("publisher preflight execution gate", () => {
     const fixture = await repositoryFixture();
     const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
     const identity = {
-      schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-runtime-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
+      schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
       publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest(workflow), sharedRevision: fixture.manifest.sourceRevision, sharedBundleSha256: digest(manifestBytes), runner: "ubuntu-24.04", node: process.version.slice(1), npm: "11.7.0", rust: "1.94.0" },
       generatedFiles: [{ path: "generated.txt", sha256: digest(Buffer.from("generated\n")) }],
       packages: [{ id: "oci:lenso-console-service", previousVersion: "0.1.1", nextVersion: "0.2.0", bump: "minor" as const, releaseGroup: "console", userFacing: true, dependencies: [] }],
@@ -591,7 +591,7 @@ describe("publisher preflight execution gate", () => {
   it("recovers an already-published npm archive and enqueues a deterministic receipt", async () => {
     const fixture = await repositoryFixture();
     const workflow = await readFile(join(fixture.cwd, ".github/workflows/publish.yml")); const manifestBytes = await readFile(join(fixture.cwd, ".lenso-release/runtime/manifest.json"));
-    const identity = { schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-runtime-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
+    const identity = { schema: "lenso.release-plan.v1" as const, repository: "LioRael/lenso-console", sourceCommit: fixture.sourceCommit, tegamiVersion: "1.2.5" as const,
       publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest(workflow), sharedRevision: fixture.manifest.sourceRevision, sharedBundleSha256: digest(manifestBytes), runner: "ubuntu-24.04", node: process.version.slice(1), npm: "11.7.0", rust: "1.94.0" }, generatedFiles: [{ path: "generated.txt", sha256: digest(Buffer.from("generated\n")) }],
       packages: [{ id: "npm:@lenso/runtime-console-api", previousVersion: "0.1.0", nextVersion: "0.1.1", bump: "patch" as const, releaseGroup: "console", userFacing: true, dependencies: [] }] };
     const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as unknown as JsonValue) as ReleasePlanV1["planId"] }; const planBytes = Buffer.from(`${JSON.stringify(plan, null, 2)}\n`); await writeFile(join(fixture.cwd, ".lenso-release/plan.json"), planBytes);
@@ -612,7 +612,7 @@ describe("publisher preflight execution gate", () => {
     const sri = `sha512-${createHash("sha512").update(archive).digest("base64")}`; const shasum = createHash("sha1").update(archive).digest("hex");
     await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$*" >> '${npmLog}'\nif test "$1" = "--version"; then echo 11.7.0; elif test "$1" = "pack"; then cp '${packedSource}' runtime-console-api-0.1.1.tgz; printf '%s\\n' '[{"filename":"runtime-console-api-0.1.1.tgz","name":"@lenso/runtime-console-api","version":"0.1.1","integrity":"${sri}","shasum":"${shasum}"}]'; else exit 0; fi\n`); await chmod(join(bin, "npm"), 0o755);
     await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.94.0 (x)'\n"); await chmod(join(bin, "rustc"), 0o755);
-    await writeFile(join(bin, "gh"), "#!/bin/sh\necho 'https://github.com/LioRael/lenso-runtime-console/attestations/1'\n"); await chmod(join(bin, "gh"), 0o755);
+    await writeFile(join(bin, "gh"), "#!/bin/sh\necho 'https://github.com/LioRael/lenso-console/attestations/1'\n"); await chmod(join(bin, "gh"), 0o755);
     const saved = { PATH: process.env.PATH, RUNNER_IMAGE: process.env.RUNNER_IMAGE, npm: process.env.LENSO_NPM_REGISTRY_URL, proxy: process.env.LENSO_TEST_ARTIFACT_PROXY_URL, github: process.env.LENSO_GITHUB_API_URL, preflight: process.env.LENSO_COORDINATOR_PREFLIGHT_URL, consume: process.env.LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL, publicKey: process.env.LENSO_PREFLIGHT_AUTHORITY_PUBLIC_KEY, receipt: process.env.LENSO_COORDINATOR_RECEIPT_URL, cleanup: process.env.LENSO_COORDINATOR_CLEANUP_URL, app: process.env.LENSO_APP_ID, attestation: process.env.LENSO_ATTESTATION_TOKEN };
     Object.assign(process.env, { PATH: `${bin}:${saved.PATH}`, RUNNER_IMAGE: "ubuntu-24.04", LENSO_NPM_REGISTRY_URL: `${base}/registry`, LENSO_TEST_ARTIFACT_PROXY_URL: `${base}/artifact.tgz`, LENSO_GITHUB_API_URL: base, LENSO_COORDINATOR_PREFLIGHT_URL: `${base}/preflight`, LENSO_COORDINATOR_PREFLIGHT_CONSUME_URL: `${base}/consume`, LENSO_PREFLIGHT_AUTHORITY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }), LENSO_COORDINATOR_RECEIPT_URL: `${base}/receipt`, LENSO_COORDINATOR_CLEANUP_URL: `${base}/cleanup`, LENSO_APP_ID: "123", LENSO_ATTESTATION_TOKEN: "workflow-token" });
     const environment = { cwd: fixture.cwd, repository: plan.repository, releaseCommit: fixture.releaseCommit, githubSha: fixture.releaseCommit, refName: executionRef(plan.planId), workflowPath: plan.publisher.workflow, runId: "1", runUrl: `https://github.com/${plan.repository}/actions/runs/1`, githubToken: "app-token", eventId: `sha256:${"e".repeat(64)}`, nonce: "12345678-1234-4234-8234-123456789abc", planId: plan.planId, planSha256: digest(planBytes), packages: [{ id: plan.packages[0]!.id, version: plan.packages[0]!.nextVersion }] };

@@ -27,7 +27,7 @@ describe("authoritative preflight service", () => {
   });
   it("rejects an OCI artifact aimed outside the reviewed registry destination", async () => {
     const { privateKey } = generateKeyPairSync("ed25519"); const authority = new PreflightAuthority(new MemoryPreflightStore(), Buffer.alloc(32, 5), privateKey, () => new Date("2026-07-11T00:00:00.000Z"));
-    const value = binding(); value.repository = "LioRael/lenso-runtime-console"; value.packages = [{ id: "oci:lenso-console-service", version: "0.2.0" }]; value.registries = { "oci:lenso-console-service": "liorael/lenso-console" };
+    const value = binding(); value.repository = "LioRael/lenso-console"; value.packages = [{ id: "oci:lenso-console-service", version: "0.2.0" }]; value.registries = { "oci:lenso-console-service": "liorael/lenso-console" };
     const proof = await authority.issue(value, sha256(value as unknown as JsonValue), async () => true);
     const path = `.lenso-release/preflight-artifacts/${proof.proofId.slice(7)}`;
     const artifacts = [{ id: "oci:lenso-console-service", name: "lenso-console-service", version: "0.2.0", kind: "oci" as const, path: `${path}/lenso-console-release.json`, sha256: `sha256:${"1".repeat(64)}` as const, size: 42, ino: 7, mode: 256 as const, cargoMetadata: null, cargoMetadataSha256: null, attachments: [{ role: "oci-archive" as const, path: `${path}/lenso-console-service.oci.tar`, sha256: `sha256:${"2".repeat(64)}` as const, size: 84, ino: 8, mode: 256 as const }], ociMetadata: { registryRepository: "attacker/console", manifestDigest: `sha256:${"3".repeat(64)}` as const, archiveSha256: `sha256:${"2".repeat(64)}` as const } }];

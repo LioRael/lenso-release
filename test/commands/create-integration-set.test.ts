@@ -4,12 +4,12 @@ import { createIntegrationSet } from "../../src/commands/create-integration-set.
 
 describe("create integration set", () => {
   it("sorts and verifies exact repository commits before assigning a stable ID", async () => {
-    const commits = { "LioRael/lenso-runtime-console": "b".repeat(40), "LioRael/lenso-examples": "a".repeat(40) };
+    const commits = { "LioRael/lenso-console": "b".repeat(40), "LioRael/lenso-examples": "a".repeat(40) };
     const request = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify({ sha: String(url).endsWith("a".repeat(40)) ? "a".repeat(40) : "b".repeat(40) })));
     const first = await createIntegrationSet("0.1.0", commits, { fetch: request as typeof fetch });
     const second = await createIntegrationSet("0.1.0", Object.fromEntries(Object.entries(commits).reverse()), { fetch: request as typeof fetch });
     expect(first).toEqual(second);
-    expect(Object.keys(first.repositories)).toEqual(["LioRael/lenso-examples", "LioRael/lenso-runtime-console"]);
+    expect(Object.keys(first.repositories)).toEqual(["LioRael/lenso-console", "LioRael/lenso-examples"]);
     expect(first.integrationSetId).toMatch(/^sha256:[0-9a-f]{64}$/u);
   });
 
