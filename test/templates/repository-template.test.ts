@@ -293,6 +293,8 @@ describe("repository template workflow contracts", () => {
     expect(partialRecovery).not.toMatch(
       /&recovery-environment|\*recovery-environment|<<:/u,
     );
+    expect(partialRecovery).not.toContain("crates-io-auth-action");
+    expect(partialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
     for (const match of partialRecovery.matchAll(/uses:\s*([^\s]+)/gu))
       expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
   });

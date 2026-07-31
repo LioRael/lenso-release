@@ -994,6 +994,14 @@ describe("atomic coordinator state", () => {
     failed.occupancyKeys.sort();
     const initial = snapshot(failed);
     initial.occupiedPackages["package:npm:@lenso/cli:1.0.0"] = failed.planId;
+    await expect(recoverFailedProductionPartialPlan(
+      new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists(id) { return id.startsWith("npm:"); },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:00Z"), () => "unsafe-cargo-retry", 42,
+    )).rejects.toThrow("forbids missing Cargo");
     const store = new MemoryStore(initial);
     const recovered = await recoverFailedProductionPartialPlan(
       store, failed.repository, failed.planId, "production",

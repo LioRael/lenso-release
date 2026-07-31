@@ -735,6 +735,10 @@ export async function recoverFailedProductionPartialPlan(
     if (await facts.packageVersionExists(item.id, item.version)) publishedPackages.push(item);
   if (publishedPackages.length === 0 || publishedPackages.length === previous.packages.length)
     throw new Error("publisher did not leave a partial package set");
+  if (previous.packages.some(({ id, version }) =>
+    id.startsWith("cargo:") &&
+    !publishedPackages.some((item) => item.id === id && item.version === version)
+  )) throw new Error("partial recovery forbids missing Cargo publications");
   const at = now.toISOString();
   const nonce = nextNonce();
   const identity = {
