@@ -46,6 +46,13 @@ describe("production coordinator adapters", () => {
       provenanceSubject: subject,
       provenanceUrl: "https://example.com/untrusted",
     })).toBe(`https://github.com/LioRael/lenso/attestations/${digest.slice(7)}`);
+    expect(verifiedProvenanceUrl("LioRael/lenso", digest, subject, {
+      schema: "lenso.fixed-group-receipt.v1",
+      receipts: [
+        { repository: "LioRael/lenso", packedSha256: `sha256:${"b".repeat(64)}`, provenanceSubject: { name: "other.tgz", digest: `sha256:${"b".repeat(64)}` }, provenanceUrl: "https://github.com/LioRael/lenso/attestations/1" },
+        { repository: "LioRael/lenso", packedSha256: digest, provenanceSubject: subject, provenanceUrl: recordUrl },
+      ],
+    })).toBe(recordUrl);
   });
 
   it("identifies allowlisted external observations across crates.io redirects", async () => {
