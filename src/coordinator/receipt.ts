@@ -19,6 +19,7 @@ const equal = (a: unknown, b: unknown) => canonicalBytes(a as never).equals(cano
 const RECOVERABLE_RECEIPT_BLOCK_REASONS = new Set([
   "dispatch outcome unknown",
   "registry contradiction",
+  "provenance contradiction",
 ]);
 export function receiptRecoveryEligible(state: PlanStateV1): boolean {
   return state.status === "publishing" ||
