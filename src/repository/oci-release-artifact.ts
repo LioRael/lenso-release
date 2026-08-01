@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Sha256 } from "../contracts/types.js";
+import { canonicalBytes, type JsonValue } from "../core/canonical.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const REPOSITORY = /^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u;
@@ -17,6 +18,36 @@ export type OciReleaseArtifact = {
   registryRepository: string;
   blobs: ReadonlyMap<Sha256, Buffer>;
 };
+
+export function verifyRecoveredOciInstallManifest(input: {
+  localBytes: Buffer;
+  remoteBytes: Buffer;
+  registryRepository: string;
+  sourceCommit: string;
+  version: string;
+}): Sha256 {
+  const remote = json(input.remoteBytes, "remote Console install manifest");
+  const local = json(input.localBytes, "sealed Console install manifest");
+  const image = object(remote.image, "remote Console install manifest image");
+  const imageDigest = image.digest;
+  if (
+    typeof imageDigest !== "string" ||
+    !DIGEST.test(imageDigest) ||
+    image.reference !== `ghcr.io/${input.registryRepository}@${imageDigest}` ||
+    remote.schema !== "lenso.console-service-release.v1" ||
+    remote.releaseId !== `lenso-console@${input.version}` ||
+    remote.version !== input.version ||
+    remote.sourceCommit !== input.sourceCommit
+  )
+    fail("remote Console install manifest identity is invalid");
+  if (
+    !canonicalBytes({ ...local, image } as JsonValue).equals(
+      canonicalBytes(remote as JsonValue),
+    )
+  )
+    fail("remote Console install manifest contradicts reviewed source inputs");
+  return imageDigest as Sha256;
+}
 
 function fail(message: string): never { throw new Error(`OCI release artifact: ${message}`); }
 function digest(bytes: Uint8Array): Sha256 { return `sha256:${createHash("sha256").update(bytes).digest("hex")}` as Sha256; }

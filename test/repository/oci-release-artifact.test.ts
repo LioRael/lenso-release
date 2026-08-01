@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { inspectOciReleaseArtifact } from "../../src/repository/oci-release-artifact.js";
+import { inspectOciReleaseArtifact, verifyRecoveredOciInstallManifest } from "../../src/repository/oci-release-artifact.js";
 import { publishOciImage } from "../../src/repository/oci-registry-publisher.js";
 
 const GHCR_STORAGE_HOST = "pkg-containers.githubusercontent.com";
@@ -33,6 +33,30 @@ describe("OCI release artifact", () => {
     expect(inspected.manifestDigest).toBe(value.manifestDigest);
     expect(inspected.blobs.size).toBe(3);
     expect(inspected.manifestBytes).toEqual(inspected.blobs.get(value.manifestDigest as `sha256:${string}`));
+  });
+  it("accepts a previously sealed remote image digest without relaxing source inputs", () => {
+    const value = fixture();
+    const remoteDigest = `sha256:${"c".repeat(64)}`;
+    const local = JSON.parse(value.installManifestBytes.toString("utf8")) as Record<string, unknown>;
+    const remote = Buffer.from(JSON.stringify({
+      ...local,
+      image: { reference: `ghcr.io/${value.registryRepository}@${remoteDigest}`, digest: remoteDigest },
+    }));
+    expect(verifyRecoveredOciInstallManifest({
+      localBytes: value.installManifestBytes,
+      remoteBytes: remote,
+      registryRepository: value.registryRepository,
+      sourceCommit: value.sourceCommit,
+      version: value.version,
+    })).toBe(remoteDigest);
+    const contradicted = Buffer.from(JSON.stringify({ ...JSON.parse(remote.toString("utf8")), sourceCommit: "d".repeat(40) }));
+    expect(() => verifyRecoveredOciInstallManifest({
+      localBytes: value.installManifestBytes,
+      remoteBytes: contradicted,
+      registryRepository: value.registryRepository,
+      sourceCommit: value.sourceCommit,
+      version: value.version,
+    })).toThrow("identity is invalid");
   });
   it("publishes every sealed blob and the exact manifest through Distribution V2", async () => {
     const value = fixture(); const blobs = new Map<string, Buffer>(); let manifest: Buffer | undefined;
