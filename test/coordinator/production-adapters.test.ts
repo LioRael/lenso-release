@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -142,6 +142,54 @@ describe("production coordinator adapters", () => {
     expect(trustedProductionOciAbsenceRun(run, workflow, jobs, "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(true);
     expect(trustedProductionOciAbsenceRun({ ...run, head_sha: "3".repeat(40) }, workflow, jobs, "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(false);
     expect(trustedProductionOciAbsenceRun(run, workflow, [{ ...jobs[0], steps: [] }], "LioRael/lenso-console", "main", head, planId, "oci:lenso-console-service", "0.1.4")).toBe(false);
+  });
+  it("trusts only an exact successful production prepublish failure proof", () => {
+    const planId = `sha256:${"a".repeat(64)}`;
+    const head = "2".repeat(40);
+    const failedRunId = "30693169936";
+    const run = {
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: head,
+      display_title:
+        `verify-production-prepublish-failure:${planId}:${failedRunId}`,
+      status: "completed",
+      conclusion: "success",
+      repository: { full_name: "LioRael/lenso-console" },
+    };
+    const workflow = {
+      path: ".github/workflows/verify-production-prepublish-failure.yml",
+    };
+    const steps = [
+      "Verify failed publisher stopped before preflight and registry access",
+      "Prove the production npm version is absent",
+      "Prove the production OCI manifest is absent",
+    ].map((name) => ({ name, conclusion: "success" }));
+    const jobs = [{ name: "verify", conclusion: "success", steps }];
+    expect(
+      trustedProductionPrepublishFailureRun(
+        run,
+        workflow,
+        jobs,
+        "LioRael/lenso-console",
+        "main",
+        head,
+        planId,
+        failedRunId,
+      ),
+    ).toBe(true);
+    expect(
+      trustedProductionPrepublishFailureRun(
+        run,
+        workflow,
+        [{ ...jobs[0], steps: steps.slice(1) }],
+        "LioRael/lenso-console",
+        "main",
+        head,
+        planId,
+        failedRunId,
+      ),
+    ).toBe(false);
   });
   it("retries only an exact conclusively failed recovery run", () => {
     const sha = "2".repeat(40);

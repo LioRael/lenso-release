@@ -26,6 +26,12 @@ export type EventHandlers = {
     breakGlassRunId: string,
   ): Promise<unknown>;
   retireFailedShadowPlan?(repository: string, planId: string, eventId: Sha256): Promise<unknown>;
+  retireFailedProductionPrepublishPlan?(
+    repository: string,
+    planId: string,
+    failedRunId: string,
+    proofRunId: string,
+  ): Promise<unknown>;
   retryFailedShadowPlan?(repository: string, planId: string): Promise<unknown>;
   recoverFailedProductionPartialPlan?(repository: string, planId: string): Promise<unknown>;
   recoverShadowModeMismatchPlan?(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<unknown>;
@@ -187,6 +193,26 @@ export async function runHandleEventCli(
         planId,
       } as JsonValue) as Sha256;
       await handlers.retireFailedShadowPlan(repository, planId, eventId);
+      return HANDLE_EVENT_EXIT.ok;
+    }
+    if (argv[0] === "--retire-failed-production-prepublish-plan") {
+      if (
+        argv.length !== 9 ||
+        argv[1] !== "--repository" ||
+        argv[3] !== "--plan-id" ||
+        argv[5] !== "--failed-run-id" ||
+        argv[7] !== "--proof-run-id" ||
+        !handlers.retireFailedProductionPrepublishPlan
+      )
+        throw new TypeError(
+          "usage: handle-event --retire-failed-production-prepublish-plan --repository OWNER/REPO --plan-id SHA256 --failed-run-id RUN_ID --proof-run-id RUN_ID",
+        );
+      await handlers.retireFailedProductionPrepublishPlan(
+        argv[2]!,
+        argv[4]!,
+        argv[6]!,
+        argv[8]!,
+      );
       return HANDLE_EVENT_EXIT.ok;
     }
     if (argv.length === 1 && argv[0] === "--recover-active") {

@@ -17,7 +17,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, recoverFailedProductionPartialPlan, recoverShadowModeMismatchPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, recoverShadowModeMismatchPlan, retireFailedProductionPrepublishPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -307,6 +307,46 @@ export function trustedProductionOciAbsenceRun(
     proofJob?.conclusion === "success" && proofStep?.conclusion === "success";
 }
 
+export function trustedProductionPrepublishFailureRun(
+  run: Record<string, unknown>,
+  workflow: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  defaultBranch: string,
+  defaultHead: string,
+  planId: string,
+  failedRunId: string,
+): boolean {
+  const proofJob = jobs.find(({ name }) => name === "verify");
+  const proofSteps = Array.isArray(proofJob?.steps)
+    ? (proofJob.steps as Record<string, unknown>[])
+    : [];
+  const requiredSteps = [
+    "Verify failed publisher stopped before preflight and registry access",
+    "Prove the production npm version is absent",
+    "Prove the production OCI manifest is absent",
+  ];
+  return (
+    run.event === "workflow_dispatch" &&
+    run.head_branch === defaultBranch &&
+    run.head_sha === defaultHead &&
+    run.display_title ===
+      `verify-production-prepublish-failure:${planId}:${failedRunId}` &&
+    run.status === "completed" &&
+    run.conclusion === "success" &&
+    (run.repository as Record<string, unknown> | undefined)?.full_name ===
+      repository &&
+    workflow.path ===
+      ".github/workflows/verify-production-prepublish-failure.yml" &&
+    proofJob?.conclusion === "success" &&
+    requiredSteps.every((name) =>
+      proofSteps.some(
+        (step) => step.name === name && step.conclusion === "success"
+      )
+    )
+  );
+}
+
 export function verifiedProvenanceUrl(
   repository: string,
   packedDigest: string,
@@ -433,6 +473,12 @@ export async function createCoordinatorHandlers(
     breakGlassRunId: string,
   ): Promise<StoredPlanState>;
   retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
+  retireFailedProductionPrepublishPlan(
+    repository: string,
+    planId: string,
+    failedRunId: string,
+    proofRunId: string,
+  ): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
   recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
@@ -505,6 +551,12 @@ export async function createCoordinatorHandlers(
       breakGlassRunId: string,
     ): Promise<StoredPlanState>;
     retireFailedShadowPlan(repository: string, planId: string, eventId: `sha256:${string}`): Promise<StoredPlanState>;
+    retireFailedProductionPrepublishPlan(
+      repository: string,
+      planId: string,
+      failedRunId: string,
+      proofRunId: string,
+    ): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
     recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
     recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
@@ -1453,6 +1505,105 @@ export async function createCoordinatorHandlers(
             if (response.status === 404) return false;
             if (!response.ok) throw new Error(`shadow release observation ${response.status}`);
             return true;
+          },
+        },
+        now(),
+      );
+    },
+    async retireFailedProductionPrepublishPlan(
+      repository,
+      planId,
+      failedRunId,
+      proofRunId,
+    ) {
+      if (!/^[1-9][0-9]*$/u.test(failedRunId))
+        throw new TypeError("failed publisher run ID invalid");
+      if (!/^[1-9][0-9]*$/u.test(proofRunId))
+        throw new TypeError("prepublish proof run ID invalid");
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const dispatch = state.outbox[0];
+      if (state.outbox.length !== 1 || !dispatch?.runUrl)
+        throw new Error("exact original publisher dispatch is required");
+      const expectedFailedRunUrl =
+        `https://github.com/${repository}/actions/runs/${failedRunId}`;
+      if (dispatch.runUrl !== expectedFailedRunUrl)
+        throw new Error("failed publisher run does not match stored dispatch");
+      const token = await input.tokens.tokenFor(repository, {
+        actions: "read",
+        metadata: "read",
+      });
+      const repositoryApi = `https://api.github.com/repos/${repository}`;
+      const metadata = await githubJson(repositoryApi, token);
+      const defaultBranch = String(metadata.default_branch);
+      const defaultRef = await githubJson(
+        `${repositoryApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+        token,
+      );
+      const defaultHead = String(
+        (defaultRef.object as Record<string, unknown> | undefined)?.sha,
+      );
+      const proofRun = await githubJson(
+        `${repositoryApi}/actions/runs/${proofRunId}`,
+        token,
+      );
+      const proofRunUrl =
+        `https://github.com/${repository}/actions/runs/${proofRunId}`;
+      const workflowId = String(proofRun.workflow_id);
+      const workflow = await githubJson(
+        `${repositoryApi}/actions/workflows/${encodeURIComponent(workflowId)}`,
+        token,
+      );
+      const jobsResponse = await githubJson(
+        `${repositoryApi}/actions/runs/${proofRunId}/jobs?per_page=100`,
+        token,
+      );
+      const jobs = Array.isArray(jobsResponse.jobs)
+        ? (jobsResponse.jobs as Record<string, unknown>[])
+        : [];
+      if (
+        proofRun.html_url !== proofRunUrl ||
+        !trustedProductionPrepublishFailureRun(
+          proofRun,
+          workflow,
+          jobs,
+          repository,
+          defaultBranch,
+          defaultHead,
+          state.planId,
+          failedRunId,
+        )
+      )
+        throw new Error(
+          "production prepublish failure proof is not exact and successful",
+        );
+      const eventId = sha256({
+        action: "retire-failed-production-prepublish-plan",
+        repository,
+        planId,
+        failedRunId,
+        proofRunId,
+      } as never) as `sha256:${string}`;
+      return retireFailedProductionPrepublishPlan(
+        input.store,
+        repository,
+        planId,
+        eventId,
+        proofRunUrl,
+        input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              {
+                repository,
+                workflow: entry.workflow,
+                ref: entry.ref,
+                sha: state.releaseCommit,
+              },
+              entry.eventId,
+              token,
+            );
           },
         },
         now(),
