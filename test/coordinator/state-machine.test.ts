@@ -25,6 +25,7 @@ import {
   planStatePath,
   StateConflictError,
   supersedeFailedProductionPartialRecovery,
+  supersedeFailedProductionZeroWriteRecovery,
   transact,
   type GitStateStore,
   type ReleaseStateSnapshot,
@@ -1297,6 +1298,83 @@ describe("atomic coordinator state", () => {
     expect(recovered.state.evidence.at(-1)).toMatchObject({
       kind: "zero-write-proof",
       url: "https://github.com/LioRael/lenso/actions/runs/43",
+    });
+  });
+  it("supersedes a conclusively failed zero-write recovery at a new workflow commit", async () => {
+    const failed = state();
+    failed.environment = "production";
+    failed.outbox[0] = {
+      ...failed.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
+    };
+    const first = await recoverFailedProductionZeroWritePlan(
+      new MemoryStore(snapshot(failed)),
+      failed.repository,
+      failed.planId,
+      failed.outbox[0]!.runUrl!,
+      "https://github.com/LioRael/lenso/actions/runs/43",
+      "production",
+      {
+        async observeRun() {
+          return {
+            runUrl: failed.outbox[0]!.runUrl!,
+            status: "completed",
+            conclusion: "failure",
+          };
+        },
+      },
+      "main",
+      "8".repeat(40),
+      new Date("2026-07-11T00:02:00Z"),
+      () => "first-zero-write-nonce",
+      42,
+    );
+    const firstRecovery = first.state.outbox.find(
+      ({ recovery }) => recovery?.kind === "production-zero-write",
+    )!;
+    firstRecovery.status = "dispatched";
+    firstRecovery.runUrl =
+      "https://github.com/LioRael/lenso/actions/runs/44";
+    firstRecovery.updatedAt = "2026-07-11T00:03:00Z";
+    const retried = await supersedeFailedProductionZeroWriteRecovery(
+      new MemoryStore(snapshot(first.state)),
+      failed.repository,
+      failed.planId,
+      failed.outbox[0]!.runUrl!,
+      "https://github.com/LioRael/lenso/actions/runs/45",
+      "production",
+      {
+        async observeRun() {
+          return {
+            runUrl: firstRecovery.runUrl!,
+            status: "completed",
+            conclusion: "failure",
+          };
+        },
+      },
+      "main",
+      "9".repeat(40),
+      new Date("2026-07-11T00:04:00Z"),
+      () => "retry-zero-write-nonce",
+      42,
+    );
+    const recoveries = retried.state.outbox.filter(
+      ({ recovery }) => recovery?.kind === "production-zero-write",
+    );
+    expect(recoveries).toHaveLength(2);
+    expect(recoveries.find(({ status }) => status === "pending")).toMatchObject({
+      ref: "main",
+      recovery: {
+        failedRunUrl: failed.outbox[0]!.runUrl,
+        proofRunUrl: "https://github.com/LioRael/lenso/actions/runs/45",
+        workflowCommit: "9".repeat(40),
+      },
+    });
+    expect(retried.state.attempts.at(-1)).toMatchObject({
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "retried production zero-write recovery",
     });
   });
   it("authorizes one production recovery after a mixed immutable publication", async () => {
