@@ -624,6 +624,43 @@ describe("production coordinator adapters", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  it("retries rate-limited app token requests using the advised delay", async () => {
+    const waits: number[] = [];
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "secondary rate limit" }), {
+        status: 403,
+        headers: { "content-type": "application/json", "retry-after": "3" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "recovered" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }));
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const provider = new GithubAppTokenProvider(
+      1,
+      key,
+      2,
+      request as typeof fetch,
+      async (milliseconds) => { waits.push(milliseconds); },
+    );
+    await expect(provider.tokenFor("LioRael/lenso", { actions: "read" })).resolves.toBe("recovered");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(waits).toEqual([3_000]);
+  });
+
+  it("does not retry app token permission failures", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      message: "The permissions requested are not granted to this installation",
+    }), { status: 403, headers: { "content-type": "application/json" } }));
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const provider = new GithubAppTokenProvider(1, key, 2, request as typeof fetch);
+    await expect(provider.tokenFor("LioRael/lenso", { actions: "read" }))
+      .rejects.toThrow("GitHub App token 403: The permissions requested are not granted to this installation");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("does not require or return a static coordinator token", () => {
     const parsed = parseCoordinatorEnvironment({
       GITHUB_REPOSITORY: "LioRael/lenso-release",

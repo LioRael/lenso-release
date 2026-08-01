@@ -20,6 +20,7 @@ import {
 type Fetch = typeof fetch;
 type Pause = (milliseconds: number) => Promise<unknown>;
 const WORKFLOW_VISIBILITY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000] as const;
+const APP_TOKEN_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 function encode(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
@@ -37,6 +38,7 @@ export class GithubAppTokenProvider implements AppTokenProvider {
     private readonly privateKey: string,
     private readonly installationId: number,
     private readonly request: Fetch = fetch,
+    private readonly pause: Pause = delay,
   ) {}
   private cacheKey(
     repository: string,
@@ -79,22 +81,45 @@ export class GithubAppTokenProvider implements AppTokenProvider {
     permissions: Record<string, "read" | "write">,
     cacheKey: string,
   ): Promise<string> {
-    const response = await this.request(
-      `https://api.github.com/app/installations/${this.installationId}/access_tokens`,
-      {
-        method: "POST",
-        redirect: "error",
-        headers: {
-          accept: "application/vnd.github+json",
-          authorization: `Bearer ${this.jwt()}`,
+    let body: Record<string, unknown> | null = null;
+    for (let attempt = 0; attempt <= APP_TOKEN_RETRY_DELAYS_MS.length; attempt += 1) {
+      const response = await this.request(
+        `https://api.github.com/app/installations/${this.installationId}/access_tokens`,
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${this.jwt()}`,
+          },
+          body: JSON.stringify({
+            repositories: [repository.split("/")[1]],
+            permissions,
+          }),
         },
-        body: JSON.stringify({
-          repositories: [repository.split("/")[1]],
-          permissions,
-        }),
-      },
-    );
-    const body = await json(response);
+      );
+      body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.ok) break;
+      const message = typeof body.message === "string" ? body.message : "request rejected";
+      const rateLimited = response.status === 429 || (
+        response.status === 403 && (
+          response.headers.get("x-ratelimit-remaining") === "0" ||
+          response.headers.has("retry-after") ||
+          /(?:rate limit|temporar)/iu.test(message)
+        )
+      );
+      if (!rateLimited || attempt === APP_TOKEN_RETRY_DELAYS_MS.length)
+        throw new Error(`GitHub App token ${response.status}: ${message}`);
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const resetAt = Number(response.headers.get("x-ratelimit-reset")) * 1_000;
+      const advisedDelay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1_000
+        : Number.isFinite(resetAt) && resetAt > Date.now()
+          ? resetAt - Date.now()
+          : APP_TOKEN_RETRY_DELAYS_MS[attempt]!;
+      await this.pause(Math.min(Math.max(advisedDelay, APP_TOKEN_RETRY_DELAYS_MS[attempt]!), 60_000));
+    }
+    if (!body) throw new Error("GitHub App token request did not complete");
     if (typeof body.token !== "string")
       throw new Error("GitHub App token response missing token");
     if (typeof body.expires_at === "string") {
