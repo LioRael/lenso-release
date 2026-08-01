@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto";
+import { createHash, createSign } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { canonicalBytes } from "../core/canonical.js";
@@ -150,11 +150,25 @@ export class GithubSnapshotStore implements GitStateStore {
   private api(path: string): string {
     return `https://api.github.com/repos/${this.coordinatorRepository}${path}`;
   }
-  private async readBlob(sha: string, headers: Record<string, string>): Promise<unknown> {
-    const blob = await json(await this.request(this.api(`/git/blobs/${sha}`), { headers, redirect: "error" }));
-    if (blob.encoding !== "base64" || typeof blob.content !== "string")
-      throw new TypeError("GitHub state blob encoding invalid");
-    return JSON.parse(Buffer.from(blob.content.replace(/\n/gu, ""), "base64").toString("utf8"));
+  private async readBlobAt(headSha: string, path: string, expectedBlobSha: string): Promise<unknown> {
+    normalizeRepository(this.coordinatorRepository);
+    if (!/^[0-9a-f]{40}$/u.test(headSha) || !/^[0-9a-f]{40}$/u.test(expectedBlobSha))
+      throw new TypeError("GitHub state object identity invalid");
+    const [owner, repository] = this.coordinatorRepository.split("/") as [string, string];
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+    const url = `https://raw.githubusercontent.com/${owner}/${repository}/${headSha}/${encodedPath}`;
+    const response = await this.request(url, { redirect: "error" });
+    if (!response.ok) throw new Error(`GitHub raw state ${response.status}`);
+    if (response.url && new URL(response.url).origin !== "https://raw.githubusercontent.com")
+      throw new TypeError("GitHub raw state response origin mismatch");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const actualBlobSha = createHash("sha1")
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest("hex");
+    if (actualBlobSha !== expectedBlobSha)
+      throw new TypeError("GitHub raw state blob identity mismatch");
+    return JSON.parse(bytes.toString("utf8"));
   }
   private async treeAt(headSha: string, headers: Record<string, string>): Promise<Record<string, string>> {
     const commit = await json(await this.request(this.api(`/git/commits/${headSha}`), { headers, redirect: "error" }));
@@ -178,12 +192,15 @@ export class GithubSnapshotStore implements GitStateStore {
     const occupiedSha = tree["indexes/occupied-packages.json"];
     if (!activeSha || !occupiedSha) throw new TypeError("release-state indexes missing");
     const planEntries = Object.entries(tree).filter(([path]) => path.startsWith("plans/") && path.endsWith(".json"));
-    const plans = Object.fromEntries(await Promise.all(planEntries.map(async ([path, sha]) => [path, await this.readBlob(sha, headers)])));
+    const plans = Object.fromEntries(await Promise.all(planEntries.map(async ([path, sha]) => [
+      path,
+      await this.readBlobAt(headSha, path, sha),
+    ])));
     const snapshot = {
       headSha,
       plans,
-      activeRepositories: await this.readBlob(activeSha, headers) as Record<string, string>,
-      occupiedPackages: await this.readBlob(occupiedSha, headers) as Record<string, string>,
+      activeRepositories: await this.readBlobAt(headSha, "indexes/active-repositories.json", activeSha) as Record<string, string>,
+      occupiedPackages: await this.readBlobAt(headSha, "indexes/occupied-packages.json", occupiedSha) as Record<string, string>,
     };
     assertReleaseStateSnapshot(snapshot);
     return snapshot;
