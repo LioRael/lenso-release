@@ -190,6 +190,17 @@ export function productionDependencyUrl(id: string, version: string): string {
   throw new TypeError(`unsupported registry dependency ${id}`);
 }
 
+export function provenanceSubjectName(
+  packageId: string,
+  packageName: string,
+  packageVersion: string,
+): string {
+  if (packageId.startsWith("cargo:")) return `${packageName}-${packageVersion}.crate`;
+  if (packageId.startsWith("npm:@lenso/")) return `lenso-${packageName}-${packageVersion}.tgz`;
+  if (packageId.startsWith("oci:")) return "lenso-console-release.json";
+  return `${packageName}.tar.gz`;
+}
+
 export function executionRefProtectionIsImmutable(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const protection = value as Record<string, unknown>;
@@ -999,10 +1010,7 @@ export async function createCoordinatorHandlers(
           );
           if (!taggedShadowFailure && (workflow.status !== "completed" || workflow.conclusion !== "success"))
             throw new IncompleteEvidenceError("workflow has not completed successfully");
-          const subjectName = packageId.startsWith("cargo:")
-            ? `${packageName}-${packageVersion}.crate`
-             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
-               : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
+          const subjectName = provenanceSubjectName(packageId, packageName, packageVersion);
           let subject;
           if (!recoveryRun) {
             try {
@@ -1030,7 +1038,7 @@ export async function createCoordinatorHandlers(
           }
           if (!subject && recoveryRun) {
             const historicalNames = packageId.startsWith("npm:")
-              ? [subjectName, `lenso-${packageName}-${packageVersion}.tgz`]
+              ? [...new Set([subjectName, `${packageName}-${packageVersion}.tgz`])]
               : [subjectName];
             for (const historicalName of historicalNames) {
               try {
