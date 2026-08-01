@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -128,6 +128,34 @@ describe("production coordinator adapters", () => {
     expect(trustedRecoveryRun(run, [{ ...jobs[0], conclusion: "failure" }, jobs[1]!], comparison, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun(run, jobs, { ...comparison, status: "diverged" }, "LioRael/lenso", "main", eventId)).toBe(false);
     expect(trustedRecoveryRun({ ...run, head_branch: "unreviewed" }, jobs, comparison, "LioRael/lenso", "main", eventId)).toBe(false);
+  });
+  it("accepts only the exact failed shadow run when a receipt tag drives recovery", () => {
+    const eventId = `sha256:${"a".repeat(64)}`;
+    const releaseCommit = "2".repeat(40);
+    const runUrl = "https://github.com/LioRael/lenso/actions/runs/42";
+    const run = {
+      event: "workflow_dispatch",
+      path: ".github/workflows/publish.yml",
+      display_title: `lenso-publish-requested:${eventId}`,
+      head_branch: `release-execution/${"b".repeat(64)}`,
+      head_sha: releaseCommit,
+      repository: { full_name: "LioRael/lenso" },
+      status: "completed",
+      conclusion: "failure",
+      html_url: runUrl,
+    };
+    const args = [
+      "LioRael/lenso",
+      ".github/workflows/publish.yml",
+      run.head_branch,
+      releaseCommit,
+      eventId,
+      runUrl,
+    ] as const;
+    expect(trustedShadowReceiptRecoveryRun(run, ...args)).toBe(true);
+    expect(trustedShadowReceiptRecoveryRun({ ...run, conclusion: "success" }, ...args)).toBe(false);
+    expect(trustedShadowReceiptRecoveryRun({ ...run, html_url: `${runUrl}0` }, ...args)).toBe(false);
+    expect(trustedShadowReceiptRecoveryRun({ ...run, head_sha: "3".repeat(40) }, ...args)).toBe(false);
   });
   it("trusts only an exact successful production OCI absence proof", () => {
     const planId = `sha256:${"a".repeat(64)}`;
