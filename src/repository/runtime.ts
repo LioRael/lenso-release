@@ -514,6 +514,39 @@ async function requestJson(url: string, init?: RequestInit): Promise<{ response:
 }
 
 const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/LioRael/lenso-release)";
+export async function fetchGithubReleaseAsset(
+  download: string,
+  api: string,
+  headers: Record<string, string>,
+  request: typeof fetch = fetch,
+): Promise<Response> {
+  const source = new URL(download);
+  const apiBase = new URL(api);
+  if (
+    source.origin !== apiBase.origin ||
+    source.username !== "" ||
+    source.password !== "" ||
+    source.search !== "" ||
+    source.hash !== "" ||
+    !/^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/[1-9]\d*$/u.test(source.pathname)
+  ) fail("GitHub release asset API URL is not trusted");
+  const response = await request(source, { headers, redirect: "manual" });
+  if (response.status !== 302) return response;
+  const location = response.headers.get("location");
+  if (!location) fail("GitHub release asset redirect location is missing");
+  const target = new URL(location, source);
+  if (
+    apiBase.origin !== "https://api.github.com" ||
+    target.protocol !== "https:" ||
+    target.hostname !== "release-assets.githubusercontent.com" ||
+    target.username !== "" ||
+    target.password !== "" ||
+    target.search === "" ||
+    target.hash !== "" ||
+    !/^\/github-production-release-asset\/[1-9]\d*\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(target.pathname)
+  ) fail("GitHub release asset redirect is not trusted");
+  return request(target, { redirect: "error" });
+}
 export async function fetchCargoArchive(
   download: string,
   headers: Record<string, string>,
@@ -582,10 +615,10 @@ async function artifactObservation(name: string, version: string, environment: R
   const checksumAsset = body.assets?.find(({ name: candidate }) => candidate === `${assetName}.sha256`);
   if (!asset || !checksumAsset) return { exists: false };
   if (!asset.url || !asset.browser_download_url || !checksumAsset.url) fail("hosted artifact release asset is incomplete");
-  const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+  const download = await fetchGithubReleaseAsset(asset.url, api, { ...headers, accept: "application/octet-stream" });
   if (!download.ok) fail(`hosted artifact download ${download.status}`);
   const bytes = new Uint8Array(await download.arrayBuffer());
-  const checksum = await fetch(checksumAsset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+  const checksum = await fetchGithubReleaseAsset(checksumAsset.url, api, { ...headers, accept: "application/octet-stream" });
   if (!checksum.ok) fail(`hosted artifact checksum download ${checksum.status}`);
   const expectedChecksum = `${hash(bytes).slice("sha256:".length)}  ${assetName}\n`;
   if (Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) fail("hosted artifact checksum contradicts archive");
@@ -628,7 +661,7 @@ async function releaseAssetObservation(assetName: string, version: string, envir
   if (!release) return { exists: false };
   const asset = release.assets?.find(({ name }) => name === assetName); if (!asset) return { exists: false };
   if (!asset.url || !asset.browser_download_url) fail("release asset metadata is incomplete");
-  const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
+  const download = await fetchGithubReleaseAsset(asset.url, api, { ...headers, accept: "application/octet-stream" });
   if (!download.ok) fail(`release asset download ${download.status}`);
   return { exists: true, bytes: Buffer.from(await download.arrayBuffer()), url: asset.browser_download_url };
 }
