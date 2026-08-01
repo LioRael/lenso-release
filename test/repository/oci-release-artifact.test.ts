@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { inspectOciReleaseArtifact } from "../../src/repository/oci-release-artifact.js";
+import { inspectOciInstallManifest, inspectOciReleaseArtifact } from "../../src/repository/oci-release-artifact.js";
 import { publishOciImage } from "../../src/repository/oci-registry-publisher.js";
 
 const GHCR_STORAGE_HOST = "pkg-containers.githubusercontent.com";
@@ -33,6 +33,14 @@ describe("OCI release artifact", () => {
     expect(inspected.manifestDigest).toBe(value.manifestDigest);
     expect(inspected.blobs.size).toBe(3);
     expect(inspected.manifestBytes).toEqual(inspected.blobs.get(value.manifestDigest as `sha256:${string}`));
+  });
+  it("validates a published install manifest without rebuilding the image", () => {
+    const value = fixture();
+    expect(inspectOciInstallManifest(value)).toEqual({
+      manifestDigest: value.manifestDigest,
+      registryRepository: value.registryRepository,
+    });
+    expect(() => inspectOciInstallManifest({ ...value, sourceCommit: "c".repeat(40) })).toThrow("install manifest");
   });
   it("publishes every sealed blob and the exact manifest through Distribution V2", async () => {
     const value = fixture(); const blobs = new Map<string, Buffer>(); let manifest: Buffer | undefined;

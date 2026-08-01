@@ -114,8 +114,11 @@ export async function observeOciImage(name, version, options = {}) {
         }
         const labels = object(object(imageConfig?.config)?.Labels);
         const created = imageConfig?.created;
-        if (labels?.["org.opencontainers.image.version"] !== version || typeof created !== "string" || !isRfc3339(created))
-            return { failure: "schema", detail: "OCI image config did not bind the requested version and creation time" };
+        if (labels?.["org.opencontainers.image.version"] !== version ||
+            (options.sourceCommit !== undefined && labels?.["org.opencontainers.image.revision"] !== options.sourceCommit) ||
+            typeof created !== "string" ||
+            !isRfc3339(created))
+            return { failure: "schema", detail: "OCI image config did not bind the requested release identity and creation time" };
         return { version, digest: manifestDigest, publishedAt: created, canonicalUrl };
     }
     finally {
