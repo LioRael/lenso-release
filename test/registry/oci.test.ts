@@ -102,7 +102,7 @@ describe("OCI registry observer", () => {
   it("follows a trusted GHCR config redirect without forwarding credentials", async () => {
     const config = Buffer.from(JSON.stringify({ created: "2026-07-30T08:00:00Z", config: { Labels: { "org.opencontainers.image.version": "0.2.0" } } }));
     const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: digest(config) }, layers: [] }));
-    const signedUrl = `https://pkg-containers.githubusercontent.com/ghcr1/blobs/sha256:${"a".repeat(64)}?sig=opaque`;
+    const signedUrl = `https://pkg-containers.githubusercontent.com/ghcrblobs04/blobs/sha256:${"a".repeat(64)}?sig=opaque`;
     const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input); const authorization = new Headers(init?.headers).get("authorization");
       if (url.includes("/manifests/")) return new Response(manifest, { headers: { "docker-content-digest": digest(manifest) } });
