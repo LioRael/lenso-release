@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 
 import {
   GithubAppTokenProvider,
@@ -682,6 +682,41 @@ describe("production coordinator adapters", () => {
     );
     await expect(store.readSnapshot())
       .rejects.toThrow("GitHub API 403: Resource not accessible by integration");
+  });
+
+  it("reads exact release-state blobs without spending one API request per file", async () => {
+    const headSha = "1".repeat(40);
+    const jsonBytes = Buffer.from("{}\n");
+    const blobSha = createHash("sha1")
+      .update(`blob ${jsonBytes.length}\0`)
+      .update(jsonBytes)
+      .digest("hex");
+    const request = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/git/ref/heads/release-state"))
+        return new Response(JSON.stringify({ object: { sha: headSha } }), { status: 200 });
+      if (url.endsWith(`/git/commits/${headSha}`))
+        return new Response(JSON.stringify({ tree: { sha: "2".repeat(40) } }), { status: 200 });
+      if (url.includes(`/git/trees/${"2".repeat(40)}?recursive=1`)) return new Response(JSON.stringify({ tree: [
+        { path: "indexes/active-repositories.json", type: "blob", sha: blobSha },
+        { path: "indexes/occupied-packages.json", type: "blob", sha: blobSha },
+      ] }), { status: 200 });
+      if (url.startsWith(`https://raw.githubusercontent.com/LioRael/lenso-release/${headSha}/indexes/`))
+        return new Response(jsonBytes, { status: 200 });
+      throw new Error(`unexpected GET ${url}`);
+    });
+    const store = new GithubSnapshotStore(
+      "LioRael/lenso-release",
+      { async tokenFor() { return "scoped"; } },
+      request as typeof fetch,
+    );
+    await expect(store.readSnapshot()).resolves.toEqual({
+      headSha,
+      plans: {},
+      activeRepositories: {},
+      occupiedPackages: {},
+    });
+    expect(request.mock.calls.some(([input]) => String(input).includes("/git/blobs/"))).toBe(false);
   });
 
   it("does not require or return a static coordinator token", () => {
