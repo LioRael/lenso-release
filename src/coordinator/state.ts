@@ -86,7 +86,14 @@ export function assertReleaseStateSnapshot(
   const active: Record<string, string> = {};
   const occupied: Record<string, string> = {};
   for (const [path, state] of Object.entries(value.plans)) {
-    assertPlanState(state);
+    try {
+      assertPlanState(state);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new TypeError(`snapshot plan ${path} invalid: ${detail}`, {
+        cause: error,
+      });
+    }
     if (path !== planStatePath(state.repository, state.planId))
       throw new TypeError("snapshot plan path mismatch");
     if (state.status !== "verified" && !isRetiredPlan(state)) {

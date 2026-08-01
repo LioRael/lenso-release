@@ -389,6 +389,12 @@ describe("atomic coordinator state", () => {
     legacy.status = "blocked";
     legacy.reason = "historical blocked plan";
     expect(() => assertPlanState(legacy)).not.toThrow();
+    const invalidSnapshot = snapshot();
+    const [path, invalidState] = Object.entries(invalidSnapshot.plans)[0]!;
+    invalidState.outbox[0]!.inputs.nonce = "wrong-nonce";
+    expect(() => assertReleaseStateSnapshot(invalidSnapshot)).toThrow(
+      `snapshot plan ${path} invalid: outbox plan binding invalid`,
+    );
     expect(() => assertLegalTransition(state(), { ...state(), environment: "shadow" })).toThrow("immutable environment rewrite");
   });
   it("recovers only a successful shadow-only original dispatch from a production label", async () => {
