@@ -266,7 +266,7 @@ describe("production coordinator adapters", () => {
       path: ".github/workflows/verify-production-zero-write-failure.yml",
     };
     const steps = [
-      "Verify proof consumption and npm authentication failure",
+      "Verify proof consumption and registry authentication failure",
       "Prove the production npm version is absent",
       "Prove the production OCI manifest is absent",
     ].map((name) => ({ name, conclusion: "success" }));
@@ -283,6 +283,8 @@ describe("production coordinator adapters", () => {
         failedRunId,
       ),
     ).toBe(true);
+    const npmSpecificJobs = [{ ...jobs[0], steps: [{ name: "Verify proof consumption and npm authentication failure", conclusion: "success" }, ...steps.slice(1)] }];
+    expect(trustedProductionZeroWriteFailureRun(run, workflow, npmSpecificJobs, "LioRael/lenso-console", "main", head, planId, failedRunId)).toBe(true);
     expect(
       trustedProductionZeroWriteFailureRun(
         run,
