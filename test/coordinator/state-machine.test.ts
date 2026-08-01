@@ -1388,13 +1388,20 @@ describe("atomic coordinator state", () => {
     failed.environment = "production";
     failed.outbox[0] = { ...failed.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/42" };
     const npm = { id: "npm:@lenso/cli" as const, version: "1.0.0", registryPath: null, phase: 0, status: "dispatched" as const, requestEventId: failed.outbox[0]!.eventId };
-    failed.packages.push(npm);
+    const later = { id: "cargo:lenso-platform-core" as const, version: "1.0.0", registryPath: null, phase: 1, status: "pending" as const, requestEventId: null };
+    failed.packages.push(npm, later);
     failed.packages.sort((left, right) => `${left.id}:${left.version}`.localeCompare(`${right.id}:${right.version}`));
-    failed.outbox[0]!.packages = failed.packages.map(({ id, version }) => ({ id, version }));
+    failed.outbox[0]!.packages = failed.packages
+      .filter(({ phase }) => phase === 0)
+      .map(({ id, version }) => ({ id, version }));
     failed.outbox[0]!.inputs.packages_json = JSON.stringify(failed.outbox[0]!.packages);
-    failed.occupancyKeys.push("package:npm:@lenso/cli:1.0.0");
+    failed.occupancyKeys.push(
+      "package:cargo:lenso-platform-core:1.0.0",
+      "package:npm:@lenso/cli:1.0.0",
+    );
     failed.occupancyKeys.sort();
     const initial = snapshot(failed);
+    initial.occupiedPackages["package:cargo:lenso-platform-core:1.0.0"] = failed.planId;
     initial.occupiedPackages["package:npm:@lenso/cli:1.0.0"] = failed.planId;
     await expect(recoverFailedProductionPartialPlan(
       new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
@@ -1448,7 +1455,8 @@ describe("atomic coordinator state", () => {
         publishedPackages: [{ id: "cargo:lenso-contracts", version: "1.0.0" }],
       },
     });
-    expect(recovered.state.packages.every(({ requestEventId }) => requestEventId === entry.eventId)).toBe(true);
+    expect(recovered.state.packages.filter(({ phase }) => phase === 0).every(({ requestEventId }) => requestEventId === entry.eventId)).toBe(true);
+    expect(recovered.state.packages.find(({ phase }) => phase === 1)).toMatchObject({ status: "pending", requestEventId: null });
     expect(recovered.state.attempts.at(-1)).toMatchObject({ kind: "recovery", outcome: "accepted", detail: "authorized production partial recovery" });
     const replayNonce = vi.fn(() => "unexpected");
     const replayed = await recoverFailedProductionPartialPlan(
@@ -1477,7 +1485,8 @@ describe("atomic coordinator state", () => {
     const replacement = superseded.state.outbox.find(({ status }) => status === "pending")!;
     expect(replacement.workflow).toBe(".github/workflows/publish.yml");
     expect(replacement.recovery).toMatchObject({ kind: "production-partial", workflowCommit: "9".repeat(40) });
-    expect(superseded.state.packages.every(({ requestEventId }) => requestEventId === replacement.eventId)).toBe(true);
+    expect(superseded.state.packages.filter(({ phase }) => phase === 0).every(({ requestEventId }) => requestEventId === replacement.eventId)).toBe(true);
+    expect(superseded.state.packages.find(({ phase }) => phase === 1)).toMatchObject({ status: "pending", requestEventId: null });
     expect(superseded.state.attempts.at(-1)?.detail).toBe("retried production partial recovery");
     const replacementState = store.snapshot.plans[planStatePath(failed.repository, failed.planId)]!;
     const failedRecovery = replacementState.outbox.find(({ status }) => status === "pending")!;
