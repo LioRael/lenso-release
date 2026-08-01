@@ -267,6 +267,12 @@ jobs:
           cd recovery-candidate
           pnpm install --frozen-lockfile
           pnpm run --if-present build
+      - name: Build composite recovery artifacts when configured
+        working-directory: recovery-candidate
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_PACKAGES_JSON: ${{ inputs.packages_json }}
+        run: pnpm run --if-present release:artifacts
       - name: Resolve authoritative failed run
         id: failed-run
         env:
