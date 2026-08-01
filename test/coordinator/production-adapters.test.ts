@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -22,6 +22,17 @@ describe("production coordinator adapters", () => {
     expect(coordinatorEnvironment("production")).toBe("production");
     expect(() => coordinatorEnvironment(undefined)).toThrow("must be shadow or production");
     expect(() => coordinatorEnvironment("staging")).toThrow("must be shadow or production");
+  });
+
+  it("identifies a failed GitHub observation without exposing its query", async () => {
+    const request = vi.fn(async () => new Response("missing", { status: 404 }));
+    await expect(checkedGithubJson(
+      request as typeof fetch,
+      "https://api.github.com/repos/LioRael/lenso-console/branches/main?token=secret",
+      "app-token",
+    )).rejects.toThrow(
+      "GitHub observation 404 for /repos/LioRael/lenso-console/branches/main",
+    );
   });
 
   it("observes Cargo dependencies through the official crates.io download API", () => {

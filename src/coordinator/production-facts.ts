@@ -115,6 +115,19 @@ export async function checkedShadowGithubJson(
   if (response.url) assertShadowGithubApi(response.url, gateway, "repos");
   return await response.json() as Record<string, unknown>;
 }
+export async function checkedGithubJson(
+  request: typeof fetch,
+  url: string,
+  token: string,
+): Promise<Record<string, unknown>> {
+  assertGithubApi(url);
+  const response = await request(url, { redirect: "error", headers: headers(token) });
+  if (!response.ok)
+    throw new Error(`GitHub observation ${response.status} for ${new URL(url).pathname}`);
+  if (response.url && new URL(response.url).origin !== "https://api.github.com")
+    throw new TypeError("GitHub API response origin mismatch");
+  return await response.json() as Record<string, unknown>;
+}
 export async function checkedShadowGithubAsset(
   request: typeof fetch,
   url: string,
@@ -549,14 +562,7 @@ export async function createCoordinatorHandlers(
       return (await checkedExternal(request, productionUrl)).ok;
     } catch { return false; }
   };
-  const githubJson = async (url: string, token: string): Promise<Record<string, unknown>> => {
-    assertGithubApi(url);
-    const response = await request(url, { redirect: "error", headers: headers(token) });
-    if (!response.ok) throw new Error(`GitHub observation ${response.status}`);
-    if (response.url && new URL(response.url).origin !== "https://api.github.com")
-      throw new TypeError("GitHub API response origin mismatch");
-    return await response.json() as Record<string, unknown>;
-  };
+  const githubJson = (url: string, token: string) => checkedGithubJson(request, url, token);
   const githubBytes = async (repository: string, path: string, ref: string, token: string): Promise<Uint8Array> => {
     const body = await githubJson(`https://api.github.com/repos/${repository}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`, token);
     if (body.encoding !== "base64" || typeof body.content !== "string") throw new TypeError("GitHub content encoding invalid");
