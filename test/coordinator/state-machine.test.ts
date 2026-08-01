@@ -17,6 +17,7 @@ import {
   assertReleaseStateSnapshot,
   cancelPlan,
   recoverFailedProductionPartialPlan,
+  recoverFailedProductionZeroWritePlan,
   recoverShadowModeMismatchPlan,
   retireFailedProductionPrepublishPlan,
   retireFailedShadowPlan,
@@ -1241,6 +1242,63 @@ describe("atomic coordinator state", () => {
       { async observeRun() { return null; } }, new Date(), () => "nonce", 42,
     )).rejects.toThrow("pending or in-flight");
   });
+  it("authorizes one production recovery after a proven zero-write failure", async () => {
+    const failed = state();
+    failed.environment = "production";
+    failed.outbox[0] = {
+      ...failed.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
+    };
+    const recovered = await recoverFailedProductionZeroWritePlan(
+      new MemoryStore(snapshot(failed)),
+      failed.repository,
+      failed.planId,
+      failed.outbox[0]!.runUrl!,
+      "https://github.com/LioRael/lenso/actions/runs/43",
+      "production",
+      {
+        async observeRun() {
+          return {
+            runUrl: failed.outbox[0]!.runUrl!,
+            status: "completed",
+            conclusion: "failure",
+          };
+        },
+      },
+      "main",
+      "9".repeat(40),
+      new Date("2026-07-11T00:02:00Z"),
+      () => "zero-write-nonce",
+      42,
+    );
+    const entry = recovered.state.outbox.find(
+      ({ recovery }) => recovery?.kind === "production-zero-write",
+    );
+    expect(entry).toMatchObject({
+      ref: "main",
+      workflow: ".github/workflows/publish.yml",
+      status: "pending",
+      recovery: {
+        kind: "production-zero-write",
+        failedRunUrl: failed.outbox[0]!.runUrl,
+        proofRunUrl: "https://github.com/LioRael/lenso/actions/runs/43",
+        workflowCommit: "9".repeat(40),
+      },
+    });
+    expect(recovered.state.packages.every(
+      ({ requestEventId }) => requestEventId === entry?.eventId,
+    )).toBe(true);
+    expect(recovered.state.attempts.at(-1)).toMatchObject({
+      kind: "recovery",
+      outcome: "accepted",
+      detail: "authorized production zero-write recovery",
+    });
+    expect(recovered.state.evidence.at(-1)).toMatchObject({
+      kind: "zero-write-proof",
+      url: "https://github.com/LioRael/lenso/actions/runs/43",
+    });
+  });
   it("authorizes one production recovery after a mixed immutable publication", async () => {
     const failed = state();
     failed.environment = "production";
@@ -1382,6 +1440,9 @@ describe("atomic coordinator state", () => {
     const retireProduction = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retire-failed-production-prepublish-plan", "--repository", "LioRael/lenso-console", "--plan-id", digest("a"), "--failed-run-id", "30693169936", "--proof-run-id", "30694000000"], {}, async () => ({ ready, receipt, retireFailedProductionPrepublishPlan: retireProduction }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retireProduction).toHaveBeenCalledWith("LioRael/lenso-console", digest("a"), "30693169936", "30694000000");
+    const recoverZeroWrite = vi.fn(async () => undefined);
+    expect(await runHandleEventCli(["--recover-failed-production-zero-write-plan", "--repository", "LioRael/lenso-console", "--plan-id", digest("a"), "--failed-run-id", "30696779531", "--proof-run-id", "30697000000"], {}, async () => ({ ready, receipt, recoverFailedProductionZeroWritePlan: recoverZeroWrite }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(recoverZeroWrite).toHaveBeenCalledWith("LioRael/lenso-console", digest("a"), "30696779531", "30697000000");
     const retry = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retry-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retryFailedShadowPlan: retry }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retry).toHaveBeenCalledOnce();
@@ -1391,7 +1452,7 @@ describe("atomic coordinator state", () => {
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {
-    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml", "retire-failed-production-prepublish-plan.yml"]) {
+    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml", "retire-failed-production-prepublish-plan.yml", "recover-failed-production-zero-write-plan.yml"]) {
       const workflow = await readFile(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
       expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u);
       if (file === "recover-shadow-mode-mismatch-plan.yml") {
@@ -1399,6 +1460,10 @@ describe("atomic coordinator state", () => {
         expect(workflow).toContain("--production-absence-run-id");
         expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}");
       } else if (file === "retire-failed-production-prepublish-plan.yml") {
+        expect(workflow).toContain("--failed-run-id");
+        expect(workflow).toContain("--proof-run-id");
+        expect(workflow).toContain("LENSO_COORDINATOR_MODE");
+      } else if (file === "recover-failed-production-zero-write-plan.yml") {
         expect(workflow).toContain("--failed-run-id");
         expect(workflow).toContain("--proof-run-id");
         expect(workflow).toContain("LENSO_COORDINATOR_MODE");

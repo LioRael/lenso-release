@@ -126,6 +126,12 @@ export type PlanDispatchOutbox = {
         failedRunUrl: string;
         workflowCommit: GitOid;
         publishedPackages: EventPackage[];
+      }
+    | {
+        kind: "production-zero-write";
+        failedRunUrl: string;
+        proofRunUrl: string;
+        workflowCommit: GitOid;
       };
   packages: EventPackage[];
   inputs: Record<"event_id" | "plan_id" | "plan_sha256" | "release_commit" | "packages_json" | "nonce", string>;

@@ -296,6 +296,7 @@ describe("repository template workflow contracts", () => {
       contents: "write",
       "id-token": "write",
       attestations: "write",
+      packages: "write",
     });
     const trustedPartialRecovery = source.slice(
       source.indexOf("\n  recover-partial:"),
@@ -306,6 +307,9 @@ describe("repository template workflow contracts", () => {
     expect(trustedPartialRecovery).toContain("cli.js recover-partial-prepare");
     expect(trustedPartialRecovery).toContain("cli.js recover-partial");
     expect(trustedPartialRecovery).toContain("NODE_AUTH_TOKEN: \"\"");
+    expect(trustedPartialRecovery).toContain(
+      "LENSO_OCI_TOKEN: ${{ github.token }}",
+    );
     expect(trustedPartialRecovery).not.toContain("crates-io-auth-action");
     expect(trustedPartialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
     const partialRecovery = await readFile(

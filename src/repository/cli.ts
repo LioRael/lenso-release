@@ -58,7 +58,7 @@ if (command === "plan") {
   const receipts = await recoverPartialPublished(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
 } else if (command === "recover-partial-failed-run-id") {
-  const authorization = await verifyRecoveryAuthorization(environment(), "production-partial") as { failedRunUrl: string };
+  const authorization = await verifyRecoveryAuthorization(environment(), "production-publication") as { failedRunUrl: string };
   const runId = /\/actions\/runs\/([1-9][0-9]*)$/u.exec(authorization.failedRunUrl)?.[1];
   if (!runId) throw new Error("partial recovery failed run URL is invalid");
   process.stdout.write(`${runId}\n`);

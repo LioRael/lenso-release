@@ -17,7 +17,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, recoverFailedProductionPartialPlan, recoverShadowModeMismatchPlan, retireFailedProductionPrepublishPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, recoverFailedProductionZeroWritePlan, recoverShadowModeMismatchPlan, retireFailedProductionPrepublishPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -381,6 +381,46 @@ export function trustedProductionPrepublishFailureRun(
   );
 }
 
+export function trustedProductionZeroWriteFailureRun(
+  run: Record<string, unknown>,
+  workflow: Record<string, unknown>,
+  jobs: Record<string, unknown>[],
+  repository: string,
+  defaultBranch: string,
+  defaultHead: string,
+  planId: string,
+  failedRunId: string,
+): boolean {
+  const proofJob = jobs.find(({ name }) => name === "verify");
+  const proofSteps = Array.isArray(proofJob?.steps)
+    ? (proofJob.steps as Record<string, unknown>[])
+    : [];
+  const requiredSteps = [
+    "Verify proof consumption and npm authentication failure",
+    "Prove the production npm version is absent",
+    "Prove the production OCI manifest is absent",
+  ];
+  return (
+    run.event === "workflow_dispatch" &&
+    run.head_branch === defaultBranch &&
+    run.head_sha === defaultHead &&
+    run.display_title ===
+      `verify-production-zero-write-failure:${planId}:${failedRunId}` &&
+    run.status === "completed" &&
+    run.conclusion === "success" &&
+    (run.repository as Record<string, unknown> | undefined)?.full_name ===
+      repository &&
+    workflow.path ===
+      ".github/workflows/verify-production-zero-write-failure.yml" &&
+    proofJob?.conclusion === "success" &&
+    requiredSteps.every((name) =>
+      proofSteps.some(
+        (step) => step.name === name && step.conclusion === "success"
+      )
+    )
+  );
+}
+
 export function verifiedProvenanceUrl(
   repository: string,
   packedDigest: string,
@@ -515,6 +555,12 @@ export async function createCoordinatorHandlers(
   ): Promise<StoredPlanState>;
   retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
   recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
+  recoverFailedProductionZeroWritePlan(
+    repository: string,
+    planId: string,
+    failedRunId: string,
+    proofRunId: string,
+  ): Promise<StoredPlanState>;
   recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
 }> {
   const registryPath = import.meta.url.includes("/dist/src/")
@@ -586,6 +632,12 @@ export async function createCoordinatorHandlers(
     ): Promise<StoredPlanState>;
     retryFailedShadowPlan(repository: string, planId: string): Promise<StoredPlanState>;
     recoverFailedProductionPartialPlan(repository: string, planId: string): Promise<StoredPlanState>;
+    recoverFailedProductionZeroWritePlan(
+      repository: string,
+      planId: string,
+      failedRunId: string,
+      proofRunId: string,
+    ): Promise<StoredPlanState>;
     recoverShadowModeMismatchPlan(repository: string, planId: string, publisherRunId: string, absenceRunId: string): Promise<StoredPlanState>;
   } = {
     async ready(value) {
@@ -1709,6 +1761,110 @@ export async function createCoordinatorHandlers(
         );
       }
       return runDispatchOutbox(input.store, repository, planId, input.dispatcher, input.tokens, now);
+    },
+    async recoverFailedProductionZeroWritePlan(
+      repository,
+      planId,
+      failedRunId,
+      proofRunId,
+    ) {
+      if (!/^[1-9][0-9]*$/u.test(failedRunId))
+        throw new TypeError("failed publisher run ID invalid");
+      if (!/^[1-9][0-9]*$/u.test(proofRunId))
+        throw new TypeError("zero-write proof run ID invalid");
+      const snapshot = await input.store.readSnapshot();
+      const state = snapshot.plans[planStatePath(repository, planId)];
+      if (!state) throw new Error("plan state not found");
+      const failedRunUrl =
+        `https://github.com/${repository}/actions/runs/${failedRunId}`;
+      if (
+        state.outbox.filter(({ runUrl }) => runUrl === failedRunUrl).length !== 1
+      )
+        throw new Error("failed publisher run does not match stored dispatch");
+      const token = await input.tokens.tokenFor(repository, {
+        actions: "read",
+        contents: "read",
+        metadata: "read",
+      });
+      const repositoryApi = `https://api.github.com/repos/${repository}`;
+      const metadata = await githubJson(repositoryApi, token);
+      const defaultBranch = String(metadata.default_branch);
+      const defaultRef = await githubJson(
+        `${repositoryApi}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+        token,
+      );
+      const workflowCommit = String(
+        (defaultRef.object as Record<string, unknown> | undefined)?.sha,
+      );
+      const proofRun = await githubJson(
+        `${repositoryApi}/actions/runs/${proofRunId}`,
+        token,
+      );
+      const proofRunUrl =
+        `https://github.com/${repository}/actions/runs/${proofRunId}`;
+      const workflowId = String(proofRun.workflow_id);
+      const workflow = await githubJson(
+        `${repositoryApi}/actions/workflows/${encodeURIComponent(workflowId)}`,
+        token,
+      );
+      const jobsResponse = await githubJson(
+        `${repositoryApi}/actions/runs/${proofRunId}/jobs?per_page=100`,
+        token,
+      );
+      const jobs = Array.isArray(jobsResponse.jobs)
+        ? (jobsResponse.jobs as Record<string, unknown>[])
+        : [];
+      if (
+        proofRun.html_url !== proofRunUrl ||
+        !trustedProductionZeroWriteFailureRun(
+          proofRun,
+          workflow,
+          jobs,
+          repository,
+          defaultBranch,
+          workflowCommit,
+          state.planId,
+          failedRunId,
+        )
+      )
+        throw new Error(
+          "production zero-write failure proof is not exact and successful",
+        );
+      await recoverFailedProductionZeroWritePlan(
+        input.store,
+        repository,
+        planId,
+        failedRunUrl,
+        proofRunUrl,
+        input.env.LENSO_COORDINATOR_MODE,
+        {
+          async observeRun(entry) {
+            return input.dispatcher.findByEventId(
+              {
+                repository,
+                workflow: entry.workflow,
+                ref: entry.ref,
+                sha: state.releaseCommit,
+              },
+              entry.eventId,
+              token,
+            );
+          },
+        },
+        defaultBranch,
+        workflowCommit,
+        now(),
+        nonce,
+        input.config.appId,
+      );
+      return runDispatchOutbox(
+        input.store,
+        repository,
+        planId,
+        input.dispatcher,
+        input.tokens,
+        now,
+      );
     },
     async recoverShadowModeMismatchPlan(repository, planId, publisherRunId, absenceRunId) {
       const snapshot = await input.store.readSnapshot();

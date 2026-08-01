@@ -30,6 +30,8 @@ const RETIRED_FAILED_PRODUCTION_PREPUBLISH_PLAN =
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
 export const AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY =
   "authorized production partial recovery";
+export const AUTHORIZED_PRODUCTION_ZERO_WRITE_RECOVERY =
+  "authorized production zero-write recovery";
 export const RETRIED_PRODUCTION_PARTIAL_RECOVERY =
   "retried production partial recovery";
 export const AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
@@ -325,6 +327,10 @@ export function assertPlanState(value: unknown): asserts value is PlanStateV1 {
         exactKeys(recovery as unknown as Record<string, unknown>, ["kind", "failedRunUrl", "workflowCommit", "publishedPackages"], "outbox recovery");
         if (!runUrl.test(recovery.failedRunUrl) || !OID.test(recovery.workflowCommit) || !Array.isArray(recovery.publishedPackages) || recovery.publishedPackages.length === 0 || recovery.publishedPackages.length > entry.packages.length || recovery.publishedPackages.some((item) => !entry.packages.some(({ id, version }) => id === item.id && version === item.version)))
           throw new TypeError("outbox recovery invalid");
+      } else if (recovery.kind === "production-zero-write") {
+        exactKeys(recovery as unknown as Record<string, unknown>, ["kind", "failedRunUrl", "proofRunUrl", "workflowCommit"], "outbox recovery");
+        if (!runUrl.test(recovery.failedRunUrl) || !runUrl.test(recovery.proofRunUrl) || !OID.test(recovery.workflowCommit))
+          throw new TypeError("outbox recovery invalid");
       } else throw new TypeError("outbox recovery invalid");
       if (state.environment !== "production") throw new TypeError("outbox recovery invalid");
     }
@@ -487,7 +493,8 @@ export function assertLegalTransition(
   const partialRecoveryAttempt = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" &&
     (detail === AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY ||
-      detail === RETRIED_PRODUCTION_PARTIAL_RECOVERY)
+      detail === RETRIED_PRODUCTION_PARTIAL_RECOVERY ||
+      detail === AUTHORIZED_PRODUCTION_ZERO_WRITE_RECOVERY)
   );
   const retryOutbox = retryAttempt
     ? next.outbox.find(({ eventId }) => eventId === retryAttempt.eventId)
@@ -515,7 +522,8 @@ export function assertLegalTransition(
         after.requestEventId !== partialRecoveryAttempt.eventId ||
         !next.outbox.some((entry) =>
           entry.eventId === partialRecoveryAttempt.eventId &&
-          entry.recovery?.kind === "production-partial" &&
+          (entry.recovery?.kind === "production-partial" ||
+            entry.recovery?.kind === "production-zero-write") &&
           entry.packages.some(({ id, version }) => id === after.id && version === after.version)
         ))
     ) throw new TypeError("immutable package request rewrite");
@@ -928,6 +936,165 @@ export async function recoverFailedProductionPartialPlan(
       attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY }],
       outbox: [...candidate.outbox, entry].sort((left, right) => left.eventId.localeCompare(right.eventId)),
       revision: candidate.revision + 1, updatedAt: at,
+    };
+    assertLegalTransition(candidate, result);
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: snapshot.plans[path]!, headSha: snapshot.headSha };
+}
+
+export async function recoverFailedProductionZeroWritePlan(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  failedRunUrl: string,
+  proofRunUrl: string,
+  mode: string | undefined,
+  facts: FailedShadowRetryFacts,
+  workflowRef: string,
+  workflowCommit: string,
+  now: Date,
+  nextNonce: () => string,
+  appId: number,
+): Promise<StoredPlanState> {
+  if (mode !== "production")
+    throw new Error("zero-write recovery is restricted to production mode");
+  if (
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,254})$/u.test(workflowRef) ||
+    workflowRef.includes("..") ||
+    !OID.test(workflowCommit)
+  )
+    throw new TypeError("zero-write recovery workflow ref invalid");
+  const runUrl =
+    /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/actions\/runs\/[1-9][0-9]*$/u;
+  if (!runUrl.test(failedRunUrl) || !runUrl.test(proofRunUrl))
+    throw new TypeError("zero-write recovery evidence URL invalid");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (
+    !state ||
+    state.environment !== "production" ||
+    state.status !== "publishing" ||
+    state.reason !== null
+  )
+    throw new Error("production publishing plan is required");
+  if (
+    state.receipts.length !== 0 ||
+    state.packages.some(({ status }) => status === "received")
+  )
+    throw new Error("zero-write recovery requires no accepted receipts");
+  if (state.outbox.some(({ recovery }) => recovery !== undefined))
+    throw new Error("zero-write recovery requires the original publisher only");
+  if (
+    state.outbox.some(
+      ({ status }) => status === "pending" || status === "in-flight",
+    )
+  )
+    throw new Error("zero-write recovery forbids pending or in-flight dispatches");
+  const matching = state.outbox.filter(
+    ({ status, recovery, runUrl: url }) =>
+      status === "dispatched" && recovery === undefined && url === failedRunUrl,
+  );
+  if (matching.length !== 1)
+    throw new Error("zero-write recovery requires the exact failed publisher");
+  const previous = matching[0]!;
+  const selected = previous.packages
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  const dispatched = state.packages
+    .filter(({ status }) => status === "dispatched")
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  if (JSON.stringify(selected) !== JSON.stringify(dispatched))
+    throw new Error("zero-write publisher does not cover the exact active slice");
+  const run = await facts.observeRun(previous);
+  if (
+    !run ||
+    run.runUrl !== failedRunUrl ||
+    run.status !== "completed" ||
+    run.conclusion !== "failure"
+  )
+    throw new Error("publisher is not conclusively failed");
+  const at = now.toISOString();
+  const nonce = nextNonce();
+  const identity = {
+    schema: "lenso.release-event.v1",
+    eventType: "lenso-publish-requested",
+    issuedAt: at,
+    nonce,
+    sourceRepository: "LioRael/lenso-release",
+    expectedAppId: appId,
+    planId: state.planId,
+    planUrl:
+      `https://raw.githubusercontent.com/${state.repository}/${state.releaseCommit}/.lenso-release/plan.json`,
+    planSha256: state.planSha256,
+    releaseCommit: state.releaseCommit,
+    packages: previous.packages,
+  } as const;
+  const eventId = sha256(identity as unknown as JsonValue) as Sha256;
+  const entry: PlanDispatchOutbox = {
+    eventId,
+    nonce,
+    ref: workflowRef,
+    workflow: ".github/workflows/publish.yml",
+    recovery: {
+      kind: "production-zero-write",
+      failedRunUrl,
+      proofRunUrl,
+      workflowCommit,
+    },
+    packages: previous.packages,
+    inputs: {
+      event_id: eventId,
+      plan_id: state.planId,
+      plan_sha256: state.planSha256,
+      release_commit: state.releaseCommit,
+      packages_json: JSON.stringify(previous.packages),
+      nonce,
+    },
+    status: "pending",
+    claimOwner: null,
+    leaseExpiresAt: null,
+    runUrl: null,
+    createdAt: at,
+    updatedAt: at,
+  };
+  const snapshot = await transact(store, (current) => {
+    const candidate = current.plans[path];
+    if (!candidate || candidate.revision !== state.revision)
+      throw new StateConflictError(
+        "plan changed while zero-write recovery facts were observed",
+      );
+    const result: PlanStateV1 = {
+      ...candidate,
+      packages: candidate.packages.map((item) => ({
+        ...item,
+        status: "dispatched" as const,
+        requestEventId: eventId,
+      })),
+      evidence: [
+        ...candidate.evidence,
+        { kind: "recovery", url: failedRunUrl, digest: eventId },
+        { kind: "zero-write-proof", url: proofRunUrl, digest: eventId },
+      ],
+      attempts: [
+        ...candidate.attempts,
+        {
+          eventId,
+          kind: "recovery",
+          at,
+          outcome: "accepted",
+          detail: AUTHORIZED_PRODUCTION_ZERO_WRITE_RECOVERY,
+        },
+      ],
+      outbox: [...candidate.outbox, entry].sort((left, right) =>
+        left.eventId.localeCompare(right.eventId)
+      ),
+      revision: candidate.revision + 1,
+      updatedAt: at,
     };
     assertLegalTransition(candidate, result);
     current.plans[path] = result;

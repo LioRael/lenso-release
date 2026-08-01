@@ -260,6 +260,23 @@ atomic mixed package set without emitting receipts, use the reviewed
 6. Verify public registry bytes and a fresh install independently, then verify
    that the coordinator marks every package `received` and the plan `verified`.
 
+If a production publisher consumed its one-use proof but failed during registry
+authentication before writing any selected version, use the reviewed
+`recover-failed-production-zero-write-plan` workflow. First run the component's
+reviewed `verify-production-zero-write-failure` workflow against the exact plan,
+release commit, event, and failed run. The proof must show successful preflight
+and proof consumption, the exact registry-authentication failure, no accepted
+receipt, and authenticated absence of every selected production version. The
+coordinator accepts only a successful proof from the component's current
+default-branch head, requires the exact original publisher to be conclusively
+failed, and records a distinct `production-zero-write` authorization. The
+component then rebuilds every selected artifact, proves every version remains
+absent, publishes only those missing versions through its short-lived OIDC or
+GitHub credential, and submits normal immutable receipts. This path is not a
+publisher retry: the original proof and dispatch remain consumed and immutable.
+It rejects any accepted receipt, any observed published version, any in-flight
+dispatch, and any failure that did not reach proof consumption.
+
 If a production publisher fails before preflight, proof consumption, registry
 OIDC, and publication, do not use partial recovery. First run the component's
 reviewed prepublish-failure proof against the exact plan, release commit, event,
