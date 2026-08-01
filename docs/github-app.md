@@ -53,8 +53,11 @@ npm publishing uses a GitHub-hosted runner and the exact Node.js and npm version
 pinned by the approved plan (currently Node.js `24.0.0` and npm `11.7.0`).
 crates.io authentication uses the reviewed, full-commit-pinned
 `rust-lang/crates-io-auth-action`; its short-lived token is exposed only to the single
-matching `cargo publish` command and its post step revokes it. There is no automatic
-long-lived-token fallback.
+receipt-confirming publish step and its post step revokes it. There is no automatic
+long-lived-token fallback. A first publication may use the separately named bootstrap
+credential only when the exact package and version appear in the release commit's
+reviewed `.lenso-release/cargo-bootstrap.json` policy; the normal token remains OIDC
+for every other Cargo package.
 
 ## Event authentication and replay protection
 

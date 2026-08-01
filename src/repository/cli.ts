@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import {
+  authorizedRecoveryKind,
   consumePreflightProof,
   createPlan,
   createPreflightProof,
-  prepareRecovery,
+  prepareAuthorizedRecovery,
   preparePartialRecovery,
   publishSelected,
   recoverPartialPublished,
-  recoverPublished,
+  recoverAuthorized,
   verifyRecoveryAuthorization,
   type RuntimeEnvironment,
 } from "./runtime.js";
@@ -48,10 +49,12 @@ if (command === "plan") {
   const receipts = await publishSelected(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
 } else if (command === "recover-prepare") {
-  await prepareRecovery(environment());
+  await prepareAuthorizedRecovery(environment());
 } else if (command === "recover") {
-  const receipts = await recoverPublished(environment());
+  const receipts = await recoverAuthorized(environment());
   process.stdout.write(`${JSON.stringify(receipts)}\n`);
+} else if (command === "recover-kind") {
+  process.stdout.write(`${await authorizedRecoveryKind(environment())}\n`);
 } else if (command === "recover-partial-prepare") {
   await preparePartialRecovery(environment());
 } else if (command === "recover-partial") {
@@ -64,6 +67,6 @@ if (command === "plan") {
   process.stdout.write(`${runId}\n`);
 } else {
   throw new Error(
-    "usage: runtime plan|preflight|consume-preflight|publish|recover-prepare|recover|recover-partial-prepare|recover-partial|recover-partial-failed-run-id",
+    "usage: runtime plan|preflight|consume-preflight|publish|recover-kind|recover-prepare|recover|recover-partial-prepare|recover-partial|recover-partial-failed-run-id",
   );
 }

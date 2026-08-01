@@ -16,9 +16,12 @@ change as the code. Do not silently infer a new procedure.
 - Repository write access is not production authority.
 - Keep `LENSO_RELEASE_MODE=shadow` until a complete shadow release has passed and
   production activation has been approved explicitly.
-- Never add long-lived npm, crates.io, personal access, or GitHub App credentials
-  to a repository. Production publishers use short-lived OIDC or installation
-  credentials.
+- Never add long-lived npm, personal access, or GitHub App credentials to a
+  repository. Production publishers use short-lived OIDC or installation
+  credentials. A crates.io API token is permitted only for the initial publish of
+  an exact package/version listed in the reviewed release commit's
+  `.lenso-release/cargo-bootstrap.json`; remove that entry and the token after
+  Trusted Publishing is configured.
 - Never enable a legacy direct-publish workflow as a normal release path.
 - Never weaken plan, digest, exact-ref, nonce, preflight, receipt, or attestation
   checks to make a release pass.
@@ -72,6 +75,26 @@ The participating component repositories are `lenso`, `lenso-cli`,
 
 Do not manually dispatch `publish.yml`. Its inputs are coordinator-issued evidence,
 not operator-authored release parameters.
+
+### First Cargo publication
+
+crates.io requires an API token for a crate's initial publication because Trusted
+Publishing can only be configured after the crate exists. The bootstrap exception
+remains inside the normal reviewed release:
+
+1. Add only the new package and exact version to
+   `.lenso-release/cargo-bootstrap.json` in the component release commit.
+   A zero-write recovery of an older immutable release commit instead uses
+   `.lenso-release/cargo-bootstrap-recovery.json` from the reviewed recovery
+   workflow commit, bound to that exact plan ID and release commit.
+2. Keep the API token in the existing `CARGO_REGISTRY_TOKEN` repository secret.
+   The publisher exposes it only to the receipt-confirming publish step and selects
+   it only for an exact policy match; all other Cargo packages use the OIDC token.
+3. Publish through the coordinator-issued exact execution ref. Never dispatch the
+   repository publisher directly.
+4. Configure Trusted Publishing for the newly created crate, verify an OIDC
+   publication or recovery path, then remove the policy entry and repository
+   secret. A retained bootstrap exception blocks release closure.
 
 For OCI components, the coordinator also persists the reviewed `registryPath` in
 the immutable package state. Repository preflight must match its local OCI
@@ -275,8 +298,9 @@ coordinator accepts only a successful proof from the component's current
 default-branch head, requires the exact original publisher to be conclusively
 failed, and records a distinct `production-zero-write` authorization. The
 component then rebuilds every selected artifact, proves every version remains
-absent, publishes only those missing versions through its short-lived OIDC or
-GitHub credential, and submits normal immutable receipts. This path is not a
+absent, publishes only those missing versions through its short-lived OIDC,
+reviewed first-publish bootstrap, or GitHub credential, and submits normal
+immutable receipts. This path is not a
 publisher retry: the original proof and dispatch remain consumed and immutable.
 It rejects any accepted receipt, any observed published version, any in-flight
 dispatch, and any failure that did not reach proof consumption.

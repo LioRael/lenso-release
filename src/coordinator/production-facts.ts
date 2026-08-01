@@ -420,8 +420,11 @@ export function trustedProductionZeroWriteFailureRun(
   const proofSteps = Array.isArray(proofJob?.steps)
     ? (proofJob.steps as Record<string, unknown>[])
     : [];
-  const requiredSteps = [
+  const authenticationSteps = [
+    "Verify proof consumption and registry authentication failure",
     "Verify proof consumption and npm authentication failure",
+  ];
+  const requiredSteps = [
     "Prove the production npm version is absent",
     "Prove the production OCI manifest is absent",
   ];
@@ -438,6 +441,11 @@ export function trustedProductionZeroWriteFailureRun(
     workflow.path ===
       ".github/workflows/verify-production-zero-write-failure.yml" &&
     proofJob?.conclusion === "success" &&
+    authenticationSteps.some((name) =>
+      proofSteps.some(
+        (step) => step.name === name && step.conclusion === "success"
+      )
+    ) &&
     requiredSteps.every((name) =>
       proofSteps.some(
         (step) => step.name === name && step.conclusion === "success"
