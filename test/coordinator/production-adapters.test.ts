@@ -682,6 +682,30 @@ describe("production coordinator adapters", () => {
     );
     await expect(store.readSnapshot())
       .rejects.toThrow("GitHub API 403: Resource not accessible by integration");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for an explicit GitHub API rate-limit reset once", async () => {
+    const waits: number[] = [];
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+        status: 403,
+        headers: { "content-type": "application/json", "retry-after": "2" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      }));
+    const store = new GithubSnapshotStore(
+      "LioRael/lenso-release",
+      { async tokenFor() { return "scoped"; } },
+      request as typeof fetch,
+      async (milliseconds) => { waits.push(milliseconds); },
+    );
+    await expect(store.readSnapshot())
+      .rejects.toThrow("GitHub API 403: Resource not accessible by integration");
+    expect(waits).toEqual([2_000]);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("reads exact release-state blobs without spending one API request per file", async () => {

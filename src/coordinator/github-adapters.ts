@@ -140,6 +140,7 @@ export class GithubSnapshotStore implements GitStateStore {
     private readonly coordinatorRepository: string,
     private readonly tokens: AppTokenProvider,
     private readonly request: Fetch = fetch,
+    private readonly pause: Pause = delay,
   ) {}
   private async headers() {
     return {
@@ -149,6 +150,32 @@ export class GithubSnapshotStore implements GitStateStore {
   }
   private api(path: string): string {
     return `https://api.github.com/repos/${this.coordinatorRepository}${path}`;
+  }
+  private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await this.request(url, init);
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.ok) return body;
+      const message = typeof body.message === "string" ? body.message : "request rejected";
+      const rateLimited = response.status === 429 || (
+        response.status === 403 && (
+          response.headers.get("x-ratelimit-remaining") === "0" ||
+          response.headers.has("retry-after") ||
+          /(?:rate limit|temporar)/iu.test(message)
+        )
+      );
+      if (!rateLimited || attempt === 1)
+        throw new Error(`GitHub API ${response.status}: ${message}`);
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const resetAt = Number(response.headers.get("x-ratelimit-reset")) * 1_000;
+      const advisedDelay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1_000
+        : Number.isFinite(resetAt) && resetAt > Date.now()
+          ? resetAt - Date.now() + 1_000
+          : 60_000;
+      await this.pause(Math.min(Math.max(advisedDelay, 1_000), 3_600_000));
+    }
+    throw new Error("GitHub API request did not complete");
   }
   private async readBlobAt(headSha: string, path: string, expectedBlobSha: string): Promise<unknown> {
     normalizeRepository(this.coordinatorRepository);
@@ -171,19 +198,17 @@ export class GithubSnapshotStore implements GitStateStore {
     return JSON.parse(bytes.toString("utf8"));
   }
   private async treeAt(headSha: string, headers: Record<string, string>): Promise<Record<string, string>> {
-    const commit = await json(await this.request(this.api(`/git/commits/${headSha}`), { headers, redirect: "error" }));
+    const commit = await this.requestJson(this.api(`/git/commits/${headSha}`), { headers, redirect: "error" });
     const treeSha = String((commit.tree as Record<string, unknown>).sha);
-    const tree = await json(await this.request(this.api(`/git/trees/${treeSha}?recursive=1`), { headers, redirect: "error" }));
+    const tree = await this.requestJson(this.api(`/git/trees/${treeSha}?recursive=1`), { headers, redirect: "error" });
     const entries = Array.isArray(tree.tree) ? tree.tree as Record<string, unknown>[] : [];
     return Object.fromEntries(entries.filter((entry) => entry.type === "blob").map((entry) => [String(entry.path), String(entry.sha)]));
   }
   async readSnapshot(): Promise<ReleaseStateSnapshot> {
     const headers = await this.headers();
-    const ref = await json(
-      await this.request(
-        this.api("/git/ref/heads/release-state"),
-        { headers, redirect: "error" },
-      ),
+    const ref = await this.requestJson(
+      this.api("/git/ref/heads/release-state"),
+      { headers, redirect: "error" },
     );
     const object = ref.object as Record<string, unknown>;
     const headSha = String(object.sha);
@@ -210,7 +235,7 @@ export class GithubSnapshotStore implements GitStateStore {
     next: ReleaseStateSnapshot,
   ): Promise<ReleaseStateSnapshot> {
     const headers = await this.headers();
-    const observedRef = await json(await this.request(this.api("/git/ref/heads/release-state"), { headers, redirect: "error" }));
+    const observedRef = await this.requestJson(this.api("/git/ref/heads/release-state"), { headers, redirect: "error" });
     if (String((observedRef.object as Record<string, unknown>).sha) !== expectedHeadSha)
       throw new StateConflictError("release-state head conflict");
     const oldTree = await this.treeAt(expectedHeadSha, headers);
@@ -218,10 +243,10 @@ export class GithubSnapshotStore implements GitStateStore {
     for (const [path, state] of Object.entries(materialized.plans))
       state.previousBlobSha = oldTree[path] ?? null;
     assertReleaseStateSnapshot({ ...materialized, headSha: expectedHeadSha });
-    const createBlob = async (value: unknown) => json(await this.request(this.api("/git/blobs"), {
+    const createBlob = async (value: unknown) => this.requestJson(this.api("/git/blobs"), {
       method: "POST", headers, redirect: "error",
       body: JSON.stringify({ content: canonicalBytes(value as never).toString("utf8"), encoding: "utf-8" }),
-    }));
+    });
     const treeEntries: Record<string, unknown>[] = [];
     for (const [path, state] of Object.entries(materialized.plans)) {
       const blob = await createBlob(state);
@@ -237,40 +262,34 @@ export class GithubSnapshotStore implements GitStateStore {
       const blob = await createBlob(value);
       treeEntries.push({ path, mode: "100644", type: "blob", sha: blob.sha });
     }
-    const base = await json(
-      await this.request(
-        this.api(`/git/commits/${expectedHeadSha}`),
-        { headers, redirect: "error" },
-      ),
+    const base = await this.requestJson(
+      this.api(`/git/commits/${expectedHeadSha}`),
+      { headers, redirect: "error" },
     );
-    const tree = await json(
-      await this.request(
-        this.api("/git/trees"),
-        {
-          method: "POST",
-          redirect: "error",
-          headers,
-          body: JSON.stringify({
-            base_tree: (base.tree as Record<string, unknown>).sha,
-            tree: treeEntries,
-          }),
-        },
-      ),
+    const tree = await this.requestJson(
+      this.api("/git/trees"),
+      {
+        method: "POST",
+        redirect: "error",
+        headers,
+        body: JSON.stringify({
+          base_tree: (base.tree as Record<string, unknown>).sha,
+          tree: treeEntries,
+        }),
+      },
     );
-    const commit = await json(
-      await this.request(
-        this.api("/git/commits"),
-        {
-          method: "POST",
-          redirect: "error",
-          headers,
-          body: JSON.stringify({
-            message: "chore: update atomic release state",
-            tree: tree.sha,
-            parents: [expectedHeadSha],
-          }),
-        },
-      ),
+    const commit = await this.requestJson(
+      this.api("/git/commits"),
+      {
+        method: "POST",
+        redirect: "error",
+        headers,
+        body: JSON.stringify({
+          message: "chore: update atomic release state",
+          tree: tree.sha,
+          parents: [expectedHeadSha],
+        }),
+      },
     );
     const update = await this.request(
       this.api("/git/refs/heads/release-state"),
