@@ -1131,6 +1131,36 @@ describe("atomic coordinator state", () => {
       kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
     )).toHaveLength(1);
 
+    const laterFailure = structuredClone(retried.state);
+    laterFailure.outbox = laterFailure.outbox.map((entry) => entry.status === "pending"
+      ? { ...entry, status: "dispatched" as const, runUrl: "https://github.com/LioRael/lenso/actions/runs/44" }
+      : entry);
+    const laterEventId = digest("9");
+    laterFailure.outbox.push({
+      ...failed.outbox[0]!,
+      eventId: laterEventId,
+      packages: failed.outbox[0]!.packages.slice(0, 1),
+      inputs: {
+        ...failed.outbox[0]!.inputs,
+        event_id: laterEventId,
+        packages_json: JSON.stringify(failed.outbox[0]!.packages.slice(0, 1)),
+      },
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/43",
+      createdAt: "2026-07-11T00:05:00.000Z",
+      updatedAt: "2026-07-11T00:05:00.000Z",
+    });
+    laterFailure.outbox.sort((left, right) => left.eventId.localeCompare(right.eventId));
+    laterFailure.packages[0] = { ...laterFailure.packages[0]!, requestEventId: laterEventId };
+    const laterRetry = await retryFailedShadowPlan(
+      new MemoryStore(snapshot(laterFailure)), failed.repository, failed.planId, "shadow",
+      { async observeRun() { return { runUrl: "https://github.com/LioRael/lenso/actions/runs/43", status: "completed", conclusion: "failure" }; } },
+      new Date("2026-07-11T00:06:00Z"), () => "later-retry", 42,
+    );
+    expect(laterRetry.state.outbox.filter(({ status }) => status === "pending")).toHaveLength(1);
+    expect(laterRetry.state.attempts.filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === "retry failed shadow dispatch"
+    )).toHaveLength(2);
+
     const dispatch = vi.fn(async () => { throw new Error("workflow run is not yet visible"); });
     await expect(runDispatchOutbox(
       store,
