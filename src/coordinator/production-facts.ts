@@ -1792,6 +1792,31 @@ export async function createCoordinatorHandlers(
       const defaultBranch = String(metadata.default_branch);
       const defaultRef = await githubJson(`https://api.github.com/repos/${repository}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
       const workflowCommit = String((defaultRef.object as Record<string, unknown> | undefined)?.sha);
+      const firstPublicationAuthorized = async (id: string, version: string): Promise<boolean> => {
+        if (!id.startsWith("cargo:")) return false;
+        try {
+          const bytes = await githubBytes(
+            repository,
+            ".lenso-release/cargo-bootstrap-recovery.json",
+            workflowCommit,
+            token,
+          );
+          const policy = JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<string, unknown>;
+          if (
+            policy.schema !== "lenso.cargo-bootstrap-recovery.v1" ||
+            policy.planId !== state.planId ||
+            policy.releaseCommit !== state.releaseCommit ||
+            !Array.isArray(policy.packages)
+          ) return false;
+          return policy.packages.some((item) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+            const selected = item as Record<string, unknown>;
+            return selected.id === id && selected.version === version;
+          });
+        } catch {
+          return false;
+        }
+      };
       const observeRun = async (entry: PlanDispatchOutbox) =>
         input.dispatcher.findByEventId(
           { repository, workflow: entry.workflow, ref: entry.ref, sha: entry.recovery?.workflowCommit ?? state.releaseCommit },
@@ -1803,13 +1828,13 @@ export async function createCoordinatorHandlers(
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       if (existing && !["pending", "in-flight"].includes(existing.status)) {
         await supersedeFailedProductionPartialRecovery(
-          input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible }, workflowCommit,
+          input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible, firstPublicationAuthorized }, workflowCommit,
           now(), nonce, input.config.appId,
         );
       } else {
         await recoverFailedProductionPartialPlan(
           input.store, repository, planId, input.env.LENSO_COORDINATOR_MODE,
-          { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible },
+          { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible, firstPublicationAuthorized },
           defaultBranch, workflowCommit, now(), nonce, input.config.appId,
         );
       }

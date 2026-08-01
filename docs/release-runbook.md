@@ -254,11 +254,13 @@ atomic mixed package set without emitting receipts, use the reviewed
    receipts, and independently observes a non-empty set of the planned versions
    in public registries. The set may contain every planned version when registry
    propagation completed after the publisher's visibility window expired.
-2. A missing Cargo version is allowed only when the crate itself already exists.
-   The component recovery obtains a short-lived crates.io OIDC credential and
-   publishes only that reviewed missing version. A first Cargo publication still
-   fails closed and must use the reviewed bootstrap policy through zero-write
-   recovery.
+2. A missing Cargo version is allowed when the crate itself already exists; the
+   component recovery obtains a short-lived crates.io OIDC credential and
+   publishes only that reviewed missing version. A first Cargo publication is
+   allowed only when the current default-branch commit contains an exact
+   `.lenso-release/cargo-bootstrap-recovery.json` entry bound to the plan and
+   release commit. The component then uses the bounded bootstrap credential for
+   only that package/version. Every other first publication fails closed.
 3. The coordinator records a one-use recovery authorization and dispatches the
    component's reviewed `publish.yml` from the current default-branch commit.
    The normal `publish` job remains restricted to the protected execution ref;

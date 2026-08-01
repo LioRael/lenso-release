@@ -307,7 +307,8 @@ describe("repository template workflow contracts", () => {
     expect(recovery).toContain("CARGO_REGISTRY_TOKEN: ${{ steps.recovery-crates-auth.outputs.token }}");
     expect(recovery).toContain("LENSO_CARGO_BOOTSTRAP_RECOVERY: ${{ steps.recovery-kind.outputs.kind }}");
     expect(recovery).not.toContain("NODE_AUTH_TOKEN");
-    expect(recovery).toContain("if: steps.recovery-kind.outputs.kind == 'production-zero-write'");
+    expect(recovery).toContain("steps.recovery-kind.outputs.kind == 'production-partial'");
+    expect(recovery).toContain("contains(inputs.packages_json, 'cargo:')");
     expect(recovery).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
     expect(recovery.indexOf("cli.js recover-prepare")).toBeLessThan(recovery.indexOf("id: recovery-crates-auth"));
     expect(workflow.jobs["recover-partial"].if).toBe(
