@@ -954,8 +954,13 @@ export async function retryFailedShadowPlan(
   if (!state) throw new Error("plan state not found");
   if (!(state.status === "publishing" || (state.status === "blocked" && state.reason === "dispatch outcome unknown")))
     throw new Error("plan is not eligible for failed dispatch retry");
-  if (state.attempts.some(({ kind, outcome, detail }) =>
-    kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
+  const retryEventIds = new Set(state.attempts
+    .filter(({ kind, outcome, detail }) =>
+      kind === "recovery" && outcome === "accepted" && detail === RETRIED_FAILED_SHADOW_PLAN
+    )
+    .map(({ eventId }) => eventId));
+  if (state.outbox.some(({ eventId, status }) =>
+    retryEventIds.has(eventId) && (status === "pending" || status === "in-flight")
   )) return { state, headSha: initial.headSha };
   if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
     throw new Error("failed dispatch retry forbids pending or in-flight dispatches");
@@ -963,6 +968,7 @@ export async function retryFailedShadowPlan(
     .filter(({ status }) => status === "dispatched")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (!previous?.runUrl) throw new Error("failed dispatch retry requires a dispatched workflow");
+  if (retryEventIds.has(previous.eventId)) return { state, headSha: initial.headSha };
   const run = await facts.observeRun(previous);
   if (
     !run || run.runUrl !== previous.runUrl || run.status !== "completed" ||
