@@ -322,6 +322,7 @@ describe("repository template workflow contracts", () => {
     expect(trustedPartialRecovery).toContain(
       "LENSO_OCI_TOKEN: ${{ github.token }}",
     );
+    expect(trustedPartialRecovery.match(/LENSO_OCI_TOKEN: \$\{\{ github\.token \}\}/gu)).toHaveLength(2);
     expect(trustedPartialRecovery).not.toContain("crates-io-auth-action");
     expect(trustedPartialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
     const partialRecovery = await readFile(
@@ -336,6 +337,7 @@ describe("repository template workflow contracts", () => {
     expect(partialRecovery).toContain(
       "pnpm run --if-present release:artifacts",
     );
+    expect(partialRecovery.match(/LENSO_OCI_TOKEN: \$\{\{ github\.token \}\}/gu)).toHaveLength(2);
     for (const match of partialRecovery.matchAll(/uses:\s*([^\s]+)/gu))
       expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
   });
