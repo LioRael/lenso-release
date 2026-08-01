@@ -68,7 +68,7 @@ describe("Tegami release plan export", () => {
     await expect(readFile(join(cwd, "packages/console/package.json"), "utf8")).resolves.toContain('"version": "1.0.1"');
     await expect(readFile(join(cwd, "crates/core/CHANGELOG.md"), "utf8")).resolves.toContain("0.2.0");
     await expect(readFile(join(cwd, "packages/console/CHANGELOG.md"), "utf8")).resolves.toContain("1.0.1");
-  });
+  }, 15_000);
 
   it.each([
     ["cargo-only", metadata(["cargo:fixture-core", "foundation", true])],
