@@ -38,6 +38,22 @@ describe("draft release observation", () => {
 });
 
 describe("GitHub release asset download", () => {
+  it("downloads an authenticated same-origin shadow asset without redirecting", async () => {
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://shadow.example/github/assets/42");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer shadow-token");
+      expect(init?.redirect).toBe("manual");
+      return new Response("artifact");
+    });
+    await expect(fetchGithubReleaseAsset(
+      "https://shadow.example/github/assets/42",
+      "https://shadow.example/github",
+      { authorization: "Bearer shadow-token", accept: "application/octet-stream" },
+      request as typeof fetch,
+    )).resolves.toMatchObject({ ok: true });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("follows the trusted signed storage redirect without forwarding authorization", async () => {
     const target = "https://release-assets.githubusercontent.com/github-production-release-asset/1267394330/f6a2a6fc-810e-4c23-aae3-23cd6d62d9ad?sig=opaque";
     const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

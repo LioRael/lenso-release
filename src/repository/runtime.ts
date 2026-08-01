@@ -522,13 +522,20 @@ export async function fetchGithubReleaseAsset(
 ): Promise<Response> {
   const source = new URL(download);
   const apiBase = new URL(api);
+  const official = apiBase.origin === "https://api.github.com";
+  const shadowPrefix = `${apiBase.pathname.replace(/\/+$/u, "")}/assets/`;
+  const trustedPath = official
+    ? /^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/[1-9]\d*$/u.test(source.pathname)
+    : source.pathname.startsWith(shadowPrefix) && /^[1-9]\d*$/u.test(source.pathname.slice(shadowPrefix.length));
   if (
+    apiBase.protocol !== "https:" ||
+    source.protocol !== "https:" ||
     source.origin !== apiBase.origin ||
     source.username !== "" ||
     source.password !== "" ||
     source.search !== "" ||
     source.hash !== "" ||
-    !/^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/[1-9]\d*$/u.test(source.pathname)
+    !trustedPath
   ) fail("GitHub release asset API URL is not trusted");
   const response = await request(source, { headers, redirect: "manual" });
   if (response.status !== 302) return response;
@@ -536,7 +543,7 @@ export async function fetchGithubReleaseAsset(
   if (!location) fail("GitHub release asset redirect location is missing");
   const target = new URL(location, source);
   if (
-    apiBase.origin !== "https://api.github.com" ||
+    !official ||
     target.protocol !== "https:" ||
     target.hostname !== "release-assets.githubusercontent.com" ||
     target.username !== "" ||
