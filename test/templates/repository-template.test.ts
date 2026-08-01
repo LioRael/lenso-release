@@ -536,6 +536,12 @@ async function repositoryFixture(): Promise<{ cwd: string; sourceCommit: string;
 }
 
 describe("publisher preflight execution gate", () => {
+  it("reviews planned dependency edges before emitting a plan", async () => {
+    const source = await readFile(join(root, "src/repository/runtime.ts"), "utf8");
+    const create = source.slice(source.indexOf("export async function createPlan"));
+    expect(create).toContain("await reviewedRegistryBindings(cwd, plan)");
+  });
+
   it("stages Cargo archives before issuing the short-lived preflight proof", async () => {
     const source = await readFile(join(root, "src/repository/runtime.ts"), "utf8");
     const issue = source.slice(

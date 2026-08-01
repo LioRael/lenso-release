@@ -1358,8 +1358,10 @@ export async function createPlan(cwd: string, repository: string, sourceCommit: 
   }
   const registry = await loadComponents(join(cwd, ".lenso-release/runtime/components.yaml"));
   const components = Object.fromEntries(Object.values(registry.packages).map(({ id, releaseGroup, userFacing }) => [id, { releaseGroup, userFacing }]));
-  return exportReleasePlan({ cwd, repository, sourceCommit, components, aliases: config.aliases, ignore: config.ignore, publisher: {
+  const plan = await exportReleasePlan({ cwd, repository, sourceCommit, components, aliases: config.aliases, ignore: config.ignore, publisher: {
     workflow: ".github/workflows/publish.yml", workflowSha256: hash(await safeRead(cwd, ".github/workflows/publish.yml")),
     sharedRevision: manifest.sourceRevision, sharedBundleSha256: hash(bytes), runner: "ubuntu-24.04", node: "24.18.0", npm: "11.7.0", rust: "1.94.0",
   } });
+  await reviewedRegistryBindings(cwd, plan);
+  return plan;
 }
