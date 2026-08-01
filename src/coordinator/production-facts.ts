@@ -466,7 +466,7 @@ export async function createCoordinatorHandlers(
 ): Promise<{
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
-  recoverActive(): Promise<{ recovered: string[]; incomplete: string[] }>;
+  recoverActive(repository?: string, planId?: string): Promise<{ recovered: string[]; incomplete: string[] }>;
   recoverBreakGlassPlan(
     repository: string,
     planId: string,
@@ -1095,9 +1095,14 @@ export async function createCoordinatorHandlers(
         now,
       );
     },
-    async recoverActive() {
+    async recoverActive(repository?: string, planId?: string) {
       const snapshot = await input.store.readSnapshot();
-      await scanActiveOutboxRecovery(snapshot.plans, async (state) => {
+      const selectedPlans = Object.fromEntries(Object.entries(snapshot.plans).filter(([, state]) =>
+        (!repository || state.repository === repository) && (!planId || state.planId === planId)
+      ));
+      if ((repository || planId) && Object.keys(selectedPlans).length !== 1)
+        throw new Error("targeted active recovery plan was not found");
+      await scanActiveOutboxRecovery(selectedPlans, async (state) => {
         await runDispatchOutbox(
           input.store,
           state.repository,
@@ -1108,7 +1113,10 @@ export async function createCoordinatorHandlers(
         );
       });
       const refreshed = await input.store.readSnapshot();
-      return scanActiveRecovery(refreshed.plans, async (state, pkg) => {
+      const refreshedSelectedPlans = Object.fromEntries(Object.entries(refreshed.plans).filter(([, state]) =>
+        (!repository || state.repository === repository) && (!planId || state.planId === planId)
+      ));
+      return scanActiveRecovery(refreshedSelectedPlans, async (state, pkg) => {
           const zero = `sha256:${"0".repeat(64)}` as const;
           await handlers.receipt({
             schema: "lenso.release-event.v1",
