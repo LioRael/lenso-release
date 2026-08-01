@@ -926,6 +926,17 @@ async function dispatchReceipt(receipt, environment) {
     if (!response.ok)
         fail(`coordinator receipt enqueue ${response.status}`);
 }
+async function observeAfterPublication(observe) {
+    let observed = { exists: false };
+    for (const waitMs of [0, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000]) {
+        if (waitMs > 0)
+            await delay(waitMs);
+        observed = await observe();
+        if (observed.exists)
+            return observed;
+    }
+    return observed;
+}
 export async function publishSelected(environment) {
     const { plan, artifacts } = await consumeSealedMarker(environment);
     const config = parseJson(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
@@ -954,7 +965,7 @@ export async function publishSelected(environment) {
         }
         if (!observed.exists) {
             await publishOnce(environment, item, artifact);
-            observed = await observe();
+            observed = await observeAfterPublication(observe);
             if (!observed.exists)
                 fail("published package is not registry-visible");
         }
@@ -1182,7 +1193,7 @@ export async function recoverPartialPublished(environment) {
         let observed = await observe();
         if (!observed.exists) {
             await publishOnce(environment, item, artifact);
-            observed = await observe();
+            observed = await observeAfterPublication(observe);
         }
         if (!observed.exists || !observed.bytes || !observed.integrity || !observed.url || !observed.publishedAt)
             fail(`recovered package is not registry-visible: ${item.id}`);
