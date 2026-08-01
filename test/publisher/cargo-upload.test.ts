@@ -48,6 +48,14 @@ describe("sealed Cargo upload", () => {
     await expect(cargoRegistryTokenFor(environment, { id: "cargo:lenso-platform-provider", version: "0.1.4" })).resolves.toBe("bootstrap");
     await expect(cargoRegistryTokenFor(environment, { id: "cargo:lenso-platform-core", version: "0.1.20" })).resolves.toBe("oidc");
   });
+  it("binds a reviewed partial bootstrap recovery to the exact old plan", async () => {
+    const environment = await runtimeEnvironment(); await mkdir(join(environment.cwd, ".lenso-release"));
+    await writeFile(join(environment.cwd, ".lenso-release", "cargo-bootstrap-recovery.json"), JSON.stringify({ schema: "lenso.cargo-bootstrap-recovery.v1", planId: environment.planId, releaseCommit: environment.releaseCommit, packages: [{ id: "cargo:lenso-platform-provider", version: "0.1.4" }] }));
+    await execute("git", ["add", "."], { cwd: environment.cwd }); await execute("git", ["commit", "-qm", "recovery policy"], { cwd: environment.cwd }); environment.githubSha = (await execute("git", ["rev-parse", "HEAD"], { cwd: environment.cwd })).stdout.trim();
+    process.env.LENSO_RELEASE_MODE = "production"; process.env.CARGO_REGISTRY_TOKEN = "oidc"; process.env.LENSO_CARGO_BOOTSTRAP_TOKEN = "bootstrap"; process.env.LENSO_CARGO_BOOTSTRAP_RECOVERY = "production-partial";
+    await expect(cargoRegistryTokenFor(environment, { id: "cargo:lenso-platform-provider", version: "0.1.4" })).resolves.toBe("bootstrap");
+    await expect(cargoRegistryTokenFor(environment, { id: "cargo:lenso-platform-core", version: "0.1.20" })).resolves.toBe("oidc");
+  });
   it("fails closed when an exact bootstrap selection has no bootstrap credential", async () => {
     const environment = await runtimeEnvironment({ schema: "lenso.cargo-bootstrap.v1", packages: [{ id: "cargo:lenso-platform-provider", version: "0.1.4" }] });
     process.env.LENSO_RELEASE_MODE = "production"; process.env.CARGO_REGISTRY_TOKEN = "oidc";

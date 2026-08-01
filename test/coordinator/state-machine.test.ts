@@ -1435,7 +1435,22 @@ describe("atomic coordinator state", () => {
         async packageExists() { return false; },
       },
       "main", "9".repeat(40), new Date("2026-07-11T00:02:05Z"), () => "unsafe-cargo-retry", 42,
-    )).rejects.toThrow("forbids first Cargo publication");
+    )).rejects.toThrow("forbids unauthorized first Cargo publication");
+    const cargoBootstrapRecovery = await recoverFailedProductionPartialPlan(
+      new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists(id) { return id.startsWith("npm:"); },
+        async packageExists() { return false; },
+        async firstPublicationAuthorized(id, version) {
+          return id === "cargo:lenso-contracts" && version === "1.0.0";
+        },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:10Z"), () => "cargo-bootstrap-retry", 42,
+    );
+    expect(cargoBootstrapRecovery.state.outbox.find(({ recovery }) => recovery?.kind === "production-partial")?.recovery).toMatchObject({
+      publishedPackages: [{ id: "npm:@lenso/cli", version: "1.0.0" }],
+    });
     await expect(recoverFailedProductionPartialPlan(
       new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
       {

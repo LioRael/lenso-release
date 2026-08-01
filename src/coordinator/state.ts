@@ -808,7 +808,19 @@ export type FailedShadowRetryFacts = {
 export type FailedProductionPartialRecoveryFacts = FailedShadowRetryFacts & {
   packageVersionExists(id: string, version: string): Promise<boolean>;
   packageExists?(id: string): Promise<boolean>;
+  firstPublicationAuthorized?(id: string, version: string): Promise<boolean>;
 };
+
+async function missingCargoPublicationIsAuthorized(
+  facts: FailedProductionPartialRecoveryFacts,
+  id: string,
+  version: string,
+): Promise<boolean> {
+  return Boolean(
+    await facts.packageExists?.(id) ||
+    await facts.firstPublicationAuthorized?.(id, version),
+  );
+}
 
 export async function supersedeFailedProductionZeroWriteRecovery(
   store: GitStateStore,
@@ -1023,6 +1035,13 @@ export async function supersedeFailedProductionPartialRecovery(
   const publishedKeys = new Set(publishedPackages.map(({ id, version }) => `${id}\0${version}`));
   if (recovery.publishedPackages.some(({ id, version }) => !publishedKeys.has(`${id}\0${version}`)))
     throw new Error("partial recovery registry state regressed");
+  for (const { id, version } of previous.packages) {
+    if (
+      id.startsWith("cargo:") &&
+      !publishedKeys.has(`${id}\0${version}`) &&
+      !(await missingCargoPublicationIsAuthorized(facts, id, version))
+    ) throw new Error("partial recovery forbids unauthorized first Cargo publication");
+  }
   if (!identityChanged && publishedPackages.length === recovery.publishedPackages.length)
     throw new Error("partial recovery workflow identity and registry state did not change");
   const at = now.toISOString();
@@ -1113,8 +1132,8 @@ export async function recoverFailedProductionPartialPlan(
     if (
       id.startsWith("cargo:") &&
       !publishedPackages.some((item) => item.id === id && item.version === version) &&
-      !(await facts.packageExists?.(id))
-    ) throw new Error("partial recovery forbids first Cargo publication");
+      !(await missingCargoPublicationIsAuthorized(facts, id, version))
+    ) throw new Error("partial recovery forbids unauthorized first Cargo publication");
   }
   const at = now.toISOString();
   const nonce = nextNonce();
