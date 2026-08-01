@@ -1,6 +1,6 @@
 {
   "schema": "lenso.repository-runtime.v1",
-  "sourceRevision": "2c523a53fe1215f1dc1cd07f25c3aef69d02194b",
+  "sourceRevision": "1b6c7e7fcb11c6930297be10946223647decde7f",
   "files": [
     {
       "path": ".lenso-release/runtime/components.yaml",
@@ -48,7 +48,7 @@
     },
     {
       "path": ".lenso-release/runtime/lib/repository/oci-registry-publisher.js",
-      "sha256": "sha256:53b4c514955269e3a1b2bae4ae5bbb7219943a407d803dc6a5bb9233203b0b7f"
+      "sha256": "sha256:2a134821dbf32b914633725909963f6fe3e801488464c54c4755d2262126f320"
     },
     {
       "path": ".lenso-release/runtime/lib/repository/oci-release-artifact.js",

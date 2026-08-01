@@ -59,7 +59,9 @@ export async function publishOciImage(input) {
         if (!location)
             fail("blob upload location is missing");
         const upload = new URL(location, base);
-        const sameRepository = upload.origin === base.origin && upload.pathname.startsWith(`${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`);
+        const standardUploadPath = `${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`;
+        const ghcrUploadPath = `${prefix}/v2/${input.artifact.registryRepository}/blobs/upload/`;
+        const sameRepository = upload.origin === base.origin && (upload.pathname.startsWith(standardUploadPath) || (base.hostname === "ghcr.io" && upload.pathname.startsWith(ghcrUploadPath)));
         const trustedGhcrStorage = base.hostname === "ghcr.io" && upload.protocol === "https:" && upload.hostname === GHCR_BLOB_UPLOAD_HOST && !upload.username && !upload.password && !upload.hash;
         if (!sameRepository && !trustedGhcrStorage)
             fail("blob upload location escaped the registry repository");
