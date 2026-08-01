@@ -98,4 +98,29 @@ describe("OCI registry observer", () => {
     })).resolves.toMatchObject({ missing: true });
     expect(request).toHaveBeenCalledTimes(3);
   });
+
+  it("follows a trusted GHCR config redirect without forwarding credentials", async () => {
+    const config = Buffer.from(JSON.stringify({ created: "2026-07-30T08:00:00Z", config: { Labels: { "org.opencontainers.image.version": "0.2.0" } } }));
+    const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: digest(config) }, layers: [] }));
+    const signedUrl = `https://pkg-containers.githubusercontent.com/ghcr1/blobs/sha256:${"a".repeat(64)}?sig=opaque`;
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input); const authorization = new Headers(init?.headers).get("authorization");
+      if (url.includes("/manifests/")) return new Response(manifest, { headers: { "docker-content-digest": digest(manifest) } });
+      if (url === signedUrl) { expect(authorization).toBeNull(); expect(init?.redirect).toBe("error"); return new Response(config); }
+      expect(authorization).toBe("Bearer repository-token"); expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 307, headers: { location: signedUrl } });
+    });
+    await expect(observeOciImage("lenso-console-service", "0.2.0", { credential: { bearer: "repository-token" }, fetch: request as typeof fetch }))
+      .resolves.toMatchObject({ version: "0.2.0", digest: digest(manifest) });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects untrusted OCI config redirects", async () => {
+    const config = Buffer.from("config"); const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: digest(config) }, layers: [] }));
+    const request = async (input: string | URL | Request): Promise<Response> => String(input).includes("/manifests/")
+      ? new Response(manifest)
+      : new Response(null, { status: 307, headers: { location: "https://storage.example/blob" } });
+    await expect(observeOciImage("lenso-console-service", "0.2.0", { fetch: request as typeof fetch }))
+      .resolves.toEqual({ failure: "schema", detail: "OCI registry config redirect was not trusted" });
+  });
 });

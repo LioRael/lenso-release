@@ -90,7 +90,17 @@ export async function observeOciImage(
       return { failure: "schema", detail: "OCI registry manifest omitted a canonical config descriptor" };
     const configUrl = new URL(`${registryPrefix}/v2/${repository}/blobs/${config.digest}`, registry.origin);
     let configResponse: Response;
-    try { configResponse = await request(configUrl, { signal: controller.signal, headers: headers.authorization ? { authorization: headers.authorization } : {}, redirect: "error" }); }
+    try {
+      configResponse = await request(configUrl, { signal: controller.signal, headers: headers.authorization ? { authorization: headers.authorization } : {}, redirect: "manual" });
+      if (configResponse.status === 307) {
+        const location = configResponse.headers.get("location");
+        if (!location) return { failure: "schema", detail: "OCI registry config redirect omitted its location" };
+        const target = new URL(location, registry);
+        const trustedGhcrBlob = registry.hostname === "ghcr.io" && target.protocol === "https:" && target.hostname === "pkg-containers.githubusercontent.com" && !target.username && !target.password && !target.hash && /^\/ghcr[0-9]+\/blobs\/sha256:[0-9a-f]{64}$/u.test(target.pathname);
+        if (!trustedGhcrBlob) return { failure: "schema", detail: "OCI registry config redirect was not trusted" };
+        configResponse = await request(target, { signal: controller.signal, redirect: "error" });
+      }
+    }
     catch { return controller.signal.aborted ? { failure: "timeout", detail: "OCI registry request timed out" } : { failure: "transport", detail: "OCI registry request failed" }; }
     if (!configResponse.ok) return { failure: "http", detail: `OCI registry config returned HTTP ${configResponse.status}` };
     const configBytes = new Uint8Array(await configResponse.arrayBuffer());
