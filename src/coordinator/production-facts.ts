@@ -1567,12 +1567,12 @@ export async function createCoordinatorHandlers(
       const snapshot = await input.store.readSnapshot();
       const state = snapshot.plans[planStatePath(repository, planId)];
       if (!state) throw new Error("plan state not found");
-      const dispatch = state.outbox[0];
-      if (state.outbox.length !== 1 || !dispatch?.runUrl)
-        throw new Error("exact original publisher dispatch is required");
       const expectedFailedRunUrl =
         `https://github.com/${repository}/actions/runs/${failedRunId}`;
-      if (dispatch.runUrl !== expectedFailedRunUrl)
+      const matchingDispatches = state.outbox.filter(
+        ({ runUrl }) => runUrl === expectedFailedRunUrl
+      );
+      if (matchingDispatches.length !== 1)
         throw new Error("failed publisher run does not match stored dispatch");
       const token = await input.tokens.tokenFor(repository, {
         actions: "read",
@@ -1634,6 +1634,7 @@ export async function createCoordinatorHandlers(
         repository,
         planId,
         eventId,
+        expectedFailedRunUrl,
         proofRunUrl,
         input.env.LENSO_COORDINATOR_MODE,
         {

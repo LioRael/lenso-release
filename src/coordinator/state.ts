@@ -1148,6 +1148,7 @@ export async function retireFailedProductionPrepublishPlan(
   repository: string,
   planId: string,
   eventId: Sha256,
+  failedRunUrl: string,
   proofRunUrl: string,
   mode: string | undefined,
   facts: FailedProductionPrepublishRetirementFacts,
@@ -1174,22 +1175,25 @@ export async function retireFailedProductionPrepublishPlan(
     state.packages.some(({ status }) => status === "received")
   )
     throw new Error("untouched production publishing plan is required");
+  const matchingDispatches = state.outbox.filter(
+    ({ runUrl }) => runUrl === failedRunUrl
+  );
   if (
-    state.outbox.length !== 1 ||
-    state.outbox[0]?.status !== "dispatched" ||
-    state.outbox[0].recovery !== undefined ||
-    state.outbox[0].runUrl === null
+    matchingDispatches.length !== 1 ||
+    matchingDispatches[0]?.status !== "dispatched" ||
+    matchingDispatches[0].recovery !== undefined
   )
     throw new Error("exact original publisher dispatch is required");
-  const dispatch = state.outbox[0];
+  const dispatch = matchingDispatches[0];
   const selected = dispatch.packages
     .map(({ id, version }) => `${id}\0${version}`)
     .sort();
-  const planned = state.packages
+  const dispatched = state.packages
+    .filter(({ status }) => status === "dispatched")
     .map(({ id, version }) => `${id}\0${version}`)
     .sort();
-  if (JSON.stringify(selected) !== JSON.stringify(planned))
-    throw new Error("publisher dispatch does not cover the exact plan");
+  if (JSON.stringify(selected) !== JSON.stringify(dispatched))
+    throw new Error("publisher dispatch does not cover the exact active slice");
   const run = await facts.observeRun(dispatch);
   if (
     !run ||
