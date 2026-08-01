@@ -25,6 +25,8 @@ export type StoredPlanState = { state: PlanStateV1; headSha: string };
 export class StateConflictError extends Error {}
 
 const RETIRED_FAILED_SHADOW_PLAN = "retired failed shadow dispatch";
+const RETIRED_FAILED_PRODUCTION_PREPUBLISH_PLAN =
+  "retired failed production prepublish dispatch";
 const RETRIED_FAILED_SHADOW_PLAN = "retry failed shadow dispatch";
 export const AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY =
   "authorized production partial recovery";
@@ -40,7 +42,8 @@ export const RECOVERED_SHADOW_MODE_MISMATCH =
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
     state.reason?.startsWith("cancelled before dispatch") === true ||
-    state.reason === RETIRED_FAILED_SHADOW_PLAN
+    state.reason === RETIRED_FAILED_SHADOW_PLAN ||
+    state.reason === RETIRED_FAILED_PRODUCTION_PREPUBLISH_PLAN
   );
 }
 
@@ -628,6 +631,14 @@ export type FailedShadowRetirementFacts = {
   packageVersionExists(id: string, version: string): Promise<boolean>;
 };
 
+export type FailedProductionPrepublishRetirementFacts = {
+  observeRun(entry: PlanDispatchOutbox): Promise<{
+    runUrl: string;
+    status: string;
+    conclusion: string | null;
+  } | null>;
+};
+
 export type ShadowModeMismatchRecoveryFacts = {
   observeRun(entry: PlanDispatchOutbox): Promise<{
     runUrl: string;
@@ -1100,6 +1111,101 @@ export async function retireFailedShadowPlan(
         outcome: "accepted" as const,
         detail: RETIRED_FAILED_SHADOW_PLAN,
       }],
+      revision: currentState.revision + 1,
+      updatedAt: at,
+    };
+    assertLegalTransition(currentState, result);
+    delete current.activeRepositories[repository];
+    for (const [key, owner] of Object.entries(current.occupiedPackages))
+      if (owner === planId) delete current.occupiedPackages[key];
+    current.plans[path] = result;
+    return current;
+  });
+  return { state: snapshot.plans[path]!, headSha: snapshot.headSha };
+}
+
+export async function retireFailedProductionPrepublishPlan(
+  store: GitStateStore,
+  repository: string,
+  planId: string,
+  eventId: Sha256,
+  proofRunUrl: string,
+  mode: string | undefined,
+  facts: FailedProductionPrepublishRetirementFacts,
+  now: Date,
+): Promise<StoredPlanState> {
+  if (mode !== "production")
+    throw new Error("production prepublish retirement requires production mode");
+  if (
+    !/^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/actions\/runs\/[1-9][0-9]*$/u.test(
+      proofRunUrl
+    )
+  )
+    throw new TypeError("production prepublish proof run URL invalid");
+  const initial = await store.readSnapshot();
+  assertReleaseStateSnapshot(initial);
+  const path = planStatePath(repository, planId);
+  const state = initial.plans[path];
+  if (!state) throw new Error("plan state not found");
+  if (
+    state.environment !== "production" ||
+    state.status !== "publishing" ||
+    state.reason !== null ||
+    state.receipts.length !== 0 ||
+    state.packages.some(({ status }) => status === "received")
+  )
+    throw new Error("untouched production publishing plan is required");
+  if (
+    state.outbox.length !== 1 ||
+    state.outbox[0]?.status !== "dispatched" ||
+    state.outbox[0].recovery !== undefined ||
+    state.outbox[0].runUrl === null
+  )
+    throw new Error("exact original publisher dispatch is required");
+  const dispatch = state.outbox[0];
+  const selected = dispatch.packages
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  const planned = state.packages
+    .map(({ id, version }) => `${id}\0${version}`)
+    .sort();
+  if (JSON.stringify(selected) !== JSON.stringify(planned))
+    throw new Error("publisher dispatch does not cover the exact plan");
+  const run = await facts.observeRun(dispatch);
+  if (
+    !run ||
+    run.runUrl !== dispatch.runUrl ||
+    run.status !== "completed" ||
+    run.conclusion !== "failure"
+  )
+    throw new Error("exact publisher run is not conclusively failed");
+
+  const snapshot = await transact(store, (current) => {
+    const currentState = current.plans[path];
+    if (!currentState || currentState.revision !== state.revision)
+      throw new StateConflictError(
+        "plan changed while production prepublish facts were observed"
+      );
+    const at = now.toISOString();
+    const result: PlanStateV1 = {
+      ...currentState,
+      status: "blocked",
+      reason: RETIRED_FAILED_PRODUCTION_PREPUBLISH_PLAN,
+      occupancyKeys: [],
+      evidence: [
+        ...currentState.evidence,
+        { kind: "recovery", url: proofRunUrl, digest: eventId },
+      ],
+      attempts: [
+        ...currentState.attempts,
+        {
+          eventId,
+          kind: "cancel",
+          at,
+          outcome: "accepted",
+          detail: RETIRED_FAILED_PRODUCTION_PREPUBLISH_PLAN,
+        },
+      ],
       revision: currentState.revision + 1,
       updatedAt: at,
     };

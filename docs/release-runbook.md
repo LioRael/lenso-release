@@ -254,6 +254,18 @@ atomic mixed package set without emitting receipts, use the reviewed
 6. Verify public registry bytes and a fresh install independently, then verify
    that the coordinator marks every package `received` and the plan `verified`.
 
+If a production publisher fails before preflight, proof consumption, registry
+OIDC, and publication, do not use partial recovery. First run the component's
+reviewed prepublish-failure proof against the exact plan, release commit, event,
+and failed run. The proof must verify the failed workflow step, require every
+registry-writing step to be skipped, and prove every selected production version
+absent using authenticated registry reads where required. Only then may the
+reviewed `retire-failed-production-prepublish-plan` workflow release occupancy.
+The coordinator accepts only a successful proof from the component's current
+default-branch head and preserves the failed dispatch and proof URL as immutable
+evidence. This path rejects accepted receipts, partial publication, successful or
+in-flight publisher runs, and any plan not labelled production.
+
 Do not manually dispatch either the component `publish.yml` or the legacy
 `recover-partial-production.yml`; only the coordinator-issued binding is valid.
 

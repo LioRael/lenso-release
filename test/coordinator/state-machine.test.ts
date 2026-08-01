@@ -18,6 +18,7 @@ import {
   cancelPlan,
   recoverFailedProductionPartialPlan,
   recoverShadowModeMismatchPlan,
+  retireFailedProductionPrepublishPlan,
   retireFailedShadowPlan,
   retryFailedShadowPlan,
   planStatePath,
@@ -949,6 +950,74 @@ describe("atomic coordinator state", () => {
       }, new Date())).rejects.toThrow(message);
     }
   });
+  it("retires only a proven zero-write production prepublish failure", async () => {
+    const failed = state();
+    failed.outbox[0] = {
+      ...failed.outbox[0]!,
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
+    };
+    const store = new MemoryStore(snapshot(failed));
+    const proofRunUrl = "https://github.com/LioRael/lenso/actions/runs/43";
+    const facts = {
+      async observeRun() {
+        return {
+          runUrl: failed.outbox[0]!.runUrl!,
+          status: "completed",
+          conclusion: "failure",
+        };
+      },
+    };
+    const retired = await retireFailedProductionPrepublishPlan(
+      store,
+      failed.repository,
+      failed.planId,
+      digest("e"),
+      proofRunUrl,
+      "production",
+      facts,
+      new Date("2026-07-11T00:03:00Z"),
+    );
+    expect(retired.state).toMatchObject({
+      status: "blocked",
+      reason: "retired failed production prepublish dispatch",
+      occupancyKeys: [],
+    });
+    expect(retired.state.evidence.at(-1)).toEqual({
+      kind: "recovery",
+      url: proofRunUrl,
+      digest: digest("e"),
+    });
+    expect(store.snapshot.activeRepositories).toEqual({});
+    expect(store.snapshot.occupiedPackages).toEqual({});
+
+    for (const [mode, conclusion, message] of [
+      ["shadow", "failure", "production mode"],
+      ["production", "success", "conclusively failed"],
+    ] as const) {
+      const candidate = structuredClone(failed);
+      await expect(
+        retireFailedProductionPrepublishPlan(
+          new MemoryStore(snapshot(candidate)),
+          candidate.repository,
+          candidate.planId,
+          digest("f"),
+          proofRunUrl,
+          mode,
+          {
+            async observeRun() {
+              return {
+                runUrl: candidate.outbox[0]!.runUrl!,
+                status: "completed",
+                conclusion,
+              };
+            },
+          },
+          new Date(),
+        ),
+      ).rejects.toThrow(message);
+    }
+  });
   it("retries a conclusively failed shadow dispatch with a fresh binding", async () => {
     const failed = state();
     failed.outbox[0] = {
@@ -1177,6 +1246,9 @@ describe("atomic coordinator state", () => {
     const retire = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retire-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retireFailedShadowPlan: retire }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retire).toHaveBeenCalledOnce();
+    const retireProduction = vi.fn(async () => undefined);
+    expect(await runHandleEventCli(["--retire-failed-production-prepublish-plan", "--repository", "LioRael/lenso-console", "--plan-id", digest("a"), "--failed-run-id", "30693169936", "--proof-run-id", "30694000000"], {}, async () => ({ ready, receipt, retireFailedProductionPrepublishPlan: retireProduction }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(retireProduction).toHaveBeenCalledWith("LioRael/lenso-console", digest("a"), "30693169936", "30694000000");
     const retry = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retry-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retryFailedShadowPlan: retry }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retry).toHaveBeenCalledOnce();
@@ -1186,13 +1258,17 @@ describe("atomic coordinator state", () => {
     await rm(directory, { recursive: true });
   });
   it("keeps receiver workflows read-only and passes github.event_path", async () => {
-    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml"]) {
+    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml", "retire-failed-production-prepublish-plan.yml"]) {
       const workflow = await readFile(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
       expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u);
       if (file === "recover-shadow-mode-mismatch-plan.yml") {
         expect(workflow).toContain("--publisher-run-id");
         expect(workflow).toContain("--production-absence-run-id");
         expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}");
+      } else if (file === "retire-failed-production-prepublish-plan.yml") {
+        expect(workflow).toContain("--failed-run-id");
+        expect(workflow).toContain("--proof-run-id");
+        expect(workflow).toContain("LENSO_COORDINATOR_MODE");
       } else {
         expect(workflow).toContain("github.event_path");
         expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ github.actor }}");
