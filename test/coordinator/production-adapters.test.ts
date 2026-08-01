@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, provenanceSubjectName, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl, workflowUrlMatchesAcceptedExecution } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -22,6 +22,23 @@ describe("production coordinator adapters", () => {
     expect(coordinatorEnvironment("production")).toBe("production");
     expect(() => coordinatorEnvironment(undefined)).toThrow("must be shadow or production");
     expect(() => coordinatorEnvironment("staging")).toThrow("must be shadow or production");
+  });
+
+  it("derives registry provenance subjects from published artifact names", () => {
+    expect(provenanceSubjectName("npm:@lenso/console-package-api", "console-package-api", "0.1.3"))
+      .toBe("lenso-console-package-api-0.1.3.tgz");
+    expect(provenanceSubjectName("cargo:lenso", "lenso", "1.2.3"))
+      .toBe("lenso-1.2.3.crate");
+    expect(provenanceSubjectName("oci:lenso-console-service", "lenso-console-service", "0.1.5"))
+      .toBe("lenso-console-release.json");
+  });
+
+  it("allows recovery placeholders without weakening canonical workflow URLs", () => {
+    const actual = "https://github.com/LioRael/lenso-console/actions/runs/42";
+    expect(workflowUrlMatchesAcceptedExecution(actual, "https://github.com/LioRael/lenso-console/actions/runs/1", actual, true, false)).toBe(true);
+    expect(workflowUrlMatchesAcceptedExecution(actual, "https://github.com/LioRael/lenso-console/actions/runs/1", `${actual}0`, true, false)).toBe(false);
+    expect(workflowUrlMatchesAcceptedExecution(actual, actual, actual, false, false)).toBe(true);
+    expect(workflowUrlMatchesAcceptedExecution(actual, "https://github.com/LioRael/lenso-console/actions/runs/1", actual, false, false)).toBe(false);
   });
 
   it("identifies a failed GitHub observation without exposing its query", async () => {

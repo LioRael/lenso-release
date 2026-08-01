@@ -44,6 +44,30 @@ export function coordinatorEnvironment(value: string | undefined): "shadow" | "p
   if (value === "shadow" || value === "production") return value;
   throw new TypeError("LENSO_COORDINATOR_MODE must be shadow or production");
 }
+
+export function provenanceSubjectName(
+  packageId: string,
+  packageName: string,
+  packageVersion: string,
+): string {
+  if (packageId.startsWith("cargo:"))
+    return `${packageName}-${packageVersion}.crate`;
+  if (packageId.startsWith("npm:"))
+    return `lenso-${packageName}-${packageVersion}.tgz`;
+  if (packageId.startsWith("oci:")) return "lenso-console-release.json";
+  return `${packageName}.tar.gz`;
+}
+
+export function workflowUrlMatchesAcceptedExecution(
+  runUrl: string,
+  expectedWorkflowUrl: string,
+  canonicalRunUrl: string,
+  recoveryOnly: boolean,
+  recoveryRun: boolean,
+): boolean {
+  return runUrl === canonicalRunUrl &&
+    (recoveryOnly || recoveryRun || runUrl === expectedWorkflowUrl);
+}
 function assertGithubApi(url: string): void {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || parsed.origin !== "https://api.github.com")
@@ -986,7 +1010,13 @@ export async function createCoordinatorHandlers(
           if (!workflow) throw new IncompleteEvidenceError("successful exact or reviewed recovery workflow is not visible");
           const runId = String(workflow.id);
           const runUrl = String(workflow.html_url);
-          if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`)
+          if (!workflowUrlMatchesAcceptedExecution(
+            runUrl,
+            expected.workflowUrl,
+            `https://github.com/${repository}/actions/runs/${runId}`,
+            recoveryOnly,
+            recoveryRun,
+          ))
             throw new IncompleteEvidenceError("workflow URL does not match the accepted execution");
           const taggedShadowFailure = recoveryOnly && shadow && trustedShadowReceiptRecoveryRun(
             workflow,
@@ -999,10 +1029,11 @@ export async function createCoordinatorHandlers(
           );
           if (!taggedShadowFailure && (workflow.status !== "completed" || workflow.conclusion !== "success"))
             throw new IncompleteEvidenceError("workflow has not completed successfully");
-          const subjectName = packageId.startsWith("cargo:")
-            ? `${packageName}-${packageVersion}.crate`
-             : packageId.startsWith("npm:") ? `${packageName}-${packageVersion}.tgz`
-               : packageId.startsWith("oci:") ? "lenso-console-release.json" : `${packageName}.tar.gz`;
+          const subjectName = provenanceSubjectName(
+            packageId,
+            packageName,
+            packageVersion,
+          );
           let subject;
           if (!recoveryRun) {
             try {
@@ -1029,9 +1060,7 @@ export async function createCoordinatorHandlers(
             }
           }
           if (!subject && recoveryRun) {
-            const historicalNames = packageId.startsWith("npm:")
-              ? [subjectName, `lenso-${packageName}-${packageVersion}.tgz`]
-              : [subjectName];
+            const historicalNames = [subjectName];
             for (const historicalName of historicalNames) {
               try {
                 const historical = await provenanceVerifier.verify({
