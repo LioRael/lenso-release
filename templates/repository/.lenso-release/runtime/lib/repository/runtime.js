@@ -578,12 +578,19 @@ const CRATES_IO_USER_AGENT = "lenso-release-publisher/1.0 (https://github.com/Li
 export async function fetchGithubReleaseAsset(download, api, headers, request = fetch) {
     const source = new URL(download);
     const apiBase = new URL(api);
-    if (source.origin !== apiBase.origin ||
+    const official = apiBase.origin === "https://api.github.com";
+    const shadowPrefix = `${apiBase.pathname.replace(/\/+$/u, "")}/assets/`;
+    const trustedPath = official
+        ? /^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/[1-9]\d*$/u.test(source.pathname)
+        : source.pathname.startsWith(shadowPrefix) && /^[1-9]\d*$/u.test(source.pathname.slice(shadowPrefix.length));
+    if (apiBase.protocol !== "https:" ||
+        source.protocol !== "https:" ||
+        source.origin !== apiBase.origin ||
         source.username !== "" ||
         source.password !== "" ||
         source.search !== "" ||
         source.hash !== "" ||
-        !/^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/[1-9]\d*$/u.test(source.pathname))
+        !trustedPath)
         fail("GitHub release asset API URL is not trusted");
     const response = await request(source, { headers, redirect: "manual" });
     if (response.status !== 302)
@@ -592,7 +599,7 @@ export async function fetchGithubReleaseAsset(download, api, headers, request = 
     if (!location)
         fail("GitHub release asset redirect location is missing");
     const target = new URL(location, source);
-    if (apiBase.origin !== "https://api.github.com" ||
+    if (!official ||
         target.protocol !== "https:" ||
         target.hostname !== "release-assets.githubusercontent.com" ||
         target.username !== "" ||
