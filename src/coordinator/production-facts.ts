@@ -17,7 +17,7 @@ import {
   type AppTokenProvider,
   type WorkflowDispatcher,
 } from "./dispatch.js";
-import { planStatePath, recoverFailedProductionPartialPlan, recoverFailedProductionZeroWritePlan, recoverShadowModeMismatchPlan, retireFailedProductionPrepublishPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
+import { planStatePath, recoverFailedProductionPartialPlan, recoverFailedProductionZeroWritePlan, recoverShadowModeMismatchPlan, retireFailedProductionPrepublishPlan, retireFailedShadowPlan, retryFailedShadowPlan, supersedeFailedProductionPartialRecovery, supersedeFailedProductionZeroWriteRecovery, type GitStateStore, type StoredPlanState } from "./state.js";
 import { GhAttestationVerifier, type ProvenanceVerifier } from "./provenance-verifier.js";
 import { observeGithubArtifact } from "../registry/github.js";
 import { observeOciImage } from "../registry/oci.js";
@@ -1830,7 +1830,12 @@ export async function createCoordinatorHandlers(
         throw new Error(
           "production zero-write failure proof is not exact and successful",
         );
-      await recoverFailedProductionZeroWritePlan(
+      const recover = state.outbox.some(
+        ({ recovery }) => recovery?.kind === "production-zero-write",
+      )
+        ? supersedeFailedProductionZeroWriteRecovery
+        : recoverFailedProductionZeroWritePlan;
+      await recover(
         input.store,
         repository,
         planId,
@@ -1844,7 +1849,7 @@ export async function createCoordinatorHandlers(
                 repository,
                 workflow: entry.workflow,
                 ref: entry.ref,
-                sha: state.releaseCommit,
+                sha: entry.recovery?.workflowCommit ?? state.releaseCommit,
               },
               entry.eventId,
               token,
