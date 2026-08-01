@@ -306,6 +306,18 @@ describe("repository template workflow contracts", () => {
     );
     expect(trustedPartialRecovery).toContain("cli.js recover-partial-prepare");
     expect(trustedPartialRecovery).toContain("cli.js recover-partial");
+    expect(trustedPartialRecovery).toContain(
+      "working-directory: recovery-candidate",
+    );
+    expect(trustedPartialRecovery).toContain(
+      "pnpm run --if-present release:artifacts",
+    );
+    expect(trustedPartialRecovery).toContain(
+      "RELEASE_COMMIT: ${{ inputs.release_commit }}",
+    );
+    expect(trustedPartialRecovery).toContain(
+      "RELEASE_PACKAGES_JSON: ${{ inputs.packages_json }}",
+    );
     expect(trustedPartialRecovery).toContain("NODE_AUTH_TOKEN: \"\"");
     expect(trustedPartialRecovery).toContain(
       "LENSO_OCI_TOKEN: ${{ github.token }}",
@@ -321,6 +333,9 @@ describe("repository template workflow contracts", () => {
     );
     expect(partialRecovery).not.toContain("crates-io-auth-action");
     expect(partialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
+    expect(partialRecovery).toContain(
+      "pnpm run --if-present release:artifacts",
+    );
     for (const match of partialRecovery.matchAll(/uses:\s*([^\s]+)/gu))
       expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
   });
