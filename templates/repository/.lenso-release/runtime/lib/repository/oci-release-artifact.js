@@ -66,6 +66,24 @@ function descriptor(value, label) {
         fail(`${label} is invalid`);
     return { mediaType: raw.mediaType, digest: raw.digest, size: Number(raw.size) };
 }
+export function inspectOciInstallManifest(input) {
+    if (!REPOSITORY.test(input.registryRepository) || input.registryRepository.includes(".."))
+        fail("registry repository is invalid");
+    if (!/^[0-9a-f]{40}$/u.test(input.sourceCommit) || !/^\d+\.\d+\.\d+$/u.test(input.version))
+        fail("release identity is invalid");
+    const install = json(input.installManifestBytes, "Console install manifest");
+    const image = object(install.image, "Console install manifest image");
+    const manifestDigest = image.digest;
+    if (install.schema !== "lenso.console-service-release.v1" ||
+        install.releaseId !== `lenso-console@${input.version}` ||
+        install.version !== input.version ||
+        install.sourceCommit !== input.sourceCommit ||
+        typeof manifestDigest !== "string" ||
+        !DIGEST.test(manifestDigest) ||
+        image.reference !== `ghcr.io/${input.registryRepository}@${manifestDigest}`)
+        fail("Console install manifest does not bind the OCI image");
+    return { manifestDigest: manifestDigest, registryRepository: input.registryRepository };
+}
 export function inspectOciReleaseArtifact(input) {
     if (!REPOSITORY.test(input.registryRepository) || input.registryRepository.includes(".."))
         fail("registry repository is invalid");
@@ -109,9 +127,8 @@ export function inspectOciReleaseArtifact(input) {
         fail("image config does not bind the release identity");
     if (typeof config.created !== "string" || !Number.isFinite(Date.parse(config.created)))
         fail("image config creation time is invalid");
-    const install = json(input.installManifestBytes, "Console install manifest");
-    const image = object(install.image, "Console install manifest image");
-    if (install.schema !== "lenso.console-service-release.v1" || install.releaseId !== `lenso-console@${input.version}` || install.version !== input.version || install.sourceCommit !== input.sourceCommit || image.digest !== root.digest || image.reference !== `ghcr.io/${input.registryRepository}@${root.digest}`)
+    const install = inspectOciInstallManifest(input);
+    if (install.manifestDigest !== root.digest)
         fail("Console install manifest does not bind the OCI image");
     return { archiveBytes: input.archiveBytes, installManifestBytes: input.installManifestBytes, manifestBytes, manifestDigest: root.digest, publishedAt: config.created, registryRepository: input.registryRepository, blobs };
 }
