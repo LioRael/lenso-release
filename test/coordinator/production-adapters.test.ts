@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, provenanceSubjectName, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -57,6 +57,14 @@ describe("production coordinator adapters", () => {
     expect(productionDependencyUrl("cargo:lenso-module-auth", "0.1.8")).toBe(
       "https://crates.io/api/v1/crates/lenso-module-auth/0.1.8/download",
     );
+  });
+
+  it("matches scoped npm provenance subjects to npm pack filenames", () => {
+    expect(provenanceSubjectName(
+      "npm:@lenso/console-package-api",
+      "console-package-api",
+      "0.1.3",
+    )).toBe("lenso-console-package-api-0.1.3.tgz");
   });
 
   it("preserves a verified immutable tag attestation record URL", () => {
