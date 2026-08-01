@@ -14,9 +14,24 @@ import { syncRepositoryTemplate, type TemplateManifest } from "../../src/command
 import type { ReleasePlanV1 } from "../../src/contracts/types.js";
 import { canonicalBytes, sha256, type JsonValue } from "../../src/core/canonical.js";
 import { executionRef } from "../../src/publisher/contract.js";
-import { cargoArchiveEquivalent, cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
+import { cargoArchiveEquivalent, cargoVerificationOrder, consumePreflightProof, createPreflightProof, fetchCargoArchive, npmRegistryAuthentication, preflight, publicationOrder, publishSelected, stageCargoArchives, validateNpmArchiveEntrypoints, validateRecoveryAttestationUrl, verifyRecoveryAuthorization } from "../../src/repository/runtime.js";
 
 process.env.LENSO_RELEASE_MODE = "production";
+
+describe("npm archive entrypoints", () => {
+  it("rejects archives that omit declared package entrypoints", () => {
+    const manifest = {
+      name: "@lenso/service-kit",
+      version: "0.1.4",
+      main: "./dist/index.js",
+      exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
+    };
+    expect(() => validateNpmArchiveEntrypoints(manifest, ["package/package.json", "package/README.md"]))
+      .toThrow("npm archive entrypoint is missing: dist/index.js");
+    expect(() => validateNpmArchiveEntrypoints(manifest, ["package/package.json", "package/dist/index.js", "package/dist/index.d.ts"]))
+      .not.toThrow();
+  });
+});
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");

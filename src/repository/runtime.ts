@@ -603,6 +603,40 @@ async function npmWorkspaceDirectory(cwd: string, name: string): Promise<string>
   if (matches.length !== 1) fail(`npm workspace package is missing or ambiguous: ${name}`);
   return matches[0]!;
 }
+function collectNpmArchiveTargets(value: unknown, targets: Set<string>): void {
+  if (typeof value === "string") {
+    const target = value.startsWith("./") ? value.slice(2) : value;
+    if (
+      target.length > 0 &&
+      !target.includes("*") &&
+      !target.includes("\\") &&
+      !target.startsWith("/") &&
+      !target.split("/").includes("..") &&
+      !/^[a-z][a-z0-9+.-]*:/iu.test(target)
+    ) targets.add(target);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectNpmArchiveTargets(item, targets);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) collectNpmArchiveTargets(item, targets);
+  }
+}
+export function validateNpmArchiveEntrypoints(manifest: unknown, members: string[]): void {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail("npm archive manifest must be an object");
+  const packageManifest = manifest as Record<string, unknown>;
+  const targets = new Set<string>();
+  for (const field of ["main", "module", "types", "typings", "bin", "exports"] as const)
+    collectNpmArchiveTargets(packageManifest[field], targets);
+  const normalizedMembers = members.map((member) => member.replace(/^\.\//u, "").replace(/\/$/u, ""));
+  for (const target of targets) {
+    const expected = `package/${target.replace(/\/$/u, "")}`;
+    if (!normalizedMembers.some((member) => member === expected || member.startsWith(`${expected}/`)))
+      fail(`npm archive entrypoint is missing: ${target}`);
+  }
+}
 async function packedArtifact(cwd: string, item: PublishSelection): Promise<PackedArtifact> {
   if (item.id.startsWith("npm:")) {
     if (process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) fail("npm token fallback is forbidden");
@@ -617,6 +651,8 @@ async function packedArtifact(cwd: string, item: PublishSelection): Promise<Pack
     if (sri !== packed.integrity || shasum !== packed.shasum) fail("npm archive digest mismatch");
     const manifest = JSON.parse((await execFile("tar", ["-xOf", path, "package/package.json"])).stdout) as { name?: string; version?: string };
     if (manifest.name !== name || manifest.version !== item.version) fail("npm archive manifest identity mismatch");
+    const members = (await execFile("tar", ["-tf", path])).stdout.split("\n").filter(Boolean);
+    validateNpmArchiveEntrypoints(manifest, members);
     return { path, bytes };
   }
   if (item.id.startsWith("artifact:")) {
