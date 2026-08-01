@@ -661,6 +661,29 @@ describe("production coordinator adapters", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it("surfaces sanitized GitHub API error messages", async () => {
+    const request = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/access_tokens")) return new Response(JSON.stringify({ token: "scoped" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+      return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const key = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const store = new GithubSnapshotStore(
+      "LioRael/lenso-release",
+      new GithubAppTokenProvider(1, key, 2, request as typeof fetch),
+      request as typeof fetch,
+    );
+    await expect(store.readSnapshot())
+      .rejects.toThrow("GitHub API 403: Resource not accessible by integration");
+  });
+
   it("does not require or return a static coordinator token", () => {
     const parsed = parseCoordinatorEnvironment({
       GITHUB_REPOSITORY: "LioRael/lenso-release",
