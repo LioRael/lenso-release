@@ -206,6 +206,27 @@ export function trustedRecoveryRun(
     && mergeBase?.sha === run.head_sha;
 }
 
+export function trustedShadowReceiptRecoveryRun(
+  run: Record<string, unknown>,
+  repository: string,
+  workflow: string,
+  executionRef: string,
+  releaseCommit: string,
+  eventId: string,
+  expectedRunUrl: string,
+): boolean {
+  const runRepository = run.repository as Record<string, unknown> | undefined;
+  return run.event === "workflow_dispatch"
+    && run.path === workflow
+    && run.display_title === `lenso-publish-requested:${eventId}`
+    && runRepository?.full_name === repository
+    && run.head_branch === executionRef
+    && run.head_sha === releaseCommit
+    && run.status === "completed"
+    && run.conclusion === "failure"
+    && run.html_url === expectedRunUrl;
+}
+
 export function trustedFailedRecoveryRun(
   run: Record<string, unknown>,
   jobs: Record<string, unknown>[],
@@ -876,7 +897,16 @@ export async function createCoordinatorHandlers(
           const runUrl = String(workflow.html_url);
           if ((!recoveryRun && runUrl !== expected.workflowUrl) || runUrl !== `https://github.com/${repository}/actions/runs/${runId}`)
             throw new IncompleteEvidenceError("workflow URL does not match the accepted execution");
-          if (workflow.status !== "completed" || workflow.conclusion !== "success")
+          const taggedShadowFailure = recoveryOnly && shadow && trustedShadowReceiptRecoveryRun(
+            workflow,
+            repository,
+            context.workflow,
+            context.executionRef,
+            context.releaseCommit,
+            context.eventId,
+            expected.workflowUrl,
+          );
+          if (!taggedShadowFailure && (workflow.status !== "completed" || workflow.conclusion !== "success"))
             throw new IncompleteEvidenceError("workflow has not completed successfully");
           const subjectName = packageId.startsWith("cargo:")
             ? `${packageName}-${packageVersion}.crate`
