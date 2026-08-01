@@ -79,6 +79,21 @@ export function planStateSha256(state: PlanStateV1): Sha256 {
   return sha256(state as unknown as JsonValue) as Sha256;
 }
 
+function bindDispatchedPackages(
+  packages: PlanStateV1["packages"],
+  selection: PlanDispatchOutbox["packages"],
+  eventId: Sha256,
+): PlanStateV1["packages"] {
+  const selected = new Set(
+    selection.map(({ id, version }) => `${id}\0${version}`),
+  );
+  return packages.map((item) =>
+    selected.has(`${item.id}\0${item.version}`)
+      ? { ...item, status: "dispatched", requestEventId: eventId }
+      : item
+  );
+}
+
 export function assertReleaseStateSnapshot(
   value: ReleaseStateSnapshot,
 ): void {
@@ -927,10 +942,11 @@ export async function supersedeFailedProductionZeroWriteRecovery(
       );
     const result: PlanStateV1 = {
       ...candidate,
-      packages: candidate.packages.map((item) => ({
-        ...item,
-        requestEventId: eventId,
-      })),
+      packages: bindDispatchedPackages(
+        candidate.packages,
+        previous.packages,
+        eventId,
+      ),
       evidence: [
         ...candidate.evidence,
         { kind: "recovery", url: previous.runUrl!, digest: eventId },
@@ -1026,7 +1042,11 @@ export async function supersedeFailedProductionPartialRecovery(
       throw new StateConflictError("plan changed while abandoned recovery was observed");
     const result: PlanStateV1 = {
       ...candidate,
-      packages: candidate.packages.map((item) => ({ ...item, requestEventId: eventId })),
+      packages: bindDispatchedPackages(
+        candidate.packages,
+        previous.packages,
+        eventId,
+      ),
       attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: RETRIED_PRODUCTION_PARTIAL_RECOVERY }],
       outbox: candidate.outbox.map((item) => item.eventId === previous.eventId && abandoned ? { ...item, status: "cancelled" as const, claimOwner: null, leaseExpiresAt: null, updatedAt: at } : item).concat(entry).sort((left, right) => left.eventId.localeCompare(right.eventId)),
       revision: candidate.revision + 1, updatedAt: at,
@@ -1106,7 +1126,11 @@ export async function recoverFailedProductionPartialPlan(
       throw new StateConflictError("plan changed while partial recovery facts were observed");
     const result: PlanStateV1 = {
       ...candidate,
-      packages: candidate.packages.map((item) => ({ ...item, status: "dispatched" as const, requestEventId: eventId })),
+      packages: bindDispatchedPackages(
+        candidate.packages,
+        previous.packages,
+        eventId,
+      ),
       evidence: [...candidate.evidence, { kind: "recovery", url: previous.runUrl, digest: eventId }],
       attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: AUTHORIZED_PRODUCTION_PARTIAL_RECOVERY }],
       outbox: [...candidate.outbox, entry].sort((left, right) => left.eventId.localeCompare(right.eventId)),
@@ -1245,11 +1269,11 @@ export async function recoverFailedProductionZeroWritePlan(
       );
     const result: PlanStateV1 = {
       ...candidate,
-      packages: candidate.packages.map((item) => ({
-        ...item,
-        status: "dispatched" as const,
-        requestEventId: eventId,
-      })),
+      packages: bindDispatchedPackages(
+        candidate.packages,
+        previous.packages,
+        eventId,
+      ),
       evidence: [
         ...candidate.evidence,
         { kind: "recovery", url: failedRunUrl, digest: eventId },
@@ -1359,7 +1383,6 @@ export async function retryFailedShadowPlan(
     const candidate = current.plans[path];
     if (!candidate || candidate.revision !== state.revision)
       throw new StateConflictError("plan changed while retry facts were observed");
-    const selected = new Set(entry.packages.map(({ id, version }) => `${id}\0${version}`));
     const result: PlanStateV1 = {
       ...candidate,
       status: "publishing",
@@ -1367,9 +1390,11 @@ export async function retryFailedShadowPlan(
       evidence: candidate.status === "blocked"
         ? [...candidate.evidence, { kind: "recovery", url: previous.runUrl, digest: eventId }]
         : candidate.evidence,
-      packages: candidate.packages.map((pkg) => selected.has(`${pkg.id}\0${pkg.version}`)
-        ? { ...pkg, requestEventId: eventId }
-        : pkg),
+      packages: bindDispatchedPackages(
+        candidate.packages,
+        entry.packages,
+        eventId,
+      ),
       attempts: [...candidate.attempts, { eventId, kind: "recovery", at, outcome: "accepted", detail: RETRIED_FAILED_SHADOW_PLAN }],
       outbox: [...candidate.outbox, entry].sort((left, right) => left.eventId.localeCompare(right.eventId)),
       revision: candidate.revision + 1,
