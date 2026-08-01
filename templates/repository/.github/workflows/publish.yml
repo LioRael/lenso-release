@@ -309,6 +309,7 @@ jobs:
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           LENSO_WORKFLOW_PATH: .github/workflows/publish.yml
+          LENSO_OCI_TOKEN: ${{ github.token }}
           RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js recover-partial-prepare
       - name: Attest verified recovery archives

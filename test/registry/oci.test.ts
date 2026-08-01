@@ -68,4 +68,34 @@ describe("OCI registry observer", () => {
       .resolves.toMatchObject({ version: "0.2.0", digest: digest(manifest) });
     expect(request).toHaveBeenCalledTimes(4);
   });
+
+  it("exchanges a short-lived basic credential for a repository bearer token", async () => {
+    const credential = { username: "github-actions", password: "github-token" };
+    const basic = `Basic ${Buffer.from(`${credential.username}:${credential.password}`).toString("base64")}`;
+    let manifestAttempts = 0;
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (url.includes("/token?")) {
+        expect(authorization).toBe(basic);
+        return Response.json({ access_token: "repository-token" });
+      }
+      if (url.includes("/manifests/")) {
+        manifestAttempts += 1;
+        if (manifestAttempts === 1) {
+          expect(authorization).toBe(basic);
+          return new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer scope="repository:liorael/lenso-console-service:pull",realm="https://ghcr.io/token",service="ghcr.io"' } });
+        }
+        expect(authorization).toBe("Bearer repository-token");
+        return new Response(null, { status: 404 });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    await expect(observeOciImage("lenso-console-service", "0.2.0", {
+      credential,
+      fetch: request as typeof fetch,
+    })).resolves.toMatchObject({ missing: true });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
 });

@@ -561,7 +561,18 @@ async function releaseAssetObservation(assetName: string, version: string, envir
 async function ociObservation(name: string, version: string, artifact: SealedArtifact, environment: RuntimeEnvironment): Promise<RegistryObservation> {
   if (!artifact.oci) fail("sealed OCI image graph is missing");
   const registry = process.env.LENSO_OCI_REGISTRY_URL ?? "https://ghcr.io";
-  const observed = await observeOciImage(name, version, { registry, repository: artifact.oci.registryRepository });
+  const token = process.env.LENSO_OCI_TOKEN;
+  const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
+  const credential = token
+    ? shadow
+      ? { bearer: token }
+      : { username: process.env.GITHUB_ACTOR ?? "github-actions", password: token }
+    : undefined;
+  const observed = await observeOciImage(name, version, {
+    registry,
+    repository: artifact.oci.registryRepository,
+    credential,
+  });
   if ("missing" in observed) return { exists: false };
   if ("failure" in observed) fail(`OCI registry observation ${observed.failure}: ${observed.detail}`);
   if (observed.digest !== artifact.oci.manifestDigest) fail("OCI registry manifest contradicts the sealed image");
