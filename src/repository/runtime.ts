@@ -79,6 +79,9 @@ type PackedArtifact = { path: string; bytes: Buffer; oci?: OciReleaseArtifact & 
 type SealedArtifact = { path: string; bytes: Buffer; cargoMetadata: JsonValue | null; oci: (OciReleaseArtifact & { archivePath: string }) | null };
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
+function repositoryToken(environment: RuntimeEnvironment): string {
+  return process.env.LENSO_REPOSITORY_TOKEN ?? environment.githubToken;
+}
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
 type CargoArchiveDigestPair = { reviewed: Sha256; registry: Sha256 };
 
@@ -697,7 +700,7 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
     await ensureDraftReleaseAsset(environment, item.version, basename(artifact.path), artifact.bytes, `Lenso Console ${item.version}`);
   } else {
     const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
-    const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+    const headers = { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json" };
     const releaseUrl = `${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${item.version}`)}`;
     let releaseResponse = await fetch(releaseUrl, { headers, redirect: "error" });
     if (releaseResponse.status === 404) {
@@ -714,7 +717,7 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
     const assetName = `${item.id.slice("artifact:".length)}.tar.gz`;
     const upload = async (name: string, bytes: Uint8Array, contentType: string) => fetch(`${uploadBase}?name=${encodeURIComponent(name)}`, {
       method: "POST", redirect: "error",
-      headers: { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": contentType, "content-length": String(bytes.length) },
+      headers: { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": contentType, "content-length": String(bytes.length) },
       body: Buffer.from(bytes),
     });
     const checksum = Buffer.from(`${hash(artifact.bytes).slice("sha256:".length)}  ${assetName}\n`);
@@ -734,7 +737,7 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
 }
 async function ensureDraftReleaseAsset(environment: RuntimeEnvironment, version: string, assetName: string, bytes: Uint8Array, title: string): Promise<void> {
   const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
-  const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+  const headers = { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json" };
   const releaseUrl = `${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`;
   let response = await fetch(releaseUrl, { headers, redirect: "error" });
   if (response.status === 404) response = await fetch(`${api}/repos/${environment.repository}/releases`, { method: "POST", headers, redirect: "error", body: JSON.stringify({ tag_name: `v${version}`, target_commitish: environment.releaseCommit, name: title, draft: true, prerelease: false }) });
@@ -748,7 +751,7 @@ async function ensureDraftReleaseAsset(environment: RuntimeEnvironment, version:
     return;
   }
   const uploadBase = release.upload_url?.replace(/\{.*$/u, ""); if (!uploadBase) fail("draft release upload URL is missing");
-  const uploaded = await fetch(`${uploadBase}?name=${encodeURIComponent(assetName)}`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json", "content-length": String(bytes.length) }, body: Buffer.from(bytes) });
+  const uploaded = await fetch(`${uploadBase}?name=${encodeURIComponent(assetName)}`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json", "content-length": String(bytes.length) }, body: Buffer.from(bytes) });
   if (!uploaded.ok) fail(`draft release asset upload ${uploaded.status}`);
 }
 export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
@@ -1289,7 +1292,7 @@ async function createFixedGroupRelease(
   const identity = { schema: "lenso.fixed-group-receipt.v1", group: group.name, version: group.version, receipts };
   const message = canonicalBytes(identity as unknown as JsonValue).toString("utf8");
   const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
-  const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+  const auth = { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json" };
   const refUrl = `${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`;
   const existing = await fetch(refUrl, { headers: auth, redirect: "error" });
   if (existing.status === 404) {
@@ -1333,7 +1336,7 @@ async function createImmutableTag(receipt: ComponentReceiptV1, environment: Runt
   const name = receipt.packageId.startsWith("npm:@lenso/") ? receipt.packageId.slice("npm:@lenso/".length) : receipt.packageId.slice(receipt.packageId.indexOf(":") + 1);
   const tag = `${name}@${receipt.version}`;
   const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
-  const auth = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json", "content-type": "application/json" };
+  const auth = { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json" };
   const existing = await fetch(`${api}/repos/${environment.repository}/git/ref/tags/${encodeURIComponent(tag)}`, { headers: auth, redirect: "error" });
   if (existing.ok) {
     const body = await existing.json() as { object?: { sha?: string } };

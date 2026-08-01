@@ -114,6 +114,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_PUBLISH_ATTESTATION_URL: ${{ steps.publish-attestation.outputs.attestation-url }}
           CARGO_REGISTRY_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_CARGO_TOKEN || steps.crates-auth.outputs.token }}
           NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}
@@ -204,6 +205,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
@@ -307,6 +309,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           LENSO_WORKFLOW_PATH: .github/workflows/publish.yml
           LENSO_OCI_TOKEN: ${{ github.token }}
@@ -327,6 +330,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           LENSO_WORKFLOW_PATH: .github/workflows/publish.yml
           RUNNER_IMAGE: ubuntu-24.04

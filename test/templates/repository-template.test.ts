@@ -245,6 +245,7 @@ describe("repository template workflow contracts", () => {
     expect(source).toContain("NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}");
     expect(source).toContain("actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373");
     expect(source).toContain("LENSO_PUBLISH_ATTESTATION_URL: ${{ steps.publish-attestation.outputs.attestation-url }}");
+    expect(source).toContain("LENSO_REPOSITORY_TOKEN: ${{ github.token }}");
     expect(source).toContain("fetch-depth: 0");
     expect(source).toContain("owner: ${{ github.repository_owner }}");
     expect(source).toContain("${{ github.event.repository.name }}");
@@ -323,6 +324,7 @@ describe("repository template workflow contracts", () => {
       "LENSO_OCI_TOKEN: ${{ github.token }}",
     );
     expect(trustedPartialRecovery.match(/LENSO_OCI_TOKEN: \$\{\{ github\.token \}\}/gu)).toHaveLength(2);
+    expect(trustedPartialRecovery).toContain("LENSO_REPOSITORY_TOKEN: ${{ github.token }}");
     expect(trustedPartialRecovery).not.toContain("crates-io-auth-action");
     expect(trustedPartialRecovery).not.toContain("CARGO_REGISTRY_TOKEN");
     const partialRecovery = await readFile(
@@ -338,6 +340,7 @@ describe("repository template workflow contracts", () => {
       "pnpm run --if-present release:artifacts",
     );
     expect(partialRecovery.match(/LENSO_OCI_TOKEN: \$\{\{ github\.token \}\}/gu)).toHaveLength(2);
+    expect(partialRecovery).toContain("LENSO_REPOSITORY_TOKEN: ${{ github.token }}");
     for (const match of partialRecovery.matchAll(/uses:\s*([^\s]+)/gu))
       expect(match[1]).toMatch(/@[0-9a-f]{40}$/u);
   });

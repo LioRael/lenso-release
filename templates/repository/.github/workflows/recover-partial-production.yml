@@ -130,6 +130,7 @@ jobs:
           INPUT_NONCE: ${{ inputs.nonce }}
           LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
           LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           LENSO_WORKFLOW_PATH: .github/workflows/recover-partial-production.yml
           RUNNER_IMAGE: ubuntu-24.04
