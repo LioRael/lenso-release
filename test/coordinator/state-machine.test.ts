@@ -28,6 +28,7 @@ import {
   type ReleaseStateSnapshot,
 } from "../../src/coordinator/state.js";
 import { acceptReadyEvent } from "../../src/coordinator/ready.js";
+import { executionRef } from "../../src/publisher/contract.js";
 import { acceptReceiptEvent, recoverLostReceipt } from "../../src/coordinator/receipt.js";
 import { IncompleteEvidenceError } from "../../src/coordinator/receipt.js";
 import { scanActiveOutboxRecovery, scanActiveRecovery } from "../../src/coordinator/production-facts.js";
@@ -181,6 +182,79 @@ describe("atomic coordinator state", () => {
       "cargo:lenso-service",
     ]);
     expect(accepted.state.environment).toBe("production");
+  });
+  it("promotes a verified shadow plan into a fresh production dispatch", async () => {
+    const identity = {
+      schema: "lenso.release-plan.v1" as const,
+      repository: "LioRael/lenso",
+      sourceCommit: "1".repeat(40),
+      tegamiVersion: "1.2.5" as const,
+      publisher: { workflow: ".github/workflows/publish.yml", workflowSha256: digest("b"), sharedRevision: "4".repeat(40), sharedBundleSha256: digest("c"), runner: "ubuntu-24.04", node: "24.0.0", npm: "11.7.0", rust: "1.94.0" },
+      generatedFiles: [{ path: "Cargo.lock", sha256: digest("d") }],
+      packages: [{ id: "cargo:lenso-contracts", previousVersion: "0.9.0", nextVersion: "1.0.0", bump: "major" as const, releaseGroup: "foundation", userFacing: true, dependencies: [] }],
+    };
+    const plan: ReleasePlanV1 = { ...identity, planId: sha256(identity as JsonValue) as Sha256 };
+    const planBytes = Buffer.from(JSON.stringify(plan));
+    const planSha = sha256(planBytes) as Sha256;
+    const releaseCommit = "2".repeat(40);
+    const shadow = state();
+    const shadowReceipt: ComponentReceiptV1 = {
+      schema: "lenso.component-receipt.v1", environment: "shadow", receiptId: digest("9"),
+      planId: plan.planId, packageId: "cargo:lenso-contracts", version: "1.0.0",
+      repository: plan.repository, sourceCommit: releaseCommit, packedSha256: digest("8"),
+      registryIntegrity: digest("8").slice(7), registryUrl: "https://shadow.example/cargo/lenso-contracts/1.0.0",
+      provenanceUrl: "https://shadow.example/attestations/1", provenanceSubject: { name: "lenso-contracts.crate", digest: digest("8") },
+      workflowUrl: "https://github.com/LioRael/lenso/actions/runs/1", tagUrl: "https://shadow.example/tags/1",
+      publishedAt: "2026-07-11T00:01:00Z",
+    };
+    shadow.environment = "shadow";
+    shadow.planId = plan.planId;
+    shadow.planSha256 = planSha;
+    shadow.status = "verified";
+    shadow.packages[0] = { ...shadow.packages[0]!, status: "received", requestEventId: digest("c") };
+    shadow.receipts = [shadowReceipt];
+    shadow.outbox[0] = {
+      ...shadow.outbox[0]!,
+      ref: executionRef(plan.planId),
+      inputs: { ...shadow.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: planSha },
+      status: "dispatched",
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/1",
+    };
+    shadow.occupancyKeys = [];
+    shadow.executionRef = { name: executionRef(plan.planId), tip: releaseCommit, protected: true };
+    const store = new MemoryStore({
+      headSha: "3".repeat(40),
+      plans: { [planStatePath(plan.repository, plan.planId)]: shadow },
+      activeRepositories: {},
+      occupiedPackages: {},
+    });
+    const registry = {
+      schema: "lenso.component-registry.v1" as const,
+      internalPackages: [],
+      packages: { "cargo:lenso-contracts": { id: "cargo:lenso-contracts", repository: plan.repository, registry: "crates-io", releaseGroup: "foundation", userFacing: true, publishable: true, dependencies: [] } },
+    } as ComponentRegistry;
+
+    const promoted = await acceptReadyEvent({
+      schema: "lenso.release-event.v1", eventId: digest("e"), eventType: "lenso-plan-ready",
+      environment: "production", issuedAt: "2026-07-11T01:00:00Z", nonce: "production-ready-nonce",
+      sourceRepository: plan.repository, expectedAppId: 42, planId: plan.planId,
+      planUrl: "https://example.com/plan", planSha256: planSha, releaseCommit,
+    }, {
+      store, registry, environment: "production", appId: 42, expectedActor: "lenso-app[bot]",
+      now: () => new Date("2026-07-11T01:00:00Z"), nonce: () => "production-dispatch-nonce",
+      github: {
+        async readAtReleaseCommit() { return { actor: "lenso-app[bot]", appId: 42, planBytes, plan, planSha256: planSha, sourceCommitRepository: plan.repository, releaseCommitRepository: plan.repository, releaseCommitContainsSourceCommit: true, workflowSha256: plan.publisher.workflowSha256, sharedRevision: plan.publisher.sharedRevision, sharedBundleSha256: plan.publisher.sharedBundleSha256, runner: plan.publisher.runner, node: plan.publisher.node, npm: plan.publisher.npm, rust: plan.publisher.rust, branchProtected: true, generatedFilesValid: true, externalDependenciesVisible: true }; },
+        async ensureExecutionRef(_repository, name) { return { tip: releaseCommit, protected: true as const, name }; },
+      },
+    });
+
+    expect(promoted.state.environment).toBe("production");
+    expect(promoted.state.status).toBe("publishing");
+    expect(promoted.state.receipts).toEqual([]);
+    expect(promoted.state.outbox).toHaveLength(2);
+    expect(promoted.state.evidence).toContainEqual({ kind: "shadow-receipt", url: shadowReceipt.provenanceUrl, digest: shadowReceipt.receiptId });
+    expect(promoted.state.packages[0]!.status).toBe("dispatched");
+    expect(store.snapshot.activeRepositories[plan.repository]).toBe(plan.planId);
   });
   it("rejects a ready event whose reviewed release mode differs", async () => {
     const value = state();

@@ -152,6 +152,12 @@ Change release mode only in the repositories named by the approval. Verify the
 variables after the change. Production mode uses public npm, crates.io, GitHub, and
 attestation endpoints; it must not receive shadow tokens.
 
+After both modes are verified as `production`, rerun the repository's normal
+reviewed plan builder for the exact release commit. The coordinator promotes the
+verified shadow plan into a fresh production dispatch while retaining its shadow
+receipt and workflow evidence. Do not regenerate versions or manually dispatch the
+publisher to work around an already verified shadow plan.
+
 ## First publication of a new npm package
 
 npm trusted publishing may require a package to exist before its trusted publisher

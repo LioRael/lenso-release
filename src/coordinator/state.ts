@@ -36,6 +36,8 @@ export const RETRIED_AUTHORIZED_PRODUCTION_BREAK_GLASS_RECOVERY =
   "retried authorized production break-glass recovery";
 export const RECOVERED_SHADOW_MODE_MISMATCH =
   "recovered shadow publisher mode mismatch";
+export const PROMOTED_VERIFIED_SHADOW_PLAN =
+  "promoted verified shadow plan to production";
 
 export function isRetiredPlan(state: PlanStateV1): boolean {
   return state.status === "blocked" && (
@@ -414,6 +416,15 @@ export function assertLegalTransition(
   assertPlanState(previous);
   assertPlanState(next);
   const appendedAttempts = next.attempts.slice(previous.attempts.length);
+  const productionPromotion = appendedAttempts.find(({ kind, outcome, detail }) =>
+    kind === "ready" && outcome === "accepted" &&
+    detail === PROMOTED_VERIFIED_SHADOW_PLAN
+  );
+  const verifiedShadowPromotion = Boolean(
+    productionPromotion && previous.environment === "shadow" &&
+      next.environment === "production" && previous.status === "verified" &&
+      next.status === "publishing",
+  );
   const modeMismatchRecovery = appendedAttempts.find(({ kind, outcome, detail }) =>
     kind === "recovery" && outcome === "accepted" && detail === RECOVERED_SHADOW_MODE_MISMATCH
   );
@@ -423,7 +434,7 @@ export function assertLegalTransition(
       previous.environment === "production" && next.environment === "shadow" &&
       modeMismatchRecovery && previous.status === "publishing" && next.status === "publishing" &&
       previous.receipts.length === 0 && next.receipts.length === 0
-    )
+    ) && !verifiedShadowPromotion
   ) throw new TypeError("immutable environment rewrite");
   for (const field of [
     "repository",
@@ -449,9 +460,9 @@ export function assertLegalTransition(
     )
   )
     throw new TypeError("immutable package plan rewrite");
-  if (previous.status === "verified" && next.status !== "verified")
+  if (previous.status === "verified" && next.status !== "verified" && !verifiedShadowPromotion)
     throw new TypeError("verified is terminal");
-  if (previous.status === "verified" && JSON.stringify(previous) !== JSON.stringify(next))
+  if (previous.status === "verified" && JSON.stringify(previous) !== JSON.stringify(next) && !verifiedShadowPromotion)
     throw new TypeError("verified state is immutable");
   if (
     isRetiredPlan(previous) &&
@@ -481,10 +492,11 @@ export function assertLegalTransition(
   for (let index = 0; index < previous.packages.length; index += 1) {
     const before = previous.packages[index]!;
     const after = next.packages[index]!;
-    if (statusRank[after.status] < statusRank[before.status])
+    if (statusRank[after.status] < statusRank[before.status] && !verifiedShadowPromotion)
       throw new TypeError("package status regression");
     if (
       before.requestEventId !== null && before.requestEventId !== after.requestEventId &&
+      !verifiedShadowPromotion &&
       (!retryOutbox || after.requestEventId !== retryOutbox.eventId ||
         !retryOutbox.packages.some(({ id, version }) => id === after.id && version === after.version)) &&
       (!breakGlassAttempt ||
@@ -507,8 +519,8 @@ export function assertLegalTransition(
   }
   const nextReceipts = new Set(next.receipts.map((receipt) => JSON.stringify(receipt)));
   if (
-    next.receipts.length < previous.receipts.length ||
-    previous.receipts.some((receipt) => !nextReceipts.has(JSON.stringify(receipt))) ||
+    (!verifiedShadowPromotion && next.receipts.length < previous.receipts.length) ||
+    (!verifiedShadowPromotion && previous.receipts.some((receipt) => !nextReceipts.has(JSON.stringify(receipt)))) ||
     JSON.stringify(next.attempts.slice(0, previous.attempts.length)) !==
       JSON.stringify(previous.attempts) ||
     JSON.stringify(next.evidence.slice(0, previous.evidence.length)) !==
@@ -543,7 +555,8 @@ export function assertLegalTransition(
       ["verified", "blocked"].includes(next.status)) ||
     (previous.status === "blocked" &&
       ["publishing", "verified"].includes(next.status) &&
-      next.evidence.some(({ kind }) => kind === "recovery"));
+      next.evidence.some(({ kind }) => kind === "recovery")) ||
+    verifiedShadowPromotion;
   if (!legal)
     throw new TypeError(
       `illegal state transition ${previous.status}->${next.status}`,

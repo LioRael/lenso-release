@@ -16,8 +16,10 @@ import { topologicalPhases } from "../core/dag.js";
 import { executionRef } from "../publisher/contract.js";
 import { newlyReadyPackages, outboxEntry } from "./dispatch.js";
 import {
+  assertLegalTransition,
   normalizeRepository,
   planStatePath,
+  PROMOTED_VERIFIED_SHADOW_PLAN,
   StateConflictError,
   transact,
   type GitStateStore,
@@ -173,7 +175,83 @@ export async function acceptReadyEvent(
   const committed = await transact(deps.store, (snapshot) => {
     const duplicate = snapshot.plans[path];
     if (duplicate) {
-      result = duplicate;
+      if (duplicate.environment === deps.environment) {
+        result = duplicate;
+        return snapshot;
+      }
+      if (
+        duplicate.environment !== "shadow" || deps.environment !== "production" ||
+        duplicate.status !== "verified" ||
+        duplicate.receipts.length !== duplicate.packages.length
+      ) throw new StateConflictError("existing plan cannot be promoted to production");
+      const packages = packagesFor(plan, deps.registry);
+      const immutablePackages = (items: PlanStatePackage[]) => items.map(
+        ({ id, version, registryPath, phase }) => ({ id, version, registryPath, phase }),
+      );
+      if (
+        JSON.stringify(immutablePackages(packages)) !==
+        JSON.stringify(immutablePackages(duplicate.packages))
+      ) throw new StateConflictError("shadow proof package shape mismatch");
+      const now = deps.now().toISOString();
+      const ready = newlyReadyPackages(packages);
+      const entry = outboxEntry(
+        plan,
+        value.planSha256 as Sha256,
+        value.releaseCommit,
+        ready,
+        now,
+        deps.nonce(),
+        deps.appId,
+      );
+      const ids = new Set(ready.map(({ id }) => id));
+      result = {
+        ...duplicate,
+        environment: "production",
+        status: "publishing",
+        reason: null,
+        evidence: [
+          ...duplicate.evidence,
+          ...duplicate.receipts.map((receipt) => ({
+            kind: "shadow-receipt",
+            url: receipt.provenanceUrl,
+            digest: receipt.receiptId,
+          })),
+          ...duplicate.outbox
+            .filter(({ runUrl }) => runUrl !== null)
+            .map(({ eventId, runUrl }) => ({
+              kind: "shadow-dispatch",
+              url: runUrl,
+              digest: eventId,
+            })),
+        ],
+        packages: packages.map((item) => ids.has(item.id)
+          ? { ...item, status: "dispatched", requestEventId: entry.eventId }
+          : item),
+        receipts: [],
+        attempts: [
+          ...duplicate.attempts,
+          {
+            eventId: value.eventId,
+            kind: "ready",
+            at: now,
+            outcome: "accepted",
+            detail: PROMOTED_VERIFIED_SHADOW_PLAN,
+          },
+        ],
+        outbox: [...duplicate.outbox, entry]
+          .sort((left, right) => left.eventId.localeCompare(right.eventId)),
+        occupancyKeys: [
+          `plan:${plan.repository}:${plan.planId}`,
+          ...packages.map(({ id, version }) => `package:${id}:${version}`),
+        ].sort(),
+        revision: duplicate.revision + 1,
+        updatedAt: now,
+      };
+      assertLegalTransition(duplicate, result);
+      snapshot.activeRepositories[plan.repository] = plan.planId;
+      for (const { id, version } of packages)
+        snapshot.occupiedPackages[`package:${id}:${version}`] = plan.planId;
+      snapshot.plans[path] = result;
       return snapshot;
     }
     if (
