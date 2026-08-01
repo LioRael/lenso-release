@@ -229,7 +229,9 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-contracts",
     "cargo:lenso-module-management",
     "cargo:lenso-platform-core",
-    "cargo:lenso-platform-http"
+    "cargo:lenso-platform-http",
+    "cargo:lenso-platform-system-plane",
+    "cargo:lenso-service"
   ],
   "cargo:lenso-platform-provider": [
     "cargo:lenso-module-management",

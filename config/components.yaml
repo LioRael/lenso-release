@@ -71,6 +71,8 @@ packages:
       - cargo:lenso-module-management
       - cargo:lenso-platform-core
       - cargo:lenso-platform-http
+      - cargo:lenso-platform-system-plane
+      - cargo:lenso-service
   - id: cargo:lenso-platform-provider
     repository: LioRael/lenso
     registry: crates-io
