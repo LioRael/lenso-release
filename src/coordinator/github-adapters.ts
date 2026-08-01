@@ -25,8 +25,12 @@ function encode(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 async function json(response: Response): Promise<Record<string, unknown>> {
-  if (!response.ok) throw new Error(`GitHub API ${response.status}`);
-  return (await response.json()) as Record<string, unknown>;
+  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    const message = typeof body.message === "string" ? body.message : "request rejected";
+    throw new Error(`GitHub API ${response.status}: ${message}`);
+  }
+  return body;
 }
 
 export class GithubAppTokenProvider implements AppTokenProvider {
