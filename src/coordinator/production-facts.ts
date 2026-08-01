@@ -1778,8 +1778,9 @@ export async function createCoordinatorHandlers(
           { repository, workflow: entry.workflow, ref: entry.ref, sha: entry.recovery?.workflowCommit ?? state.releaseCommit },
           entry.eventId, token,
         );
+      const activeSlice = JSON.stringify(state.packages.filter(({ status }) => status === "dispatched").map(({ id, version }) => `${id}\0${version}`).sort());
       const existing = state.outbox
-        .filter(({ recovery }) => recovery?.kind === "production-partial")
+        .filter(({ recovery, packages }) => recovery?.kind === "production-partial" && JSON.stringify(packages.map(({ id, version }) => `${id}\0${version}`).sort()) === activeSlice)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       if (existing && !["pending", "in-flight"].includes(existing.status)) {
         await supersedeFailedProductionPartialRecovery(
@@ -1863,8 +1864,9 @@ export async function createCoordinatorHandlers(
         throw new Error(
           "production zero-write failure proof is not exact and successful",
         );
+      const activeSlice = JSON.stringify(state.packages.filter(({ status }) => status === "dispatched").map(({ id, version }) => `${id}\0${version}`).sort());
       const recover = state.outbox.some(
-        ({ recovery }) => recovery?.kind === "production-zero-write",
+        ({ recovery, packages }) => recovery?.kind === "production-zero-write" && JSON.stringify(packages.map(({ id, version }) => `${id}\0${version}`).sort()) === activeSlice,
       )
         ? supersedeFailedProductionZeroWriteRecovery
         : recoverFailedProductionZeroWritePlan;

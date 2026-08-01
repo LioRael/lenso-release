@@ -1306,6 +1306,18 @@ describe("atomic coordinator state", () => {
       url: "https://github.com/LioRael/lenso/actions/runs/43",
     });
   });
+  it("recovers a zero-write active slice after an earlier phase was received", async () => {
+    const failed = state(); failed.environment = "production";
+    const active = failed.outbox[0]!; active.status = "dispatched"; active.runUrl = "https://github.com/LioRael/lenso/actions/runs/42"; failed.packages[0]!.phase = 1;
+    const priorEventId = digest("d");
+    failed.packages.push({ id: "cargo:lenso-service", version: "0.9.0", registryPath: null, phase: 0, status: "received", requestEventId: priorEventId });
+    failed.receipts = [{ schema: "lenso.component-receipt.v1", environment: "production", receiptId: digest("e"), planId: failed.planId, packageId: "cargo:lenso-service", version: "0.9.0", repository: failed.repository, sourceCommit: failed.releaseCommit, packedSha256: digest("f"), registryIntegrity: "f".repeat(64), registryUrl: "https://crates.io/api/v1/crates/lenso-service/0.9.0/download", provenanceUrl: "https://github.com/LioRael/lenso/attestations/1", provenanceSubject: { name: "lenso-service-0.9.0.crate", digest: digest("f") }, workflowUrl: "https://github.com/LioRael/lenso/actions/runs/41", tagUrl: "https://github.com/LioRael/lenso/releases/tag/lenso-service%400.9.0", publishedAt: "2026-07-11T00:01:00Z" }];
+    failed.outbox.push({ ...active, eventId: priorEventId, nonce: "prior", packages: [{ id: "cargo:lenso-service", version: "0.9.0" }], inputs: { ...active.inputs, event_id: priorEventId, packages_json: JSON.stringify([{ id: "cargo:lenso-service", version: "0.9.0" }]), nonce: "prior" }, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/41", recovery: { kind: "production-partial", failedRunUrl: "https://github.com/LioRael/lenso/actions/runs/40", workflowCommit: "8".repeat(40), publishedPackages: [{ id: "cargo:lenso-service", version: "0.9.0" }] } });
+    const recovered = await recoverFailedProductionZeroWritePlan(new MemoryStore(snapshot(failed)), failed.repository, failed.planId, active.runUrl!, "https://github.com/LioRael/lenso/actions/runs/43", "production", { async observeRun() { return { runUrl: active.runUrl!, status: "completed", conclusion: "failure" }; } }, "main", "9".repeat(40), new Date("2026-07-11T00:02:00Z"), () => "phase-recovery", 42);
+    expect(recovered.state.receipts).toEqual(failed.receipts);
+    expect(recovered.state.outbox.filter(({ recovery }) => recovery?.kind === "production-zero-write")).toHaveLength(1);
+    expect(recovered.state.packages.find(({ version }) => version === "0.9.0")?.status).toBe("received");
+  });
   it("supersedes a conclusively failed zero-write recovery at a new workflow commit", async () => {
     const failed = state();
     failed.environment = "production";
