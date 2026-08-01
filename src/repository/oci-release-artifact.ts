@@ -18,6 +18,11 @@ export type OciReleaseArtifact = {
   blobs: ReadonlyMap<Sha256, Buffer>;
 };
 
+export type OciInstallManifest = {
+  manifestDigest: Sha256;
+  registryRepository: string;
+};
+
 function fail(message: string): never { throw new Error(`OCI release artifact: ${message}`); }
 function digest(bytes: Uint8Array): Sha256 { return `sha256:${createHash("sha256").update(bytes).digest("hex")}` as Sha256; }
 function object(value: unknown, label: string): JsonObject {
@@ -68,6 +73,29 @@ function descriptor(value: unknown, label: string): { mediaType: string; digest:
   return { mediaType: raw.mediaType, digest: raw.digest as Sha256, size: Number(raw.size) };
 }
 
+export function inspectOciInstallManifest(input: {
+  installManifestBytes: Buffer;
+  registryRepository: string;
+  sourceCommit: string;
+  version: string;
+}): OciInstallManifest {
+  if (!REPOSITORY.test(input.registryRepository) || input.registryRepository.includes("..")) fail("registry repository is invalid");
+  if (!/^[0-9a-f]{40}$/u.test(input.sourceCommit) || !/^\d+\.\d+\.\d+$/u.test(input.version)) fail("release identity is invalid");
+  const install = json(input.installManifestBytes, "Console install manifest");
+  const image = object(install.image, "Console install manifest image");
+  const manifestDigest = image.digest;
+  if (
+    install.schema !== "lenso.console-service-release.v1" ||
+    install.releaseId !== `lenso-console@${input.version}` ||
+    install.version !== input.version ||
+    install.sourceCommit !== input.sourceCommit ||
+    typeof manifestDigest !== "string" ||
+    !DIGEST.test(manifestDigest) ||
+    image.reference !== `ghcr.io/${input.registryRepository}@${manifestDigest}`
+  ) fail("Console install manifest does not bind the OCI image");
+  return { manifestDigest: manifestDigest as Sha256, registryRepository: input.registryRepository };
+}
+
 export function inspectOciReleaseArtifact(input: {
   archiveBytes: Buffer;
   installManifestBytes: Buffer;
@@ -105,8 +133,7 @@ export function inspectOciReleaseArtifact(input: {
   const labels = object(object(config.config, "image config.config").Labels, "image config labels");
   if (labels["org.opencontainers.image.version"] !== input.version || labels["org.opencontainers.image.revision"] !== input.sourceCommit) fail("image config does not bind the release identity");
   if (typeof config.created !== "string" || !Number.isFinite(Date.parse(config.created))) fail("image config creation time is invalid");
-  const install = json(input.installManifestBytes, "Console install manifest");
-  const image = object(install.image, "Console install manifest image");
-  if (install.schema !== "lenso.console-service-release.v1" || install.releaseId !== `lenso-console@${input.version}` || install.version !== input.version || install.sourceCommit !== input.sourceCommit || image.digest !== root.digest || image.reference !== `ghcr.io/${input.registryRepository}@${root.digest}`) fail("Console install manifest does not bind the OCI image");
+  const install = inspectOciInstallManifest(input);
+  if (install.manifestDigest !== root.digest) fail("Console install manifest does not bind the OCI image");
   return { archiveBytes: input.archiveBytes, installManifestBytes: input.installManifestBytes, manifestBytes, manifestDigest: root.digest, publishedAt: config.created, registryRepository: input.registryRepository, blobs };
 }

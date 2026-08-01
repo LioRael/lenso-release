@@ -46,9 +46,11 @@ Generated build output is written to `dist/` and is not committed.
 
 For an explicitly approved production break-glass publication, the reviewed
 recovery path first records exact workflow and registry evidence in release-state.
-The component repository then rebuilds and compares the already-public artifacts,
-creates attestations and receipt tags, and submits the missing receipts without
-requesting registry credentials or uploading immutable versions.
+The component repository then verifies already-public artifacts against their
+reviewed bytes. For a published OCI image, it binds the draft install manifest to
+the public manifest digest and image revision instead of relying on a later image
+rebuild. It creates attestations and receipt tags, and submits the missing
+receipts without requesting registry credentials or uploading immutable versions.
 
 The schemas in [`schemas/`](schemas/) are the public wire contracts for release events, plans, state, receipts, reconciliation, framework locks, candidates, channels, and releases. [`config/components.yaml`](config/components.yaml) is the reviewed component catalog.
 

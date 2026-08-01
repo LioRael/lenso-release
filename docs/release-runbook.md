@@ -242,9 +242,13 @@ atomic mixed package set without emitting receipts, use the reviewed
    an already recorded pending or in-flight outbox entry instead of minting a new
    authorization; this covers temporary release-state read-after-write lag.
 4. The component resolves the authoritative failed publisher, re-downloads its
-   release artifacts where required, checks out the reviewed release commit,
-   rebuilds every package, and matches existing registry bytes before creating
-   an official GitHub provenance attestation.
+   release artifacts where required, and checks out the reviewed release commit.
+   It rebuilds packages whose archive is the registry payload and matches those
+   bytes exactly. For an already-published OCI image, it instead validates the
+   reviewed draft install manifest, its release-commit anchor, the public image
+   manifest digest, and the image config revision; a later container rebuild is
+   not accepted as evidence for the immutable image. It then creates an official
+   GitHub provenance attestation over the verified recovery subjects.
 5. The component publishes only versions still absent from the registry and
    submits receipts for both the pre-existing and newly published artifacts. If
    every version already exists, recovery performs byte verification and receipt

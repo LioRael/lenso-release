@@ -10,6 +10,7 @@ export type OciObserverOptions = RegistryObserverOptions & {
   repository?: string;
   canonicalUrl?: string;
   credential?: { bearer: string } | { username: string; password: string };
+  sourceCommit?: string;
 };
 
 const object = (value: unknown): JsonObject | undefined =>
@@ -110,8 +111,13 @@ export async function observeOciImage(
     catch { return { failure: "schema", detail: "OCI registry returned an invalid image config" }; }
     const labels = object(object(imageConfig?.config)?.Labels);
     const created = imageConfig?.created;
-    if (labels?.["org.opencontainers.image.version"] !== version || typeof created !== "string" || !isRfc3339(created))
-      return { failure: "schema", detail: "OCI image config did not bind the requested version and creation time" };
+    if (
+      labels?.["org.opencontainers.image.version"] !== version ||
+      (options.sourceCommit !== undefined && labels?.["org.opencontainers.image.revision"] !== options.sourceCommit) ||
+      typeof created !== "string" ||
+      !isRfc3339(created)
+    )
+      return { failure: "schema", detail: "OCI image config did not bind the requested release identity and creation time" };
     return { version, digest: manifestDigest, publishedAt: created, canonicalUrl };
   } finally { clearTimeout(timeout); }
 }

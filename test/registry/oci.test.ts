@@ -10,7 +10,7 @@ describe("OCI registry observer", () => {
   it("binds a version tag to exact manifest and config bytes", async () => {
     const config = Buffer.from(JSON.stringify({
       created: "2026-07-30T08:00:00Z",
-      config: { Labels: { "org.opencontainers.image.version": "0.2.0" } },
+      config: { Labels: { "org.opencontainers.image.version": "0.2.0", "org.opencontainers.image.revision": "a".repeat(40) } },
     }));
     const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: digest(config), size: config.length }, layers: [] }));
     const request = vi.fn(async (input: string | URL | Request) => String(input).includes("/manifests/")
@@ -20,6 +20,7 @@ describe("OCI registry observer", () => {
       registry: "https://shadow.example/oci",
       repository: "liorael/lenso-console-service",
       canonicalUrl: "https://console.example/0.2.0",
+      sourceCommit: "a".repeat(40),
       fetch: request as typeof fetch,
     })).resolves.toEqual({ version: "0.2.0", digest: digest(manifest), publishedAt: "2026-07-30T08:00:00Z", canonicalUrl: "https://console.example/0.2.0" });
     expect(request).toHaveBeenCalledTimes(2);
@@ -36,7 +37,20 @@ describe("OCI registry observer", () => {
       .resolves.toMatchObject({ failure: "schema" });
     const noHeader = async (input: string | URL | Request) => String(input).includes("/manifests/") ? new Response(manifest) : new Response(config);
     await expect(observeOciImage("lenso-console-service", "0.2.0", { fetch: noHeader as typeof globalThis.fetch }))
-      .resolves.toEqual({ failure: "schema", detail: "OCI image config did not bind the requested version and creation time" });
+      .resolves.toEqual({ failure: "schema", detail: "OCI image config did not bind the requested release identity and creation time" });
+  });
+
+  it("fails closed when the image revision contradicts the release commit", async () => {
+    const config = Buffer.from(JSON.stringify({
+      created: "2026-07-30T08:00:00Z",
+      config: { Labels: { "org.opencontainers.image.version": "0.2.0", "org.opencontainers.image.revision": "b".repeat(40) } },
+    }));
+    const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: digest(config) }, layers: [] }));
+    const request = async (input: string | URL | Request) => String(input).includes("/manifests/") ? new Response(manifest) : new Response(config);
+    await expect(observeOciImage("lenso-console-service", "0.2.0", {
+      fetch: request as typeof fetch,
+      sourceCommit: "a".repeat(40),
+    })).resolves.toEqual({ failure: "schema", detail: "OCI image config did not bind the requested release identity and creation time" });
   });
 
   it("distinguishes absence, transport failure, and timeout", async () => {

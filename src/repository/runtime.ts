@@ -19,7 +19,7 @@ import {
 } from "../publisher/contract.js";
 import { exportReleasePlan } from "../tegami/export-plan.js";
 import type { AuthorizedArtifact, PublishAuthorization } from "../publisher/preflight-authority.js";
-import { inspectOciReleaseArtifact, type OciReleaseArtifact } from "./oci-release-artifact.js";
+import { inspectOciInstallManifest, inspectOciReleaseArtifact, type OciReleaseArtifact } from "./oci-release-artifact.js";
 import { publishOciImage } from "./oci-registry-publisher.js";
 import { observeOciImage } from "../registry/oci.js";
 
@@ -75,8 +75,9 @@ type PreflightProof = {
   token: string;
 };
 type SealedMarker = { schema: "lenso.publisher-sealed-marker.v1"; authorization: PublishAuthorization; signature: string };
-type PackedArtifact = { path: string; bytes: Buffer; oci?: OciReleaseArtifact & { archivePath: string } };
-type SealedArtifact = { path: string; bytes: Buffer; cargoMetadata: JsonValue | null; oci: (OciReleaseArtifact & { archivePath: string }) | null };
+type OciArtifact = OciReleaseArtifact & { archivePath: string; recoveryPublished?: true };
+type PackedArtifact = { path: string; bytes: Buffer; oci?: OciArtifact };
+type SealedArtifact = { path: string; bytes: Buffer; cargoMetadata: JsonValue | null; oci: OciArtifact | null };
 
 function fail(message: string): never { throw new Error(`repository runtime: ${message}`); }
 function repositoryToken(environment: RuntimeEnvironment): string {
@@ -548,13 +549,41 @@ async function artifactObservation(name: string, version: string, environment: R
   if (Buffer.from(await checksum.arrayBuffer()).toString("utf8") !== expectedChecksum) fail("hosted artifact checksum contradicts archive");
   return { exists: true, bytes, integrity: hash(bytes), url: asset.browser_download_url, publishedAt: body.created_at };
 }
+type ObservedDraftRelease = {
+  draft?: boolean;
+  tag_name?: string;
+  target_commitish?: string;
+  assets?: Array<{ name?: string; url?: string; browser_download_url?: string }>;
+};
+export async function draftReleaseObservation(version: string, environment: RuntimeEnvironment): Promise<ObservedDraftRelease | null> {
+  const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com";
+  const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
+  const tag = `v${version}`;
+  const tagged = await fetch(`${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(tag)}`, { headers, redirect: "error" });
+  let release: ObservedDraftRelease | null = null;
+  if (tagged.ok) release = await tagged.json() as ObservedDraftRelease;
+  else if (tagged.status !== 404) fail(`release asset observation ${tagged.status}`);
+  if (!release) {
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await fetch(`${api}/repos/${environment.repository}/releases?per_page=100&page=${page}`, { headers, redirect: "error" });
+      if (!response.ok) fail(`release list observation ${response.status}`);
+      const value: unknown = await response.json();
+      if (!Array.isArray(value)) fail("release list observation is invalid");
+      const matches = value.filter((item) => item && typeof item === "object" && !Array.isArray(item) && (item as ObservedDraftRelease).tag_name === tag) as ObservedDraftRelease[];
+      if (matches.length > 1 || (release && matches.length > 0)) fail("release tag observation is ambiguous");
+      if (matches.length === 1) release = matches[0]!;
+      if (release || value.length < 100) break;
+    }
+  }
+  if (!release) return null;
+  if (release.draft !== true || release.tag_name !== tag || release.target_commitish !== environment.releaseCommit)
+    fail("release asset must remain in the reviewed draft at the release commit");
+  return release;
+}
 async function releaseAssetObservation(assetName: string, version: string, environment: RuntimeEnvironment): Promise<{ exists: false } | { exists: true; bytes: Buffer; url: string }> {
   const api = process.env.LENSO_GITHUB_API_URL ?? "https://api.github.com"; const headers = { authorization: `Bearer ${environment.githubToken}`, accept: "application/vnd.github+json" };
-  const response = await fetch(`${api}/repos/${environment.repository}/releases/tags/${encodeURIComponent(`v${version}`)}`, { headers, redirect: "error" });
-  if (response.status === 404) return { exists: false };
-  if (!response.ok) fail(`release asset observation ${response.status}`);
-  const release = await response.json() as { draft?: boolean; assets?: Array<{ name?: string; url?: string; browser_download_url?: string }> };
-  if (release.draft !== true) fail("release asset must remain in the reviewed draft");
+  const release = await draftReleaseObservation(version, environment);
+  if (!release) return { exists: false };
   const asset = release.assets?.find(({ name }) => name === assetName); if (!asset) return { exists: false };
   if (!asset.url || !asset.browser_download_url) fail("release asset metadata is incomplete");
   const download = await fetch(asset.url, { headers: { ...headers, accept: "application/octet-stream" }, redirect: "error" });
@@ -575,6 +604,7 @@ async function ociObservation(name: string, version: string, artifact: SealedArt
     registry,
     repository: artifact.oci.registryRepository,
     credential,
+    sourceCommit: environment.releaseCommit,
   });
   if ("missing" in observed) return { exists: false };
   if ("failure" in observed) fail(`OCI registry observation ${observed.failure}: ${observed.detail}`);
@@ -1032,6 +1062,57 @@ async function recoveryPlan(
   return { candidateEnvironment, plan: candidatePlan };
 }
 
+async function publishedOciRecoveryArtifact(
+  environment: RuntimeEnvironment,
+  item: PublishSelection,
+): Promise<PackedArtifact> {
+  const config = parseJson<RepositoryConfig>(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
+  const image = config.ociImages?.[item.id];
+  if (!image) fail(`OCI image configuration is missing: ${item.id}`);
+  safeRelative(image.archivePath); safeRelative(image.installManifestPath);
+  const manifest = await releaseAssetObservation(basename(image.installManifestPath), item.version, environment);
+  if (!manifest.exists) fail(`published OCI install manifest is missing: ${item.id}`);
+  const inspected = inspectOciInstallManifest({
+    installManifestBytes: manifest.bytes,
+    registryRepository: image.registryRepository,
+    sourceCommit: environment.releaseCommit,
+    version: item.version,
+  });
+  const name = item.id.slice("oci:".length);
+  const registry = process.env.LENSO_OCI_REGISTRY_URL ?? "https://ghcr.io";
+  const token = process.env.LENSO_OCI_TOKEN;
+  const shadow = process.env.LENSO_RELEASE_MODE === "shadow";
+  const credential = token
+    ? shadow
+      ? { bearer: token }
+      : { username: process.env.GITHUB_ACTOR ?? "github-actions", password: token }
+    : undefined;
+  const observed = await observeOciImage(name, item.version, {
+    registry,
+    repository: image.registryRepository,
+    credential,
+    sourceCommit: environment.releaseCommit,
+  });
+  if ("missing" in observed) fail(`published OCI image is missing: ${item.id}`);
+  if ("failure" in observed) fail(`OCI registry observation ${observed.failure}: ${observed.detail}`);
+  if (observed.digest !== inspected.manifestDigest) fail("published OCI image contradicts the reviewed install manifest");
+  return {
+    path: join(environment.cwd, image.installManifestPath),
+    bytes: manifest.bytes,
+    oci: {
+      archiveBytes: Buffer.alloc(0),
+      archivePath: join(environment.cwd, image.archivePath),
+      blobs: new Map(),
+      installManifestBytes: manifest.bytes,
+      manifestBytes: Buffer.alloc(0),
+      manifestDigest: inspected.manifestDigest,
+      publishedAt: observed.publishedAt,
+      recoveryPublished: true,
+      registryRepository: image.registryRepository,
+    },
+  };
+}
+
 async function partialRecoveryArtifacts(
   environment: RuntimeEnvironment,
   plan: ReleasePlanV1,
@@ -1050,7 +1131,10 @@ async function partialRecoveryArtifacts(
       !item.id.startsWith("oci:")
     )
       fail("publication recovery supports Cargo, npm, and OCI packages only");
-    const artifact = await packedArtifact(environment.cwd, item);
+    const expectedPublished = published.has(`${item.id}\0${item.version}`);
+    const artifact = expectedPublished && item.id.startsWith("oci:")
+      ? await publishedOciRecoveryArtifact(environment, item)
+      : await packedArtifact(environment.cwd, item);
     const name = item.id.slice(item.id.indexOf(":") + 1);
     const observed = item.id.startsWith("cargo:")
       ? await cargoObservation(name, item.version)
@@ -1062,7 +1146,6 @@ async function partialRecoveryArtifacts(
           cargoMetadata: null,
           oci: artifact.oci ?? null,
         }, environment);
-    const expectedPublished = published.has(`${item.id}\0${item.version}`);
     if (observed.exists !== expectedPublished)
       fail(`registry state changed after partial recovery authorization: ${item.id}`);
     let subjectBytes = artifact.bytes;
@@ -1149,6 +1232,7 @@ export async function recoverPartialPublished(environment: RuntimeEnvironment): 
       }
     }
     if (!observed.exists) {
+      if (artifact.oci?.recoveryPublished) fail(`published OCI image disappeared during recovery: ${item.id}`);
       await publishOnce(environment, item, artifact);
       observed = await observeAfterPublication(observe);
     }
