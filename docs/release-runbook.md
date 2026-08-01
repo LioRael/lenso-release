@@ -254,16 +254,18 @@ atomic mixed package set without emitting receipts, use the reviewed
    receipts, and independently observes a non-empty set of the planned versions
    in public registries. The set may contain every planned version when registry
    propagation completed after the publisher's visibility window expired.
-2. Recovery is allowed only when every Cargo package already exists. A missing
-   Cargo version fails closed because crates.io trusted publishing is reserved
-   for the normal reviewed publisher.
+2. A missing Cargo version is allowed only when the crate itself already exists.
+   The component recovery obtains a short-lived crates.io OIDC credential and
+   publishes only that reviewed missing version. A first Cargo publication still
+   fails closed and must use the reviewed bootstrap policy through zero-write
+   recovery.
 3. The coordinator records a one-use recovery authorization and dispatches the
    component's reviewed `publish.yml` from the current default-branch commit.
    The normal `publish` job remains restricted to the protected execution ref;
-   the partial recovery job runs only on the default branch for a package set
-   containing npm or OCI artifacts. Replaying the authorization workflow resumes
-   an already recorded pending or in-flight outbox entry instead of minting a new
-   authorization; this covers temporary release-state read-after-write lag.
+   the recovery job runs only on the default branch. Replaying the authorization
+   workflow resumes an already recorded pending or in-flight outbox entry instead
+   of minting a new authorization; this covers temporary release-state
+   read-after-write lag.
 4. The component resolves the authoritative failed publisher, re-downloads its
    release artifacts where required, and checks out the reviewed release commit.
    It rebuilds packages whose archive is the registry payload and matches those
@@ -276,7 +278,8 @@ atomic mixed package set without emitting receipts, use the reviewed
    submits receipts for both the pre-existing and newly published artifacts. If
    every version already exists, recovery performs byte verification and receipt
    submission without requesting a registry credential or uploading a package.
-   It never requests a Cargo credential or overwrites an immutable version.
+   It requests a short-lived Cargo OIDC credential only when the selected set
+   contains Cargo packages and never overwrites an immutable version.
    If publication succeeds but registry propagation exceeds the workflow's
    visibility window, do not republish. After the failed run is conclusive, the
    coordinator may supersede it only after independently observing that the

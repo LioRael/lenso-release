@@ -807,6 +807,7 @@ export type FailedShadowRetryFacts = {
 
 export type FailedProductionPartialRecoveryFacts = FailedShadowRetryFacts & {
   packageVersionExists(id: string, version: string): Promise<boolean>;
+  packageExists?(id: string): Promise<boolean>;
 };
 
 export async function supersedeFailedProductionZeroWriteRecovery(
@@ -1108,10 +1109,13 @@ export async function recoverFailedProductionPartialPlan(
     if (await facts.packageVersionExists(item.id, item.version)) publishedPackages.push(item);
   if (publishedPackages.length === 0)
     throw new Error("publisher did not publish any package");
-  if (previous.packages.some(({ id, version }) =>
-    id.startsWith("cargo:") &&
-    !publishedPackages.some((item) => item.id === id && item.version === version)
-  )) throw new Error("partial recovery forbids missing Cargo publications");
+  for (const { id, version } of previous.packages) {
+    if (
+      id.startsWith("cargo:") &&
+      !publishedPackages.some((item) => item.id === id && item.version === version) &&
+      !(await facts.packageExists?.(id))
+    ) throw new Error("partial recovery forbids first Cargo publication");
+  }
   const at = now.toISOString();
   const nonce = nextNonce();
   const identity = {
