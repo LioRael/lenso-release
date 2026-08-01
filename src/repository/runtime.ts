@@ -86,6 +86,48 @@ function repositoryToken(environment: RuntimeEnvironment): string {
 function hash(bytes: Uint8Array): Sha256 { return sha256(bytes) as Sha256; }
 type CargoArchiveDigestPair = { reviewed: Sha256; registry: Sha256 };
 
+type CargoBootstrapPolicy = { schema: "lenso.cargo-bootstrap.v1"; packages: PublishSelection[] };
+type CargoBootstrapRecoveryPolicy = Omit<CargoBootstrapPolicy, "schema"> & { schema: "lenso.cargo-bootstrap-recovery.v1"; planId: string; releaseCommit: string };
+async function committedJson(environment: RuntimeEnvironment, commit: string, path: string): Promise<unknown | null> {
+  const tracked = (await execFile("git", ["ls-tree", "-r", "--name-only", commit, "--", path], { cwd: environment.cwd })).stdout.trim();
+  if (!tracked) return null;
+  try { return JSON.parse((await execFile("git", ["show", `${commit}:${path}`], { cwd: environment.cwd })).stdout); }
+  catch { fail(`Cargo bootstrap policy is unreadable from reviewed commit ${commit}`); }
+}
+function cargoBootstrapSelections(parsed: unknown, schema: CargoBootstrapPolicy["schema"] | CargoBootstrapRecoveryPolicy["schema"]): Set<string> {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("Cargo bootstrap policy must be an object");
+  const policy = parsed as Partial<CargoBootstrapPolicy>;
+  if (policy.schema !== schema || !Array.isArray(policy.packages)) fail("Cargo bootstrap policy schema is invalid");
+  const seen = new Set<string>();
+  for (const selected of policy.packages) {
+    if (!selected || typeof selected !== "object" || typeof selected.id !== "string" || typeof selected.version !== "string") fail("Cargo bootstrap package selection is invalid");
+    if (!selected.id.startsWith("cargo:") || !PACKAGE.test(selected.id) || !VERSION.test(selected.version)) fail("Cargo bootstrap package identity is invalid");
+    const identity = `${selected.id}@${selected.version}`;
+    if (seen.has(identity)) fail("Cargo bootstrap package selection is duplicated");
+    seen.add(identity);
+  }
+  return seen;
+}
+export async function cargoRegistryTokenFor(environment: RuntimeEnvironment, item: PublishSelection): Promise<string> {
+  const trustedPublishingToken = process.env.CARGO_REGISTRY_TOKEN;
+  if (!trustedPublishingToken) fail("official crates.io token is required without fallback");
+  if (process.env.LENSO_RELEASE_MODE !== "production") return trustedPublishingToken;
+  const identity = `${item.id}@${item.version}`;
+  const normal = await committedJson(environment, environment.releaseCommit, ".lenso-release/cargo-bootstrap.json");
+  let selected = normal ? cargoBootstrapSelections(normal, "lenso.cargo-bootstrap.v1").has(identity) : false;
+  if (!selected && process.env.LENSO_CARGO_BOOTSTRAP_RECOVERY === "production-zero-write") {
+    const parsed = await committedJson(environment, environment.githubSha, ".lenso-release/cargo-bootstrap-recovery.json");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("Cargo bootstrap recovery policy is missing");
+    const recovery = parsed as Partial<CargoBootstrapRecoveryPolicy>;
+    if (recovery.planId !== environment.planId || recovery.releaseCommit !== environment.releaseCommit) fail("Cargo bootstrap recovery policy binding is invalid");
+    selected = cargoBootstrapSelections(parsed, "lenso.cargo-bootstrap-recovery.v1").has(identity);
+  }
+  if (!selected) return trustedPublishingToken;
+  const bootstrapToken = process.env.LENSO_CARGO_BOOTSTRAP_TOKEN;
+  if (!bootstrapToken) fail(`Cargo bootstrap token is required for ${item.id}@${item.version}`);
+  return bootstrapToken;
+}
+
 function tarOctal(field: Uint8Array): number {
   const value = Buffer.from(field).toString("ascii").replace(/\0.*$/u, "").trim();
   if (!/^[0-7]+$/u.test(value)) throw new Error("invalid tar octal field");
@@ -756,8 +798,8 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
       if (authDirectory) await rm(authDirectory, { recursive: true, force: true });
     }
   } else if (item.id.startsWith("cargo:")) {
-    if (!process.env.CARGO_REGISTRY_TOKEN || process.env.CARGO_TOKEN) fail("official crates.io token is required without fallback");
-    if (!artifact.cargoMetadata) fail("signed Cargo upload metadata missing"); await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata);
+    if (process.env.CARGO_TOKEN) fail("Cargo token fallback is forbidden");
+    if (!artifact.cargoMetadata) fail("signed Cargo upload metadata missing"); await uploadCargoArtifact(item, artifact.bytes, artifact.cargoMetadata, await cargoRegistryTokenFor(environment, item));
   } else if (item.id.startsWith("oci:")) {
     if (!artifact.oci) fail("sealed OCI image graph is missing");
     const token = process.env.LENSO_OCI_TOKEN; if (!token) fail("OCI registry credential is required");
@@ -820,11 +862,12 @@ async function ensureDraftReleaseAsset(environment: RuntimeEnvironment, version:
   const uploaded = await fetch(`${uploadBase}?name=${encodeURIComponent(assetName)}`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${repositoryToken(environment)}`, accept: "application/vnd.github+json", "content-type": "application/json", "content-length": String(bytes.length) }, body: Buffer.from(bytes) });
   if (!uploaded.ok) fail(`draft release asset upload ${uploaded.status}`);
 }
-export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue): Promise<void> {
+export async function uploadCargoArtifact(item: PublishSelection, bytes: Buffer, upload: JsonValue, token = process.env.CARGO_REGISTRY_TOKEN): Promise<void> {
+  if (!token) fail("Cargo registry token is missing");
   const json = canonicalBytes(upload); const header = Buffer.alloc(8); header.writeUInt32LE(json.length, 0); header.writeUInt32LE(bytes.length, 4);
   const body = Buffer.concat([header.subarray(0, 4), json, header.subarray(4), bytes]); const endpoint = process.env.LENSO_CRATES_UPLOAD_URL ?? "https://crates.io/api/v1/crates/new";
-  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: process.env.CARGO_REGISTRY_TOKEN!, "content-type": "application/octet-stream", "content-length": String(body.length), "user-agent": CRATES_IO_USER_AGENT }, body });
-  if (!response.ok) fail(`crates exact archive upload ${response.status}`);
+  const response = await fetch(endpoint, { method: "PUT", redirect: "error", headers: { authorization: token, "content-type": "application/octet-stream", "content-length": String(body.length), "user-agent": CRATES_IO_USER_AGENT }, body });
+  if (!response.ok) { const detail = (await response.text()).replace(/\s+/gu, " ").trim().slice(0, 400); fail(`crates exact archive upload ${response.status}${detail ? `: ${detail}` : ""}`); }
 }
 async function createAttestation(artifactPath: string, artifactBytes: Uint8Array, environment: RuntimeEnvironment): Promise<string> {
   if (process.env.LENSO_RELEASE_MODE === "shadow") {
@@ -1032,6 +1075,26 @@ export async function verifyRecoveryAuthorization(
   )
     fail("authoritative recovery outbox payload mismatch");
   return recovery as unknown as RecoveryAuthorization;
+}
+
+export async function authorizedRecoveryKind(environment: RuntimeEnvironment): Promise<RecoveryAuthorization["kind"]> {
+  try { return (await verifyRecoveryAuthorization(environment, "production-publication")).kind; }
+  catch (publicationError) {
+    try { return (await verifyRecoveryAuthorization(environment, "production-break-glass")).kind; }
+    catch (breakGlassError) { throw new AggregateError([publicationError, breakGlassError], "recovery authorization is invalid"); }
+  }
+}
+
+export async function prepareAuthorizedRecovery(environment: RuntimeEnvironment): Promise<void> {
+  const kind = await authorizedRecoveryKind(environment);
+  if (kind === "production-partial" || kind === "production-zero-write") return preparePartialRecovery(environment);
+  return prepareRecovery(environment);
+}
+
+export async function recoverAuthorized(environment: RuntimeEnvironment): Promise<ComponentReceiptV1[]> {
+  const kind = await authorizedRecoveryKind(environment);
+  if (kind === "production-partial" || kind === "production-zero-write") return recoverPartialPublished(environment);
+  return recoverPublished(environment);
 }
 
 async function recoveryPlan(

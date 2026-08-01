@@ -117,6 +117,7 @@ jobs:
           LENSO_REPOSITORY_TOKEN: ${{ github.token }}
           LENSO_PUBLISH_ATTESTATION_URL: ${{ steps.publish-attestation.outputs.attestation-url }}
           CARGO_REGISTRY_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_CARGO_TOKEN || steps.crates-auth.outputs.token }}
+          LENSO_CARGO_BOOTSTRAP_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'production' && secrets.CARGO_REGISTRY_TOKEN || '' }}
           NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}
           LENSO_OCI_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_OCI_TOKEN || github.token }}
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
@@ -177,6 +178,20 @@ jobs:
           npm install --global npm@11.7.0
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
+      - name: Resolve authoritative recovery kind
+        id: recovery-kind
+        env:
+          INPUT_EVENT_ID: ${{ inputs.event_id }}
+          INPUT_PLAN_ID: ${{ inputs.plan_id }}
+          INPUT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_PACKAGES_JSON: ${{ inputs.packages_json }}
+          INPUT_NONCE: ${{ inputs.nonce }}
+          LENSO_APP_ID: ${{ vars.LENSO_RELEASE_APP_ID }}
+          LENSO_APP_TOKEN: ${{ steps.app.outputs.token }}
+          LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          RUNNER_IMAGE: ubuntu-24.04
+        run: echo "kind=$(node .lenso-release/runtime/lib/repository/cli.js recover-kind)" >> "$GITHUB_OUTPUT"
       - name: Rebuild and verify published archives
         env:
           INPUT_EVENT_ID: ${{ inputs.event_id }}
@@ -190,6 +205,9 @@ jobs:
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
           RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js recover-prepare
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+        if: steps.recovery-kind.outputs.kind == 'production-zero-write'
+        id: recovery-crates-auth
       - name: Attest verified recovery archives
         id: recovery-attestation
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
@@ -209,6 +227,9 @@ jobs:
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
           LENSO_RUNTIME_CWD: ${{ github.workspace }}/recovery-candidate
+          CARGO_REGISTRY_TOKEN: ${{ steps.recovery-crates-auth.outputs.token }}
+          LENSO_CARGO_BOOTSTRAP_TOKEN: ${{ steps.recovery-kind.outputs.kind == 'production-zero-write' && secrets.CARGO_REGISTRY_TOKEN || '' }}
+          LENSO_CARGO_BOOTSTRAP_RECOVERY: ${{ steps.recovery-kind.outputs.kind }}
           RUNNER_IMAGE: ubuntu-24.04
         run: node .lenso-release/runtime/lib/repository/cli.js recover
   recover-partial:

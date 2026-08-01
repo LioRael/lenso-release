@@ -258,6 +258,7 @@ describe("repository template workflow contracts", () => {
     expect(Object.keys(inputs)).toEqual(["event_id", "plan_id", "plan_sha256", "release_commit", "packages_json", "nonce"]);
     expect(source).not.toMatch(/secrets\.NPM_TOKEN|registry-url/u);
     expect(source).toContain("NODE_AUTH_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'shadow' && secrets.LENSO_SHADOW_NPM_TOKEN || '' }}");
+    expect(source).toContain("LENSO_CARGO_BOOTSTRAP_TOKEN: ${{ env.LENSO_RELEASE_MODE == 'production' && secrets.CARGO_REGISTRY_TOKEN || '' }}");
     expect(source).toContain("actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373");
     expect(source).toContain("LENSO_PUBLISH_ATTESTATION_URL: ${{ steps.publish-attestation.outputs.attestation-url }}");
     expect(source).toContain("LENSO_REPOSITORY_TOKEN: ${{ github.token }}");
@@ -292,6 +293,7 @@ describe("repository template workflow contracts", () => {
     );
     expect(recovery).toContain("cli.js recover-prepare");
     expect(recovery).toContain("cli.js recover");
+    expect(recovery).toContain("cli.js recover-kind");
     expect(recovery).toContain(
       "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
     );
@@ -302,9 +304,12 @@ describe("repository template workflow contracts", () => {
       "LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}",
     );
     expect(recovery).toContain("LENSO_RUNTIME_CWD:");
-    expect(recovery).not.toContain("CARGO_REGISTRY_TOKEN");
+    expect(recovery).toContain("CARGO_REGISTRY_TOKEN: ${{ steps.recovery-crates-auth.outputs.token }}");
+    expect(recovery).toContain("LENSO_CARGO_BOOTSTRAP_RECOVERY: ${{ steps.recovery-kind.outputs.kind }}");
     expect(recovery).not.toContain("NODE_AUTH_TOKEN");
-    expect(recovery).not.toContain("crates-io-auth-action");
+    expect(recovery).toContain("if: steps.recovery-kind.outputs.kind == 'production-zero-write'");
+    expect(recovery).toContain("rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18");
+    expect(recovery.indexOf("cli.js recover-prepare")).toBeLessThan(recovery.indexOf("id: recovery-crates-auth"));
     expect(workflow.jobs["recover-partial"].if).toBe(
       "github.ref_name == github.event.repository.default_branch && (contains(inputs.packages_json, 'npm:') || contains(inputs.packages_json, 'oci:'))",
     );
