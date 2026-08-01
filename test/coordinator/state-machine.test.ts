@@ -1415,14 +1415,27 @@ describe("atomic coordinator state", () => {
     const initial = snapshot(failed);
     initial.occupiedPackages["package:cargo:lenso-platform-core:1.0.0"] = failed.planId;
     initial.occupiedPackages["package:npm:@lenso/cli:1.0.0"] = failed.planId;
+    const cargoOidcRecovery = await recoverFailedProductionPartialPlan(
+      new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
+      {
+        async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
+        async packageVersionExists(id) { return id.startsWith("npm:"); },
+        async packageExists(id) { return id === "cargo:lenso-contracts"; },
+      },
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:00Z"), () => "cargo-oidc-retry", 42,
+    );
+    expect(cargoOidcRecovery.state.outbox.find(({ recovery }) => recovery?.kind === "production-partial")?.recovery).toMatchObject({
+      publishedPackages: [{ id: "npm:@lenso/cli", version: "1.0.0" }],
+    });
     await expect(recoverFailedProductionPartialPlan(
       new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
       {
         async observeRun() { return { runUrl: failed.outbox[0]!.runUrl!, status: "completed", conclusion: "failure" }; },
         async packageVersionExists(id) { return id.startsWith("npm:"); },
+        async packageExists() { return false; },
       },
-      "main", "9".repeat(40), new Date("2026-07-11T00:02:00Z"), () => "unsafe-cargo-retry", 42,
-    )).rejects.toThrow("forbids missing Cargo");
+      "main", "9".repeat(40), new Date("2026-07-11T00:02:05Z"), () => "unsafe-cargo-retry", 42,
+    )).rejects.toThrow("forbids first Cargo publication");
     await expect(recoverFailedProductionPartialPlan(
       new MemoryStore(structuredClone(initial)), failed.repository, failed.planId, "production",
       {

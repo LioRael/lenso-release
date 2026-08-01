@@ -652,6 +652,17 @@ export async function createCoordinatorHandlers(
       return (await checkedExternal(request, productionUrl)).ok;
     } catch { return false; }
   };
+  const cargoPackageVisible = async (id: string): Promise<boolean> => {
+    if (!id.startsWith("cargo:")) return false;
+    try {
+      return (await checkedExternal(
+        request,
+        `https://crates.io/api/v1/crates/${encodeURIComponent(id.slice(6))}`,
+      )).ok;
+    } catch {
+      return false;
+    }
+  };
   const githubJson = (url: string, token: string) => checkedGithubJson(request, url, token);
   const githubBytes = async (repository: string, path: string, ref: string, token: string): Promise<Uint8Array> => {
     const body = await githubJson(`https://api.github.com/repos/${repository}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`, token);
@@ -1792,13 +1803,13 @@ export async function createCoordinatorHandlers(
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       if (existing && !["pending", "in-flight"].includes(existing.status)) {
         await supersedeFailedProductionPartialRecovery(
-          input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible }, workflowCommit,
+          input.store, repository, planId, { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible }, workflowCommit,
           now(), nonce, input.config.appId,
         );
       } else {
         await recoverFailedProductionPartialPlan(
           input.store, repository, planId, input.env.LENSO_COORDINATOR_MODE,
-          { observeRun, packageVersionExists: dependencyVisible },
+          { observeRun, packageVersionExists: dependencyVisible, packageExists: cargoPackageVisible },
           defaultBranch, workflowCommit, now(), nonce, input.config.appId,
         );
       }
