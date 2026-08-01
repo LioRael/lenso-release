@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -219,6 +219,54 @@ describe("production coordinator adapters", () => {
     ).toBe(true);
     expect(
       trustedProductionPrepublishFailureRun(
+        run,
+        workflow,
+        [{ ...jobs[0], steps: steps.slice(1) }],
+        "LioRael/lenso-console",
+        "main",
+        head,
+        planId,
+        failedRunId,
+      ),
+    ).toBe(false);
+  });
+  it("trusts only an exact successful production zero-write failure proof", () => {
+    const planId = `sha256:${"a".repeat(64)}`;
+    const head = "2".repeat(40);
+    const failedRunId = "30696779531";
+    const run = {
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: head,
+      display_title:
+        `verify-production-zero-write-failure:${planId}:${failedRunId}`,
+      status: "completed",
+      conclusion: "success",
+      repository: { full_name: "LioRael/lenso-console" },
+    };
+    const workflow = {
+      path: ".github/workflows/verify-production-zero-write-failure.yml",
+    };
+    const steps = [
+      "Verify proof consumption and npm authentication failure",
+      "Prove the production npm version is absent",
+      "Prove the production OCI manifest is absent",
+    ].map((name) => ({ name, conclusion: "success" }));
+    const jobs = [{ name: "verify", conclusion: "success", steps }];
+    expect(
+      trustedProductionZeroWriteFailureRun(
+        run,
+        workflow,
+        jobs,
+        "LioRael/lenso-console",
+        "main",
+        head,
+        planId,
+        failedRunId,
+      ),
+    ).toBe(true);
+    expect(
+      trustedProductionZeroWriteFailureRun(
         run,
         workflow,
         [{ ...jobs[0], steps: steps.slice(1) }],

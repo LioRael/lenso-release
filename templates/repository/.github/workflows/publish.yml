@@ -216,6 +216,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      packages: write
     steps:
       - uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b
         id: app
@@ -324,5 +325,6 @@ jobs:
           RUNNER_IMAGE: ubuntu-24.04
           LENSO_COORDINATOR_RECEIPT_URL: ${{ vars.LENSO_COORDINATOR_RECEIPT_URL }}
           LENSO_RECOVERY_ATTESTATION_URL: ${{ steps.recovery-attestation.outputs.attestation-url }}
+          LENSO_OCI_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ""
         run: node .lenso-release/runtime/lib/repository/cli.js recover-partial

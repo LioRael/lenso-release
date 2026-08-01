@@ -825,7 +825,10 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
 
 type RecoveryAuthorization =
   | { kind: "production-break-glass"; authorizedRunUrl: string; authorizedRunSha256: Sha256; workflowCommit: string }
-  | { kind: "production-partial"; failedRunUrl: string; workflowCommit: string; publishedPackages: PublishSelection[] };
+  | { kind: "production-partial"; failedRunUrl: string; workflowCommit: string; publishedPackages: PublishSelection[] }
+  | { kind: "production-zero-write"; failedRunUrl: string; proofRunUrl: string; workflowCommit: string };
+
+type ExpectedRecoveryKind = RecoveryAuthorization["kind"] | "production-publication";
 
 async function readRecoveryState(environment: RuntimeEnvironment): Promise<Record<string, unknown>> {
   const repositorySegment = encodeURIComponent(
@@ -873,7 +876,7 @@ async function readRecoveryState(environment: RuntimeEnvironment): Promise<Recor
 
 export async function verifyRecoveryAuthorization(
   environment: RuntimeEnvironment,
-  expectedKind: RecoveryAuthorization["kind"] = "production-break-glass",
+  expectedKind: ExpectedRecoveryKind = "production-break-glass",
 ): Promise<RecoveryAuthorization> {
   if (process.env.LENSO_RELEASE_MODE !== "production")
     fail("break-glass recovery is production-only");
@@ -891,16 +894,29 @@ export async function verifyRecoveryAuthorization(
   const outbox = state.outbox as Record<string, unknown>[];
   const entry = outbox.find(({ eventId }) => eventId === environment.eventId);
   const recovery = entry?.recovery as Record<string, unknown> | undefined;
+  const publicationRecovery =
+    expectedKind === "production-publication" &&
+    ["production-partial", "production-zero-write"].includes(
+      String(recovery?.kind),
+    );
   if (
+    !recovery ||
     entry?.ref !== environment.refName ||
     entry.workflow !== environment.workflowPath ||
     entry.runUrl !== environment.runUrl ||
-    recovery?.kind !== expectedKind ||
+    (recovery?.kind !== expectedKind && !publicationRecovery) ||
     recovery.workflowCommit !== environment.githubSha ||
     (expectedKind === "production-break-glass" &&
       (!/^https:\/\/github\.com\/LioRael\/lenso\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.authorizedRunUrl)) ||
        !/^sha256:[0-9a-f]{64}$/u.test(String(recovery.authorizedRunSha256)))) ||
     (expectedKind === "production-partial" &&
+      (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.failedRunUrl)) ||
+       !Array.isArray(recovery.publishedPackages))) ||
+    ((expectedKind === "production-zero-write" ||
+      (publicationRecovery && recovery.kind === "production-zero-write")) &&
+      (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.failedRunUrl)) ||
+       !/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.proofRunUrl)))) ||
+    (publicationRecovery && recovery.kind === "production-partial" &&
       (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/u.test(String(recovery.failedRunUrl)) ||
        !Array.isArray(recovery.publishedPackages)))
   )
@@ -929,7 +945,7 @@ export async function verifyRecoveryAuthorization(
 
 async function recoveryPlan(
   environment: RuntimeEnvironment,
-  expectedKind: RecoveryAuthorization["kind"] = "production-break-glass",
+  expectedKind: ExpectedRecoveryKind = "production-break-glass",
 ): Promise<{ candidateEnvironment: RuntimeEnvironment; plan: ReleasePlanV1 }> {
   await verifyRecoveryAuthorization(environment, expectedKind);
   const candidateEnvironment: RuntimeEnvironment = {
@@ -967,13 +983,24 @@ async function partialRecoveryArtifacts(
   const subjectDirectory = join(environment.cwd, "target/recovery-attestations");
   if (writeSubjects) await mkdir(subjectDirectory, { recursive: true, mode: 0o700 });
   for (const item of publicationOrder(plan, environment.packages)) {
-    if (!item.id.startsWith("cargo:") && !item.id.startsWith("npm:"))
-      fail("partial recovery currently supports Cargo and npm packages only");
+    if (
+      !item.id.startsWith("cargo:") &&
+      !item.id.startsWith("npm:") &&
+      !item.id.startsWith("oci:")
+    )
+      fail("publication recovery supports Cargo, npm, and OCI packages only");
     const artifact = await packedArtifact(environment.cwd, item);
     const name = item.id.slice(item.id.indexOf(":") + 1);
     const observed = item.id.startsWith("cargo:")
       ? await cargoObservation(name, item.version)
-      : await npmObservation(name, item.version);
+      : item.id.startsWith("npm:")
+        ? await npmObservation(name, item.version)
+        : await ociObservation(name, item.version, {
+          path: artifact.path,
+          bytes: artifact.bytes,
+          cargoMetadata: null,
+          oci: artifact.oci ?? null,
+        }, environment);
     const expectedPublished = published.has(`${item.id}\0${item.version}`);
     if (observed.exists !== expectedPublished)
       fail(`registry state changed after partial recovery authorization: ${item.id}`);
@@ -990,7 +1017,12 @@ async function partialRecoveryArtifacts(
     const cargoMetadata = item.id.startsWith("cargo:")
       ? await cargoWireMetadataFromCrate(artifact.path, name, item.version)
       : null;
-    const recovered: SealedArtifact = { path: artifact.path, bytes: subjectBytes, cargoMetadata, oci: null };
+    const recovered: SealedArtifact = {
+      path: artifact.path,
+      bytes: subjectBytes,
+      cargoMetadata,
+      oci: artifact.oci ?? null,
+    };
     artifacts.set(`${item.id}\0${item.version}`, recovered);
     if (writeSubjects) {
       const subject = join(subjectDirectory, basename(artifact.path));
@@ -1002,17 +1034,40 @@ async function partialRecoveryArtifacts(
 }
 
 export async function preparePartialRecovery(environment: RuntimeEnvironment): Promise<void> {
-  const authorization = await verifyRecoveryAuthorization(environment, "production-partial") as Extract<RecoveryAuthorization, { kind: "production-partial" }>;
-  const { candidateEnvironment, plan } = await recoveryPlan(environment, "production-partial");
+  const authorization = await verifyRecoveryAuthorization(
+    environment,
+    "production-publication",
+  );
+  const { candidateEnvironment, plan } = await recoveryPlan(
+    environment,
+    "production-publication",
+  );
   const phases = publisherPackagePhases(candidateEnvironment.packages, plan, "recovery");
   for (const packages of phases) await preflight({ ...candidateEnvironment, packages });
-  await partialRecoveryArtifacts(environment, plan, authorization.publishedPackages, true);
+  await partialRecoveryArtifacts(
+    environment,
+    plan,
+    authorization.kind === "production-partial"
+      ? authorization.publishedPackages
+      : [],
+    true,
+  );
 }
 
 export async function recoverPartialPublished(environment: RuntimeEnvironment): Promise<ComponentReceiptV1[]> {
-  const authorization = await verifyRecoveryAuthorization(environment, "production-partial") as Extract<RecoveryAuthorization, { kind: "production-partial" }>;
-  const { plan } = await recoveryPlan(environment, "production-partial");
-  const artifacts = await partialRecoveryArtifacts(environment, plan, authorization.publishedPackages, false);
+  const authorization = await verifyRecoveryAuthorization(
+    environment,
+    "production-publication",
+  );
+  const { plan } = await recoveryPlan(environment, "production-publication");
+  const artifacts = await partialRecoveryArtifacts(
+    environment,
+    plan,
+    authorization.kind === "production-partial"
+      ? authorization.publishedPackages
+      : [],
+    false,
+  );
   const config = parseJson<RepositoryConfig>(await safeRead(environment.cwd, ".lenso-release/config.json"), "repository config");
   const fixedGroup = selectedFixedGroup(config, environment.packages);
   const provenanceUrl = recoveryAttestationUrl(environment);
@@ -1020,7 +1075,11 @@ export async function recoverPartialPublished(environment: RuntimeEnvironment): 
   for (const item of publicationOrder(plan, environment.packages)) {
     const artifact = artifacts.get(`${item.id}\0${item.version}`); if (!artifact) fail("recovery artifact is missing");
     const name = item.id.slice(item.id.indexOf(":") + 1);
-    const observe = () => item.id.startsWith("cargo:") ? cargoObservation(name, item.version) : npmObservation(name, item.version);
+    const observe = () => item.id.startsWith("cargo:")
+      ? cargoObservation(name, item.version)
+      : item.id.startsWith("npm:")
+        ? npmObservation(name, item.version)
+        : ociObservation(name, item.version, artifact, environment);
     let observed = await observe();
     if (!observed.exists) { await publishOnce(environment, item, artifact); observed = await observe(); }
     if (!observed.exists || !observed.bytes || !observed.integrity || !observed.url || !observed.publishedAt)
