@@ -1,6 +1,24 @@
 import { createHash } from "node:crypto";
+import { canonicalBytes } from "../core/canonical.js";
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const REPOSITORY = /^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/u;
+export function verifyRecoveredOciInstallManifest(input) {
+    const remote = json(input.remoteBytes, "remote Console install manifest");
+    const local = json(input.localBytes, "sealed Console install manifest");
+    const image = object(remote.image, "remote Console install manifest image");
+    const imageDigest = image.digest;
+    if (typeof imageDigest !== "string" ||
+        !DIGEST.test(imageDigest) ||
+        image.reference !== `ghcr.io/${input.registryRepository}@${imageDigest}` ||
+        remote.schema !== "lenso.console-service-release.v1" ||
+        remote.releaseId !== `lenso-console@${input.version}` ||
+        remote.version !== input.version ||
+        remote.sourceCommit !== input.sourceCommit)
+        fail("remote Console install manifest identity is invalid");
+    if (!canonicalBytes({ ...local, image }).equals(canonicalBytes(remote)))
+        fail("remote Console install manifest contradicts reviewed source inputs");
+    return imageDigest;
+}
 function fail(message) { throw new Error(`OCI release artifact: ${message}`); }
 function digest(bytes) { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function object(value, label) {
