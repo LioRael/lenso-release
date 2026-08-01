@@ -63,7 +63,8 @@ export async function cargoRegistryTokenFor(environment, item) {
     const identity = `${item.id}@${item.version}`;
     const normal = await committedJson(environment, environment.releaseCommit, ".lenso-release/cargo-bootstrap.json");
     let selected = normal ? cargoBootstrapSelections(normal, "lenso.cargo-bootstrap.v1").has(identity) : false;
-    if (!selected && process.env.LENSO_CARGO_BOOTSTRAP_RECOVERY === "production-zero-write") {
+    if (!selected &&
+        ["production-zero-write", "production-partial"].includes(process.env.LENSO_CARGO_BOOTSTRAP_RECOVERY ?? "")) {
         const parsed = await committedJson(environment, environment.githubSha, ".lenso-release/cargo-bootstrap-recovery.json");
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
             fail("Cargo bootstrap recovery policy is missing");
