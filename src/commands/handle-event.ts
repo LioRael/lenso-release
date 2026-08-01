@@ -19,7 +19,7 @@ export const HANDLE_EVENT_EXIT = {
 export type EventHandlers = {
   ready(value: unknown): Promise<StoredPlanState>;
   receipt(value: unknown): Promise<StoredPlanState>;
-  recoverActive?(): Promise<unknown>;
+  recoverActive?(repository?: string, planId?: string): Promise<unknown>;
   recoverBreakGlassPlan?(
     repository: string,
     planId: string,
@@ -215,9 +215,15 @@ export async function runHandleEventCli(
       );
       return HANDLE_EVENT_EXIT.ok;
     }
-    if (argv.length === 1 && argv[0] === "--recover-active") {
+    if (argv[0] === "--recover-active") {
       if (!handlers.recoverActive) throw new TypeError("active recovery is not configured");
-      const result = await handlers.recoverActive();
+      const targeted = argv.length === 5 && argv[1] === "--repository" && argv[3] === "--plan-id";
+      if (argv.length !== 1 && !targeted)
+        throw new TypeError("usage: handle-event --recover-active [--repository OWNER/REPO --plan-id SHA256]");
+      const result = await handlers.recoverActive(
+        targeted ? argv[2] : undefined,
+        targeted ? argv[4] : undefined,
+      );
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return HANDLE_EVENT_EXIT.ok;
     }

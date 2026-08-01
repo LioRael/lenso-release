@@ -2,6 +2,15 @@ name: recover-receipts
 run-name: lenso-recover-receipts:${{ github.run_id }}
 on:
   workflow_dispatch:
+    inputs:
+      repository:
+        description: Optional exact repository for targeted recovery
+        required: false
+        type: string
+      plan_id:
+        description: Optional exact plan ID for targeted recovery
+        required: false
+        type: string
   schedule:
     - cron: '17 * * * *'
 permissions:
@@ -25,8 +34,21 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: corepack pnpm install --frozen-lockfile && corepack pnpm build
-      - run: node dist/src/commands/handle-event.js --recover-active
+      - name: Recover active receipts
+        run: |
+          if [[ -n "$TARGET_REPOSITORY" || -n "$TARGET_PLAN_ID" ]]; then
+            [[ -n "$TARGET_REPOSITORY" && -n "$TARGET_PLAN_ID" ]] || {
+              echo "repository and plan_id must be supplied together" >&2
+              exit 2
+            }
+            node dist/src/commands/handle-event.js --recover-active \
+              --repository "$TARGET_REPOSITORY" --plan-id "$TARGET_PLAN_ID"
+          else
+            node dist/src/commands/handle-event.js --recover-active
+          fi
         env:
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+          TARGET_PLAN_ID: ${{ inputs.plan_id }}
           LENSO_GITHUB_APP_ID: ${{ secrets.LENSO_GITHUB_APP_ID }}
           LENSO_GITHUB_APP_INSTALLATION_ID: ${{ secrets.LENSO_GITHUB_APP_INSTALLATION_ID }}
           LENSO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.LENSO_GITHUB_APP_PRIVATE_KEY }}

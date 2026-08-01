@@ -1317,6 +1317,10 @@ describe("atomic coordinator state", () => {
     const recoverActive = vi.fn(async () => []);
     expect(await runHandleEventCli(["--recover-active"], {}, async () => ({ ready, receipt, recoverActive }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(recoverActive).toHaveBeenCalledOnce();
+    expect(await runHandleEventCli([
+      "--recover-active", "--repository", "LioRael/lenso", "--plan-id", digest("a"),
+    ], {}, async () => ({ ready, receipt, recoverActive }))).toBe(HANDLE_EVENT_EXIT.ok);
+    expect(recoverActive).toHaveBeenLastCalledWith("LioRael/lenso", digest("a"));
     const retire = vi.fn(async () => undefined);
     expect(await runHandleEventCli(["--retire-failed-shadow-plan", "--repository", "LioRael/lenso", "--plan-id", digest("a")], {}, async () => ({ ready, receipt, retireFailedShadowPlan: retire }))).toBe(HANDLE_EVENT_EXIT.ok);
     expect(retire).toHaveBeenCalledOnce();
