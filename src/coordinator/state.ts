@@ -843,9 +843,7 @@ export async function supersedeFailedProductionZeroWriteRecovery(
     !state ||
     state.environment !== "production" ||
     state.status !== "publishing" ||
-    state.reason !== null ||
-    state.receipts.length !== 0 ||
-    state.packages.some(({ status }) => status === "received")
+    state.reason !== null
   )
     throw new Error("production zero-write recovery retry plan is required");
   if (
@@ -854,8 +852,9 @@ export async function supersedeFailedProductionZeroWriteRecovery(
     )
   )
     throw new Error("zero-write recovery retry forbids pending or in-flight dispatches");
+  const activeSlice = JSON.stringify(state.packages.filter(({ status }) => status === "dispatched").map(({ id, version }) => `${id}\0${version}`).sort());
   const previous = state.outbox
-    .filter(({ recovery }) => recovery?.kind === "production-zero-write")
+    .filter(({ recovery, packages }) => recovery?.kind === "production-zero-write" && JSON.stringify(packages.map(({ id, version }) => `${id}\0${version}`).sort()) === activeSlice)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (
     !previous ||
@@ -884,6 +883,9 @@ export async function supersedeFailedProductionZeroWriteRecovery(
   const selected = previous.packages
     .map(({ id, version }) => `${id}\0${version}`)
     .sort();
+  const selectedSet = new Set(selected);
+  if (state.receipts.some(({ packageId, version }) => selectedSet.has(`${packageId}\0${version}`)))
+    throw new Error("zero-write recovery retry active slice has an accepted receipt");
   const dispatched = state.packages
     .filter(({ status }) => status === "dispatched")
     .map(({ id, version }) => `${id}\0${version}`)
@@ -990,16 +992,20 @@ export async function supersedeFailedProductionPartialRecovery(
   assertReleaseStateSnapshot(initial);
   const path = planStatePath(repository, planId);
   const state = initial.plans[path];
-  if (!state || state.environment !== "production" || state.status !== "publishing" || state.reason !== null || state.receipts.length !== 0)
+  if (!state || state.environment !== "production" || state.status !== "publishing" || state.reason !== null)
     throw new Error("production partial recovery plan is required");
+  const activeSlice = JSON.stringify(state.packages.filter(({ status }) => status === "dispatched").map(({ id, version }) => `${id}\0${version}`).sort());
   const previous = state.outbox
-    .filter(({ recovery }) => recovery?.kind === "production-partial")
+    .filter(({ recovery, packages }) => recovery?.kind === "production-partial" && JSON.stringify(packages.map(({ id, version }) => `${id}\0${version}`).sort()) === activeSlice)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (!previous || !["in-flight", "dispatched"].includes(previous.status))
     throw new Error("partial recovery dispatch is not supersedable");
   const recovery = previous.recovery;
   if (!recovery || recovery.kind !== "production-partial")
     throw new Error("partial recovery authorization is missing");
+  const selectedSet = new Set(previous.packages.map(({ id, version }) => `${id}\0${version}`));
+  if (state.receipts.some(({ packageId, version }) => selectedSet.has(`${packageId}\0${version}`)))
+    throw new Error("partial recovery active slice has an accepted receipt");
   const identityChanged = recovery.workflowCommit !== workflowCommit ||
     previous.workflow !== ".github/workflows/publish.yml";
   const observed = await facts.observeRun(previous);
@@ -1079,16 +1085,21 @@ export async function recoverFailedProductionPartialPlan(
   const state = initial.plans[path];
   if (!state || state.environment !== "production" || state.status !== "publishing" || state.reason !== null)
     throw new Error("production publishing plan is required");
-  if (state.receipts.length !== 0 || state.packages.some(({ status }) => status === "received"))
-    throw new Error("partial recovery requires no accepted receipts");
-  const existingRecovery = state.outbox.find(({ recovery }) => recovery?.kind === "production-partial");
-  if (existingRecovery) return { state, headSha: initial.headSha };
-  if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
-    throw new Error("partial recovery forbids pending or in-flight dispatches");
   const previous = state.outbox
     .filter(({ status, recovery }) => status === "dispatched" && recovery === undefined)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
   if (!previous?.runUrl) throw new Error("partial recovery requires a dispatched publisher");
+  const selected = previous.packages.map(({ id, version }) => `${id}\0${version}`).sort();
+  const selectedSet = new Set(selected);
+  const dispatched = state.packages.filter(({ status }) => status === "dispatched").map(({ id, version }) => `${id}\0${version}`).sort();
+  if (JSON.stringify(selected) !== JSON.stringify(dispatched))
+    throw new Error("partial recovery publisher does not cover the exact active slice");
+  if (state.receipts.some(({ packageId, version }) => selectedSet.has(`${packageId}\0${version}`)))
+    throw new Error("partial recovery active slice has an accepted receipt");
+  const existingRecovery = state.outbox.find(({ recovery, packages }) => recovery?.kind === "production-partial" && JSON.stringify(packages.map(({ id, version }) => `${id}\0${version}`).sort()) === JSON.stringify(selected));
+  if (existingRecovery) return { state, headSha: initial.headSha };
+  if (state.outbox.some(({ status }) => status === "pending" || status === "in-flight"))
+    throw new Error("partial recovery forbids pending or in-flight dispatches");
   const run = await facts.observeRun(previous);
   if (!run || run.runUrl !== previous.runUrl || run.status !== "completed" || !["failure", "cancelled"].includes(run.conclusion ?? ""))
     throw new Error("publisher is not conclusively failed");
@@ -1181,13 +1192,6 @@ export async function recoverFailedProductionZeroWritePlan(
   )
     throw new Error("production publishing plan is required");
   if (
-    state.receipts.length !== 0 ||
-    state.packages.some(({ status }) => status === "received")
-  )
-    throw new Error("zero-write recovery requires no accepted receipts");
-  if (state.outbox.some(({ recovery }) => recovery !== undefined))
-    throw new Error("zero-write recovery requires the original publisher only");
-  if (
     state.outbox.some(
       ({ status }) => status === "pending" || status === "in-flight",
     )
@@ -1203,6 +1207,11 @@ export async function recoverFailedProductionZeroWritePlan(
   const selected = previous.packages
     .map(({ id, version }) => `${id}\0${version}`)
     .sort();
+  const selectedSet = new Set(selected);
+  if (state.receipts.some(({ packageId, version }) => selectedSet.has(`${packageId}\0${version}`)))
+    throw new Error("zero-write recovery active slice has an accepted receipt");
+  if (state.outbox.some(({ recovery, packages }) => recovery !== undefined && packages.some(({ id, version }) => selectedSet.has(`${id}\0${version}`))))
+    throw new Error("zero-write recovery active slice already has a recovery");
   const dispatched = state.packages
     .filter(({ status }) => status === "dispatched")
     .map(({ id, version }) => `${id}\0${version}`)
