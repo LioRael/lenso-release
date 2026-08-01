@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -33,6 +33,24 @@ describe("production coordinator adapters", () => {
     )).rejects.toThrow(
       "GitHub observation 404 for /repos/LioRael/lenso-console/branches/main",
     );
+  });
+
+  it("finds authenticated draft releases by exact tag across release pages", async () => {
+    const filler = Array.from({ length: 100 }, (_, index) => ({ tag_name: `v0.0.${index}` }));
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer app-token");
+      const page = new URL(String(input)).searchParams.get("page");
+      return new Response(JSON.stringify(page === "1"
+        ? filler
+        : [{ tag_name: "v0.1.4", draft: true, assets: [{ name: "lenso-console-release.json" }] }]));
+    });
+    await expect(checkedGithubReleaseByTag(
+      request as typeof fetch,
+      "LioRael/lenso-console",
+      "v0.1.4",
+      "app-token",
+    )).resolves.toMatchObject({ tag_name: "v0.1.4", draft: true });
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("observes Cargo dependencies through the official crates.io download API", () => {

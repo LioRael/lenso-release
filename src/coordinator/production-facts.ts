@@ -128,6 +128,31 @@ export async function checkedGithubJson(
     throw new TypeError("GitHub API response origin mismatch");
   return await response.json() as Record<string, unknown>;
 }
+export async function checkedGithubReleaseByTag(
+  request: typeof fetch,
+  repository: string,
+  tag: string,
+  token: string,
+): Promise<Record<string, unknown>> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository))
+    throw new TypeError("GitHub release repository is invalid");
+  for (let page = 1; page <= 10; page += 1) {
+    const value: unknown = await checkedGithubJson(
+      request,
+      `https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}`,
+      token,
+    );
+    if (!Array.isArray(value)) throw new TypeError("GitHub release list is invalid");
+    const matches = value.filter((release) =>
+      release !== null && typeof release === "object" && !Array.isArray(release) &&
+      (release as Record<string, unknown>).tag_name === tag
+    ) as Record<string, unknown>[];
+    if (matches.length > 1) throw new TypeError("GitHub release tag is ambiguous");
+    if (matches.length === 1) return matches[0]!;
+    if (value.length < 100) break;
+  }
+  throw new IncompleteEvidenceError(`GitHub release ${tag} is not yet visible`);
+}
 export async function checkedShadowGithubAsset(
   request: typeof fetch,
   url: string,
@@ -877,7 +902,7 @@ export async function createCoordinatorHandlers(
             if (!("version" in image)) return null;
             const release = shadow
               ? await checkedShadowGithubJson(request, `${tagApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, input.env.LENSO_SHADOW_GITHUB_API_URL!, token)
-              : await githubJson(`${githubApi}/releases/tags/${encodeURIComponent(`v${packageVersion}`)}`, token);
+              : await checkedGithubReleaseByTag(request, repository, `v${packageVersion}`, token);
             if (release.draft !== true || !Array.isArray(release.assets)) return null;
             const asset = (release.assets as Record<string, unknown>[]).find(({ name }) => name === "lenso-console-release.json");
             if (!asset?.url || !asset.browser_download_url || expected.provenanceSubject.name !== "lenso-console-release.json") return null;
