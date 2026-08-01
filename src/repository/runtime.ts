@@ -823,9 +823,8 @@ export async function publishSelected(environment: RuntimeEnvironment): Promise<
         : item.id.startsWith("oci:") ? ociObservation(name, item.version, artifact, environment) : artifactObservation(name, item.version, environment);
     let observed = await observe();
     if (observed.exists) {
-      const recovered = await readExistingReceipt(item, environment, fixedGroup);
+      const recovered = await existingReceiptForObservation(item, observed, plan.planId, environment, fixedGroup);
       if (recovered) {
-        if (recovered.planId !== plan.planId || recovered.sourceCommit !== environment.releaseCommit || recovered.packedSha256 !== hash(observed.bytes!) || recovered.registryIntegrity !== observed.integrity || recovered.registryUrl !== observed.url || recovered.publishedAt !== observed.publishedAt) fail("existing receipt contradicts authoritative registry state");
         if (!fixedGroup) await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
       }
     }
@@ -1107,6 +1106,12 @@ export async function recoverPartialPublished(environment: RuntimeEnvironment): 
         ? npmObservation(name, item.version)
         : ociObservation(name, item.version, artifact, environment);
     let observed = await observe();
+    if (observed.exists) {
+      const recovered = await existingReceiptForObservation(item, observed, plan.planId, environment, fixedGroup);
+      if (recovered) {
+        if (!fixedGroup) await dispatchReceipt(recovered, environment); receipts.push(recovered); continue;
+      }
+    }
     if (!observed.exists) {
       await publishOnce(environment, item, artifact);
       observed = await observeAfterPublication(observe);
@@ -1372,6 +1377,12 @@ async function readExistingReceipt(item: PublishSelection, environment: RuntimeE
   assertComponentReceipt(receipt);
   if (receipt.packageId !== item.id || receipt.version !== item.version || receipt.repository !== environment.repository) fail("annotated tag receipt identity contradiction");
   return receipt;
+}
+async function existingReceiptForObservation(item: PublishSelection, observed: RegistryObservation, planId: Sha256, environment: RuntimeEnvironment, fixedGroup?: { name: string; version: string }): Promise<ComponentReceiptV1 | null> {
+  const recovered = await readExistingReceipt(item, environment, fixedGroup);
+  if (!recovered) return null;
+  if (!observed.bytes || !observed.integrity || !observed.url || !observed.publishedAt || recovered.planId !== planId || recovered.sourceCommit !== environment.releaseCommit || recovered.packedSha256 !== hash(observed.bytes) || recovered.registryIntegrity !== observed.integrity || recovered.registryUrl !== observed.url || recovered.publishedAt !== observed.publishedAt) fail("existing receipt contradicts authoritative registry state");
+  return recovered;
 }
 
 export async function createPlan(cwd: string, repository: string, sourceCommit: string): Promise<ReleasePlanV1> {
