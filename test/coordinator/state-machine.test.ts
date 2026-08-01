@@ -143,7 +143,11 @@ function snapshot(value = state()): ReleaseStateSnapshot {
     headSha: "3".repeat(40),
     plans: { [planStatePath(value.repository, value.planId)]: value },
     activeRepositories: { [value.repository]: value.planId },
-    occupiedPackages: { "package:cargo:lenso-contracts:1.0.0": value.planId },
+    occupiedPackages: Object.fromEntries(
+      value.occupancyKeys
+        .filter((key) => key.startsWith("package:"))
+        .map((key) => [key, value.planId])
+    ),
   };
 }
 
@@ -1026,17 +1030,36 @@ describe("atomic coordinator state", () => {
   });
   it("retires only a proven zero-write production prepublish failure", async () => {
     const failed = state();
+    failed.packages.push({
+      id: "cargo:lenso-platform-core",
+      version: "1.0.0",
+      registryPath: null,
+      phase: 1,
+      status: "pending",
+      requestEventId: null,
+    });
+    failed.occupancyKeys.push("package:cargo:lenso-platform-core:1.0.0");
+    failed.occupancyKeys.sort();
     failed.outbox[0] = {
       ...failed.outbox[0]!,
       status: "dispatched",
       runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
     };
+    failed.outbox.push({
+      ...structuredClone(failed.outbox[0]!),
+      eventId: digest("d"),
+      inputs: {
+        ...failed.outbox[0]!.inputs,
+        event_id: digest("d"),
+      },
+      runUrl: "https://github.com/LioRael/lenso/actions/runs/41",
+    });
     const store = new MemoryStore(snapshot(failed));
     const proofRunUrl = "https://github.com/LioRael/lenso/actions/runs/43";
     const facts = {
       async observeRun() {
         return {
-          runUrl: failed.outbox[0]!.runUrl!,
+          runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
           status: "completed",
           conclusion: "failure",
         };
@@ -1047,6 +1070,7 @@ describe("atomic coordinator state", () => {
       failed.repository,
       failed.planId,
       digest("e"),
+      "https://github.com/LioRael/lenso/actions/runs/42",
       proofRunUrl,
       "production",
       facts,
@@ -1076,12 +1100,13 @@ describe("atomic coordinator state", () => {
           candidate.repository,
           candidate.planId,
           digest("f"),
+          "https://github.com/LioRael/lenso/actions/runs/42",
           proofRunUrl,
           mode,
           {
             async observeRun() {
               return {
-                runUrl: candidate.outbox[0]!.runUrl!,
+                runUrl: "https://github.com/LioRael/lenso/actions/runs/42",
                 status: "completed",
                 conclusion,
               };
