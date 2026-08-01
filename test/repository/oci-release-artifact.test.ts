@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { inspectOciReleaseArtifact } from "../../src/repository/oci-release-artifact.js";
 import { publishOciImage } from "../../src/repository/oci-registry-publisher.js";
 
+const GHCR_STORAGE_HOST = "pkg-containers.githubusercontent.com";
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 function tar(files: Record<string, Buffer>): Buffer {
   const entries: Buffer[] = [];
@@ -49,6 +50,39 @@ describe("OCI release artifact", () => {
     await expect(publishOciImage({ artifact: value.artifact, credential: { bearer: "shadow-token" }, registry: "https://shadow.example/oci", version: value.version, fetch: request as typeof fetch }))
       .resolves.toMatchObject({ digest: value.manifestDigest, publishedAt: "2026-07-30T08:00:00Z" });
     expect(blobs.size).toBe(2); expect(manifest).toEqual(value.artifact.manifestBytes);
+  });
+  it("uses GHCR signed blob upload locations without forwarding registry credentials", async () => {
+    const value = fixture(); const blobs = new Map<string, Buffer>(); let manifest: Buffer | undefined;
+    const request = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(String(input)); const method = init?.method ?? "GET"; const authorization = new Headers(init?.headers).get("authorization");
+      if (url.hostname === GHCR_STORAGE_HOST) {
+        expect(authorization).toBeNull();
+        expect(init?.redirect).toBe("error");
+        const bytes = Buffer.from(await new Response(init?.body).arrayBuffer()); blobs.set(url.searchParams.get("digest")!, bytes);
+        return new Response(null, { status: 201, headers: { "docker-content-digest": url.searchParams.get("digest")! } });
+      }
+      expect(authorization).toBe("Bearer production-token");
+      const blob = /\/blobs\/(sha256:[0-9a-f]{64})$/u.exec(url.pathname);
+      if (method === "HEAD" && blob) return new Response(null, { status: 404 });
+      if (method === "POST" && url.pathname.endsWith("/blobs/uploads/")) return new Response(null, { status: 202, headers: { location: `https://${GHCR_STORAGE_HOST}/signed/upload?token=opaque` } });
+      if (method === "PUT" && url.pathname.endsWith("/manifests/0.2.0")) { manifest = Buffer.from(await new Response(init?.body).arrayBuffer()); return new Response(null, { status: 201, headers: { "docker-content-digest": value.manifestDigest } }); }
+      if (method === "GET" && url.pathname.endsWith("/manifests/0.2.0")) return new Response(manifest as unknown as BodyInit, { headers: { "docker-content-digest": value.manifestDigest } });
+      return new Response(null, { status: 500 });
+    };
+    await expect(publishOciImage({ artifact: value.artifact, credential: { bearer: "production-token" }, registry: "https://ghcr.io", version: value.version, fetch: request as typeof fetch }))
+      .resolves.toMatchObject({ digest: value.manifestDigest });
+    expect(blobs.size).toBe(2); expect(manifest).toEqual(value.artifact.manifestBytes);
+  });
+  it("rejects untrusted cross-origin blob upload locations", async () => {
+    const value = fixture();
+    const request = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(String(input)); const method = init?.method ?? "GET";
+      if (method === "HEAD") return new Response(null, { status: 404 });
+      if (method === "POST" && url.pathname.endsWith("/blobs/uploads/")) return new Response(null, { status: 202, headers: { location: "https://storage.example/upload" } });
+      return new Response(null, { status: 500 });
+    };
+    await expect(publishOciImage({ artifact: value.artifact, credential: { bearer: "production-token" }, registry: "https://ghcr.io", version: value.version, fetch: request as typeof fetch }))
+      .rejects.toThrow("blob upload location escaped the registry repository");
   });
   it("rejects manifest, image identity, and graph contradictions", () => {
     const value = fixture();

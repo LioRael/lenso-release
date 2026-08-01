@@ -4,6 +4,7 @@ import type { OciReleaseArtifact } from "./oci-release-artifact.js";
 type Credential = { bearer: string } | { username: string; password: string };
 type JsonObject = Record<string, unknown>;
 const MANIFEST_TYPE = "application/vnd.oci.image.manifest.v1+json";
+const GHCR_BLOB_UPLOAD_HOST = "pkg-containers.githubusercontent.com";
 
 function fail(message: string): never { throw new Error(`OCI registry publisher: ${message}`); }
 function registryBase(value: string): URL {
@@ -51,9 +52,12 @@ export async function publishOciImage(input: {
     if (started.status !== 202) fail(`blob upload start failed with ${started.status}`);
     const location = started.headers.get("location"); if (!location) fail("blob upload location is missing");
     const upload = new URL(location, base);
-    if (upload.origin !== base.origin || !upload.pathname.startsWith(`${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`)) fail("blob upload location escaped the registry repository");
+    const sameRepository = upload.origin === base.origin && upload.pathname.startsWith(`${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`);
+    const trustedGhcrStorage = base.hostname === "ghcr.io" && upload.protocol === "https:" && upload.hostname === GHCR_BLOB_UPLOAD_HOST && !upload.username && !upload.password && !upload.hash;
+    if (!sameRepository && !trustedGhcrStorage) fail("blob upload location escaped the registry repository");
     upload.searchParams.set("digest", digest);
-    const stored = await perform(upload, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes as unknown as BodyInit });
+    const uploadRequest = { method: "PUT", redirect: "error" as const, headers: { "content-type": "application/octet-stream" }, body: bytes as unknown as BodyInit };
+    const stored = sameRepository ? await perform(upload, uploadRequest) : await request(upload, uploadRequest);
     if (stored.status !== 201 || stored.headers.get("docker-content-digest") !== digest) fail(`blob upload failed with ${stored.status}`);
   }
   const manifestUrl = endpoint(`manifests/${encodeURIComponent(input.version)}`);

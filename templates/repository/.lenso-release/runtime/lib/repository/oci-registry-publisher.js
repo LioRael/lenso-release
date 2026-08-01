@@ -1,4 +1,5 @@
 const MANIFEST_TYPE = "application/vnd.oci.image.manifest.v1+json";
+const GHCR_BLOB_UPLOAD_HOST = "pkg-containers.githubusercontent.com";
 function fail(message) { throw new Error(`OCI registry publisher: ${message}`); }
 function registryBase(value) {
     const url = new URL(value);
@@ -58,10 +59,13 @@ export async function publishOciImage(input) {
         if (!location)
             fail("blob upload location is missing");
         const upload = new URL(location, base);
-        if (upload.origin !== base.origin || !upload.pathname.startsWith(`${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`))
+        const sameRepository = upload.origin === base.origin && upload.pathname.startsWith(`${prefix}/v2/${input.artifact.registryRepository}/blobs/uploads/`);
+        const trustedGhcrStorage = base.hostname === "ghcr.io" && upload.protocol === "https:" && upload.hostname === GHCR_BLOB_UPLOAD_HOST && !upload.username && !upload.password && !upload.hash;
+        if (!sameRepository && !trustedGhcrStorage)
             fail("blob upload location escaped the registry repository");
         upload.searchParams.set("digest", digest);
-        const stored = await perform(upload, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes });
+        const uploadRequest = { method: "PUT", redirect: "error", headers: { "content-type": "application/octet-stream" }, body: bytes };
+        const stored = sameRepository ? await perform(upload, uploadRequest) : await request(upload, uploadRequest);
         if (stored.status !== 201 || stored.headers.get("docker-content-digest") !== digest)
             fail(`blob upload failed with ${stored.status}`);
     }
