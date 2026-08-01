@@ -20,6 +20,7 @@ const RECOVERABLE_RECEIPT_BLOCK_REASONS = new Set([
   "dispatch outcome unknown",
   "registry contradiction",
   "provenance contradiction",
+  "workflow contradiction",
 ]);
 export function receiptRecoveryEligible(state: PlanStateV1): boolean {
   return state.status === "publishing" ||
@@ -57,7 +58,8 @@ function verify(receipt: ComponentReceiptV1, event: Extract<ReleaseEventV1, { ev
   const outbox = state.outbox.find(({ eventId }) => eventId === event.correlationId);
   if (!outbox || !outbox.packages.some(({ id, version }) => id === receipt.packageId && version === receipt.version)) throw new Error("workflow package contradiction");
   const exactExecution = run.ref === state.executionRef.name && run.sha === state.releaseCommit;
-  if (run.url !== receipt.workflowUrl || run.repository !== state.repository || (!exactExecution && run.recovery !== true) || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
+  const acceptedWorkflowUrl = run.url === receipt.workflowUrl || run.recovery === true;
+  if (!acceptedWorkflowUrl || run.repository !== state.repository || (!exactExecution && run.recovery !== true) || run.runName !== `lenso-publish-requested:${event.correlationId}` || run.workflowPath !== outbox.workflow) throw new Error("workflow contradiction");
   const tagReceipt = observed.tag.receipt;
   const tagContainsReceipt = equal(normalizeLegacyRecoveryReceipt(tagReceipt), receipt) || Boolean(tagReceipt && typeof tagReceipt === "object" && !Array.isArray(tagReceipt) && (tagReceipt as { schema?: string }).schema === "lenso.fixed-group-receipt.v1" && Array.isArray((tagReceipt as { receipts?: unknown[] }).receipts) && (tagReceipt as { receipts: unknown[] }).receipts.some((candidate) => equal(normalizeLegacyRecoveryReceipt(candidate), receipt)));
   if (!observed.tag.annotated || !observed.tag.immutable || observed.tag.targetSha !== state.releaseCommit || observed.tag.url !== receipt.tagUrl || !tagContainsReceipt) throw new Error("annotated tag contradiction");
