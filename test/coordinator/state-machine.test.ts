@@ -665,14 +665,14 @@ describe("atomic coordinator state", () => {
     value.planSha256 = sha256(planBytes) as Sha256;
     value.executionRef.name = `release-execution/${plan.planId.slice(7)}`;
     value.status = "blocked";
-    value.reason = "provenance contradiction";
+    value.reason = "workflow contradiction";
     value.outbox[0] = { ...value.outbox[0]!, status: "dispatched", runUrl: "https://github.com/LioRael/lenso/actions/runs/7", ref: value.executionRef.name, inputs: { ...value.outbox[0]!.inputs, plan_id: plan.planId, plan_sha256: value.planSha256 }, claimOwner: null, leaseExpiresAt: null };
     value.outbox.push({ ...value.outbox[0]!, eventId: digest("d"), nonce: "superseded-nonce", inputs: { ...value.outbox[0]!.inputs, event_id: digest("d"), nonce: "superseded-nonce" }, status: "cancelled", runUrl: null });
     value.occupancyKeys = ["package:cargo:lenso-contracts:1.0.0", `plan:${value.repository}:${value.planId}`].sort();
     const store = new MemoryStore(snapshot(value));
     const bytes = Buffer.from("published crate");
     const packed = sha256(bytes) as Sha256;
-    const receiptIdentity = { schema: "lenso.component-receipt.v1" as const, environment: "production" as const, planId: value.planId, packageId: value.packages[0]!.id, version: value.packages[0]!.version, repository: value.repository, sourceCommit: value.releaseCommit, packedSha256: packed, registryIntegrity: packed.slice(7), registryUrl: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", provenanceUrl: "https://github.com/LioRael/lenso/attestations/1", provenanceSubject: { name: "lenso-contracts-1.0.0.crate", digest: packed }, workflowUrl: "https://github.com/LioRael/lenso/actions/runs/8", tagUrl: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", publishedAt: "2026-07-11T00:02:00Z" };
+    const receiptIdentity = { schema: "lenso.component-receipt.v1" as const, environment: "production" as const, planId: value.planId, packageId: value.packages[0]!.id, version: value.packages[0]!.version, repository: value.repository, sourceCommit: value.releaseCommit, packedSha256: packed, registryIntegrity: packed.slice(7), registryUrl: "https://static.crates.io/crates/lenso-contracts/lenso-contracts-1.0.0.crate", provenanceUrl: "https://github.com/LioRael/lenso/attestations/1", provenanceSubject: { name: "lenso-contracts-1.0.0.crate", digest: packed }, workflowUrl: tagMode === "fixed-group" ? "https://github.com/LioRael/lenso/actions/runs/7" : "https://github.com/LioRael/lenso/actions/runs/8", tagUrl: "https://github.com/LioRael/lenso/releases/tag/lenso-contracts%401.0.0", publishedAt: "2026-07-11T00:02:00Z" };
     const expectedReceipt = { ...receiptIdentity, receiptId: sha256(receiptIdentity as JsonValue) as Sha256 } as ComponentReceiptV1;
     let tagReceipt: unknown | null = tagMode === "fixed-group" ? { schema: "lenso.fixed-group-receipt.v1", group: "lenso", version: "1.0.0", receipts: [expectedReceipt] } : null;
     let creates = 0;
