@@ -173,38 +173,9 @@ const expectedInventory = {
     true,
     true
   ],
-  "npm:@lenso/auth-console": ["LioRael/lenso-auth-module", "npm", "console", true, true],
-  "npm:@lenso/auth-device-console": [
-    "LioRael/lenso-auth-module",
-    "npm",
-    "console",
-    true,
-    true
-  ],
-  "npm:@lenso/auth-provider-console": [
-    "LioRael/lenso-auth-module",
-    "npm",
-    "console",
-    true,
-    true
-  ],
   "npm:@lenso/cli": ["LioRael/lenso-cli", "npm", "distribution", true, true],
   "npm:@lenso/console-bridge": [
     "LioRael/lenso-console",
-    "npm",
-    "console",
-    true,
-    true
-  ],
-  "npm:@lenso/console-package-api": [
-    "LioRael/lenso-console",
-    "npm",
-    "console",
-    true,
-    true
-  ],
-  "npm:@lenso/organization-console": [
-    "LioRael/lenso-organization-module",
     "npm",
     "console",
     true,
@@ -377,11 +348,6 @@ const expectedDependencies: Record<string, readonly string[]> = {
   ],
   "cargo:lenso-cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-service"],
   "npm:@lenso/cli": ["oci:lenso-console-service", "cargo:lenso", "cargo:lenso-cli"],
-  "npm:@lenso/auth-console": ["npm:@lenso/console-bridge"],
-  "npm:@lenso/auth-device-console": ["npm:@lenso/console-bridge"],
-  "npm:@lenso/auth-provider-console": ["npm:@lenso/console-bridge"],
-  "npm:@lenso/organization-console": ["npm:@lenso/console-bridge"],
-  "npm:@lenso/console-package-api": [],
   "npm:@lenso/service-kit": [],
   "catalog:lenso-official-module-catalog": [
     "oci:lenso-console-service",
@@ -394,11 +360,7 @@ const expectedDependencies: Record<string, readonly string[]> = {
     "cargo:lenso-module-auth-oauth",
     "cargo:lenso-module-auth-oidc",
     "cargo:lenso-module-auth-password",
-    "cargo:lenso-module-organization",
-    "npm:@lenso/auth-console",
-    "npm:@lenso/auth-device-console",
-    "npm:@lenso/auth-provider-console",
-    "npm:@lenso/organization-console"
+    "cargo:lenso-module-organization"
   ]
 } as const;
 

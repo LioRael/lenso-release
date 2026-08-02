@@ -68,14 +68,6 @@ describe("production coordinator adapters", () => {
     );
   });
 
-  it("matches scoped npm provenance subjects to npm pack filenames", () => {
-    expect(provenanceSubjectName(
-      "npm:@lenso/console-package-api",
-      "console-package-api",
-      "0.1.3",
-    )).toBe("lenso-console-package-api-0.1.3.tgz");
-  });
-
   it("preserves a verified immutable tag attestation record URL", () => {
     const digest = `sha256:${"a".repeat(64)}`;
     const subject = { name: "lenso-1.0.0.crate", digest };

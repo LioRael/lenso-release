@@ -285,42 +285,6 @@ packages:
     userFacing: true
     publishable: true
     dependencies: []
-  # Retained only to complete the reviewed 0.1.2 replacement release.
-  - id: npm:@lenso/console-package-api
-    repository: LioRael/lenso-console
-    registry: npm
-    releaseGroup: console
-    userFacing: true
-    publishable: true
-    dependencies: []
-  - id: npm:@lenso/auth-console
-    repository: LioRael/lenso-auth-module
-    registry: npm
-    releaseGroup: console
-    userFacing: true
-    publishable: true
-    dependencies: [npm:@lenso/console-bridge]
-  - id: npm:@lenso/auth-device-console
-    repository: LioRael/lenso-auth-module
-    registry: npm
-    releaseGroup: console
-    userFacing: true
-    publishable: true
-    dependencies: [npm:@lenso/console-bridge]
-  - id: npm:@lenso/auth-provider-console
-    repository: LioRael/lenso-auth-module
-    registry: npm
-    releaseGroup: console
-    userFacing: true
-    publishable: true
-    dependencies: [npm:@lenso/console-bridge]
-  - id: npm:@lenso/organization-console
-    repository: LioRael/lenso-organization-module
-    registry: npm
-    releaseGroup: console
-    userFacing: true
-    publishable: true
-    dependencies: [npm:@lenso/console-bridge]
   - id: npm:@lenso/service-kit
     repository: LioRael/lenso
     registry: npm
@@ -453,7 +417,3 @@ packages:
       - cargo:lenso-module-auth-oidc
       - cargo:lenso-module-auth-password
       - cargo:lenso-module-organization
-      - npm:@lenso/auth-console
-      - npm:@lenso/auth-device-console
-      - npm:@lenso/auth-provider-console
-      - npm:@lenso/organization-console
