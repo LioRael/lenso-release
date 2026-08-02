@@ -7,7 +7,7 @@ import {
   GithubWorkflowDispatcher,
   parseCoordinatorEnvironment,
 } from "../../src/coordinator/github-adapters.js";
-import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, npmPackumentContainsVersion, productionDependencyUrl, provenanceSubjectName, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
+import { activeRulesetDetails, checkedExternal, checkedGithubAsset, checkedGithubJson, checkedGithubReleaseByTag, checkedShadowGithubAsset, checkedShadowGithubJson, coordinatorEnvironment, executionRefProtectionIsImmutable, githubRefPath, npmPackumentContainsVersion, productionDependencyUrl, provenanceSubjectName, tagRefIsImmutable, trustedFailedRecoveryRun, trustedProductionBreakGlassRun, trustedProductionOciAbsenceRun, trustedProductionPrepublishFailureRun, trustedProductionZeroWriteFailureRun, trustedRecoveryProvenanceRun, trustedRecoveryRun, trustedShadowReceiptRecoveryRun, verifiedProvenanceUrl } from "../../src/coordinator/production-facts.js";
 import { GhAttestationVerifier } from "../../src/coordinator/provenance-verifier.js";
 import {
   StateConflictError,
@@ -22,6 +22,15 @@ describe("production coordinator adapters", () => {
     expect(coordinatorEnvironment("production")).toBe("production");
     expect(() => coordinatorEnvironment(undefined)).toThrow("must be shadow or production");
     expect(() => coordinatorEnvironment("staging")).toThrow("must be shadow or production");
+  });
+
+  it("preserves GitHub ref path separators while encoding each segment", () => {
+    expect(githubRefPath("release-execution/abc123")).toBe(
+      "heads/release-execution/abc123",
+    );
+    expect(githubRefPath("feature/space here")).toBe(
+      "heads/feature/space%20here",
+    );
   });
 
   it("identifies a failed GitHub observation without exposing its query", async () => {

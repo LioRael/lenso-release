@@ -49,6 +49,9 @@ function assertGithubApi(url: string): void {
   if (parsed.protocol !== "https:" || parsed.origin !== "https://api.github.com")
     throw new TypeError("authenticated GitHub request must target api.github.com");
 }
+export function githubRefPath(ref: string): string {
+  return `heads/${ref.split("/").map(encodeURIComponent).join("/")}`;
+}
 export async function checkedExternal(request: typeof fetch, url: string): Promise<Response> {
   let current = new URL(url);
   for (let redirects = 0; redirects <= 5; redirects += 1) {
@@ -768,7 +771,7 @@ export async function createCoordinatorHandlers(
           ref: string,
           commit: string,
         ) {
-          const encoded = encodeURIComponent(`heads/${ref}`);
+          const encoded = githubRefPath(ref);
           const refResponse = await request(`${api}/git/ref/${encoded}`, {
             redirect: "error",
             headers: headers(sourceToken),
