@@ -859,7 +859,7 @@ async function publishOnce(environment: RuntimeEnvironment, item: PublishSelecti
     if (releaseResponse.status === 404) {
       releaseResponse = await fetch(`${api}/repos/${environment.repository}/releases`, {
         method: "POST", headers, redirect: "error",
-        body: JSON.stringify({ tag_name: `v${item.version}`, target_commitish: environment.releaseCommit, name: `Lenso Runtime Console ${item.version}`, draft: true, prerelease: false }),
+        body: JSON.stringify({ tag_name: `v${item.version}`, target_commitish: environment.releaseCommit, name: `Lenso Console ${item.version}`, draft: true, prerelease: false }),
       });
     }
     if (!releaseResponse.ok) fail(`draft hosted artifact release creation ${releaseResponse.status}`);
