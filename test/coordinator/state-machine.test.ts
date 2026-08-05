@@ -1584,26 +1584,22 @@ describe("atomic coordinator state", () => {
     expect(recoverMode).toHaveBeenCalledWith("LioRael/lenso", digest("a"), "30664174730", "30666000000");
     await rm(directory, { recursive: true });
   });
-  it("keeps receiver workflows read-only and passes github.event_path", async () => {
-    for (const file of ["plan-ready.yml", "publish-receipt.yml", "recover-shadow-mode-mismatch-plan.yml", "retire-failed-production-prepublish-plan.yml", "recover-failed-production-zero-write-plan.yml"]) {
-      const workflow = await readFile(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
-      expect(workflow).toContain("contents: read"); expect(workflow).not.toMatch(/actions:\s*write|id-token:\s*write/u);
-      if (file === "recover-shadow-mode-mismatch-plan.yml") {
-        expect(workflow).toContain("--publisher-run-id");
-        expect(workflow).toContain("--production-absence-run-id");
-        expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ vars.LENSO_GITHUB_APP_ACTOR }}");
-      } else if (file === "retire-failed-production-prepublish-plan.yml") {
-        expect(workflow).toContain("--failed-run-id");
-        expect(workflow).toContain("--proof-run-id");
-        expect(workflow).toContain("LENSO_COORDINATOR_MODE");
-      } else if (file === "recover-failed-production-zero-write-plan.yml") {
-        expect(workflow).toContain("--failed-run-id");
-        expect(workflow).toContain("--proof-run-id");
-        expect(workflow).toContain("LENSO_COORDINATOR_MODE");
-      } else {
-        expect(workflow).toContain("github.event_path");
-        expect(workflow).toContain("LENSO_EVENT_ACTOR: ${{ github.actor }}");
-      }
+  it("keeps coordinator workflows retired", async () => {
+    for (const file of [
+      "plan-ready.yml",
+      "publish-receipt.yml",
+      "recover-break-glass-plan.yml",
+      "recover-receipts.yml",
+      "retire-failed-shadow-plan.yml",
+      "retry-failed-shadow-plan.yml",
+      "recover-failed-production-partial-plan.yml",
+      "recover-failed-production-zero-write-plan.yml",
+      "recover-shadow-mode-mismatch-plan.yml",
+      "retire-failed-production-prepublish-plan.yml",
+    ]) {
+      await expect(
+        readFile(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
+      ).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
 });

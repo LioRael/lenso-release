@@ -1,13 +1,17 @@
 # Lenso release runbook for operators and agents
 
-This is the authoritative operational guide for coordinated releases across the
-Lenso framework repositories. Use it before editing versions, creating a release
-plan, dispatching a publisher, changing release infrastructure, or diagnosing a
-stalled release.
+> Historical record: this runbook describes the retired coordinated-release
+> system. It is no longer an operational authority. Do not create plans,
+> dispatch publishers, run recovery, or restore shadow mode. See
+> [`retirement-checklist.md`](retirement-checklist.md) for the archive procedure.
 
-The workflow files and schemas remain executable truth. If this document and the
-code disagree, stop, report the mismatch, and update this document in the same
-change as the code. Do not silently infer a new procedure.
+This document records the former operational guide for coordinated releases
+across the Lenso framework repositories. It is retained for audit and recovery
+history only; component repositories now own their independent release paths.
+
+The schemas and source history are retained as audit evidence. The former
+workflow files are removed by the retirement change, so any path below that
+names a workflow is historical and must not be recreated.
 
 ## Safety rules
 
@@ -396,7 +400,7 @@ An agent may report a release complete only when all applicable items are true:
 
 If one item is false, report the release as partial and name the blocker.
 
-## Implementation references
+## Historical implementation references
 
 - [`README.md`](../README.md): control-plane boundaries and release model.
 - [`docs/github-app.md`](github-app.md): App permissions, protected execution refs,
@@ -405,15 +409,9 @@ If one item is false, report the release as partial and name the blocker.
   catalog and dependency order.
 - [`schemas/`](../schemas/): event, plan, state, receipt, reconciliation, candidate,
   channel, and release contracts.
-- [`.github/workflows/plan-ready.yml`](../.github/workflows/plan-ready.yml): ready
-  event receiver.
-- [`.github/workflows/publish-receipt.yml`](../.github/workflows/publish-receipt.yml):
-  receipt receiver.
-- [`.github/workflows/recover-receipts.yml`](../.github/workflows/recover-receipts.yml):
-  scheduled recovery.
-- [`.github/workflows/recover-shadow-mode-mismatch-plan.yml`](../.github/workflows/recover-shadow-mode-mismatch-plan.yml):
-  fail-closed repair for a historical production-labelled shadow run.
-- [`.github/workflows/recover-break-glass-plan.yml`](../.github/workflows/recover-break-glass-plan.yml):
-  exact, production-only recovery authorization for a fully published Cargo plan.
+- Former coordinator and recovery workflows (`plan-ready.yml`,
+  `publish-receipt.yml`, `recover-receipts.yml`, and the break-glass/shadow
+  recovery variants) are preserved in Git history and intentionally absent from
+  the retired checkout.
 - [`shadow-gateway/`](../shadow-gateway/): isolated registry, release, and
   attestation emulator.
