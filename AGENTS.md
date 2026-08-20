@@ -1,14 +1,17 @@
 # Agent instructions
 
-Before planning, changing, or executing a Lenso framework release, read
-[`docs/release-runbook.md`](docs/release-runbook.md). It is the authoritative
-operator and agent runbook for release intent, reviewed plans, shadow execution,
-production approval, receipt recovery, and break-glass publishing.
+This repository is in retirement preparation and is no longer an operational
+release coordinator. Read [`docs/retirement-checklist.md`](docs/retirement-checklist.md)
+before touching it. Do not create release intent, plans, dispatches, shadow
+publication, receipt recovery, or break-glass runs from this repository.
 
-Do not infer production authority from repository write access. Never change
-`LENSO_RELEASE_MODE`, enable a legacy publisher, bypass a reviewed plan, or publish
-an artifact to a public registry without explicit approval for that production
-operation.
+The old [`docs/release-runbook.md`](docs/release-runbook.md) is retained only as
+historical evidence. It must not be used to restore the retired coordinator or
+to infer production authority from repository write access.
+
+Do not change `LENSO_RELEASE_MODE`, add a publisher credential, or publish an
+artifact to a public registry. Any archive, cloud-state deletion, or GitHub
+permission change requires an explicit operator action outside this checkout.
 
 ## Agent skills
 

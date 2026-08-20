@@ -1,8 +1,17 @@
 # Lenso Release Control Plane
 
-This repository is the public, non-privileged control plane for coordinated Lenso releases. It validates release intent, computes deterministic dependency-aware plans, records state, and verifies component receipts. It does not publish production artifacts directly and it contains no production credentials.
+> Retirement notice: this repository is a historical, read-only control-plane
+> snapshot. The component repositories now own their independent releases. Do
+> not create release intent, plans, dispatches, publications, or recovery runs
+> here. Follow [`docs/retirement-checklist.md`](docs/retirement-checklist.md)
+> for the remaining archive and 90-day state-retention work.
 
-## Tool boundaries
+The descriptions below document the former public, non-privileged control
+plane. The executable coordinator and recovery workflows are removed by the
+retirement change; component repositories now own release decisions and
+publication.
+
+## Historical tool boundaries
 
 - **Tegami 1.2.5** captures release intent, proposes package versions and changelog entries, and contributes to the tracked release lock. It never publishes production artifacts.
 - **This control plane** validates public contracts, builds canonical plans, coordinates exact-ref component workflows, reconciles receipts, and produces immutable system-candidate/release records.
@@ -36,7 +45,7 @@ pnpm reconcile -- --help
 
 Generated build output is written to `dist/` and is not committed.
 
-## Release model
+## Historical release model
 
 1. A repository's release intent describes the requested package change.
 2. The coordinator validates that intent against the public schemas and component catalog.
@@ -54,7 +63,7 @@ receipts without requesting registry credentials or uploading immutable versions
 
 The schemas in [`schemas/`](schemas/) are the public wire contracts for release events, plans, state, receipts, reconciliation, framework locks, candidates, channels, and releases. [`config/components.yaml`](config/components.yaml) is the reviewed component catalog.
 
-## Operator and agent runbook
+## Historical operator and agent runbook
 
 Before planning, changing, or executing a framework release, read
 [`docs/release-runbook.md`](docs/release-runbook.md). It documents the reviewed
